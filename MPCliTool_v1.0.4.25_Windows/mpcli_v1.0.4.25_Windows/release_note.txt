@@ -1,0 +1,396 @@
+V1.0.4.25 Date:20250305
+1. Resolve the issue where spaces in the provided mpcli path lead to the fw not being found
+
+V1.0.4.24 Date:20250212
+1. Use the location of the application mpcli to locate the fw folder, instead of searching from the running directory.
+
+V1.0.4.23 Date:20250123
+1. Default baudrate 921600
+
+V1.0.4.22 Date:20241204
+1. Fixed the bug causing errors in checking IC type
+
+V1.0.4.21 Date:20241125
+1. Fix the issue where -p is ineffective when used with -v.
+2. Fix the issue of the option -e erasing the range
+
+V1.0.4.20 Date:20240927
+1. update for RTL8762H(bee3plus) write eFuse
+
+V1.0.4.19 Date: 20240923
+1. fixed password function issue.
+
+V1.0.4.18 Date: 20240910
+1. Optimize the burning process flow.
+
+V1.0.4.17 Date: 20240816
+1. The --beComparedFile option is used to be compared with IC Flash.
+
+V1.0.4.16 Date: 20240726
+1. The -I option has been changed to only dump MAC, while during the normal execution of mpcli, the EUID is automatically printed.
+
+V1.0.4.15 Date: 20240515
+1. when -P or -a -f used --get_back_xtal_calibration;
+   before burn new config file, read back 40MHz XTAL Internal Cap Calibration in config Flash, and rewrite.
+
+V1.0.4.14 Date: 20240506
+1. dump EUID
+2. check whether ic type image ic type match
+
+V1.0.4.13 Date: 20240318
+1. retry twice when erase/program/verify failed
+
+V1.0.4.12 Date: 20240206
+1. update for bee3plus
+2. support bee3pro
+
+V1.0.4.11 Date: 20240123
+1. catch reboot result
+
+V1.0.4.10 Date: 20231207
+1. support use -P together with -e -p -v
+2. add Flash overlay check
+
+V1.0.4.9 Date: 20231115
+support SPI Flash Write, refer to userguide.
+
+V1.0.4.8 Date: 20230928
+support bee4 b-cut download
+
+V1.0.4.7 Date: 20230818
+support bee3plus&bee4 packedimage download
+
+V1.0.4.6 Date: 20230602
+1.support bee4 A-CUT
+2.support bee3plus A-CUT
+
+V1.0.4.5 Date: 20221108
+1.add --set_tx_power to set TX Power
+
+V1.0.4.4 Date: 20220607
+1.add option -w, dump data in Command prompt window.
+2.update RTL8762E FW
+3.update user guide.
+
+V1.0.4.3 Date: 20220301
+1.fixed comport bug, which is triggered when -c and -f -a are used together, since V1.0.4.2.
+2.fixed bee3 -T function bug since V1.0.4.2.
+3.update source code and serial.ini.
+4.update RTL8762C FW
+
+V1.0.4.2 Date: 20211126
+1.support bee3 b-cut modify config data.
+
+V1.0.4.1 Date: 20211110
+1. support S-Bee2 eFuse programming
+2. print more log for chiperase
+
+V1.0.4.0 Date: 20210917
+1. support bee3 b-cut
+
+V1.0.3.9 Date: 20210824
+1. modify serial read timeout
+2. remove useless code lines
+
+V1.0.3.8 Date: 20210628
+1. output send/recv CMD file when running fails.
+2. add option -T to modify 40MHz XTAL Internal Cap Calibration value.
+3. update user guide.doc
+
+V1.0.3.7 Date: 20210603
+1. after download FW loader, download Flash AVL.
+2. update RTL8762D's firmware. 
+
+V1.0.3.6 Date: 20210508
+1. support BEE3. 
+
+V1.0.3.5 Date: 20210329
+1. -C: chip erase but remain 4k. 
+
+V1.0.3.4 Date: 20210302
+1. -B: read back MAC. Need to be used with -P or -a -f together.
+2. update user guide.doc
+3. modify the return type
+
+V1.0.3.3 Date: 20210120
+1. support write Efuse by -U.
+2. support read EUID and MAC by -I.
+
+V1.0.3.2 Date: 20201224
+1. remove option -d.
+2. modify/rewrite source code.
+3. Solve a potential risks of cross-border access;
+4. update user guide.doc
+
+V1.0.3.1 Date: 20201204
+1. Support the ".json" file configuration like "relativepath": ""  .
+2. Adjust the RTS / DTR switch and timing when the serial port is opened or closed by parsing the. Ini configuration.
+3. Fixed the bug —— when choose -f .json to download userdata.
+4. optinize code(the part of serial and crc16).
+
+V1.0.3.0 Date: 20200916
+Change:
+1. modified the format of template jsonFile and code logic.
+2. fixed exe exit in case of abnormal error.
+3. fixed the display error when using the command" mpcli -h ".
+4. RuntimeLibrary MultiThreaded from /MD to /MT.
+
+V1.0.2.20 Date: 20200903
+Change:
+1.Replaced the firmware for someone sbee2 cut download verify fails.
+
+V1.0.2.20 Date: 20200721
+Change:
+1.Added Support to modify MAC when -P or -a.
+2.Removed the code of "configmerge" in the function of make command line.
+3.Fixed the problem of using wrong ID when judging whether it is a configFile.
+
+V1.0.2.19 Date: 20200519
+Change:
+1.enable download tri information
+2.Enable '-n' option to support programing Product ID.
+3.Enable '-k' option to support programming secret Key.
+4.Fixd return value errors.
+
+V1.0.2.18 Date: 20200426
+Change:
+1. New CPP project,and migrate codes.
+2. Supports SBEE2 download.
+3. No limited maximum number of downloaded files in one JSON file.
+   You can fill in the JSON information according to the number of your needs.  
+4. Modified the limit of the maximum number of files, the buffer is no longer 30, it's unlimited.
+
+V1.0.2.17 Date: 20200330
+Change:
+1. Supports userdata+packet download.
+
+V1.0.2.16 Date: 20190710
+Change:
+1. Support executing multiple mpcli instances simultaneously.
+Limitation:
+For Windows host:
+1. The baudrate can only be set to 115200, 921600, 1Mbps, 2Mbps or 3Mbps, other values are not supported.
+   1Mbps is recommended for stability.
+For Linux host:
+1. The baudrate is limited to 115200 bps temporarily for stability.
+
+V1.0.2.15 Date: 20190422
+Change:
+1. '-E' option supports chip erase.
+
+V1.0.2.14 Date: 20190421
+Change:
+1. Enable '-u' option to support programming eFuse.
+
+V1.0.2.13 Date: 20190403
+Change:
+1. Static link C library.
+2. Adjust UART timeout settings.
+
+V1.0.2.12 Date: 20190402
+Change:
+1. '-x' option supports RTL8762C/RTL8752C.
+
+V1.0.2.11 Date: 20180920
+Change:
+1. Fix the bug caused by a limit that the image size must be no less than 512 Bytes.
+Limitation:
+For Windows host:
+1. The baudrate can only be set to 1Mbps, 2Mbps or 3Mbps, other values are not supported.
+   1Mbps is recommended for stability.
+For Linux host:
+1. The baudrate is limited to 115200 bps temporarily for stability.
+
+V1.0.2.10 Date: 20180920
+Change:
+1. Rebuild windows version of the tool by VS2015 in order to make it more stable and compatible.
+
+V1.0.2.9 Date: 20180911
+Change:
+1. Change the mode auto-detection flow to be compatible with old boot patch.
+2. Change the RTL8763B_FW_V3.bin for Zebra.
+Limitation:
+For Windows host:
+1. The baudrate can only be set to 1Mbps, 2Mbps or 3Mbps, other values are not supported.
+   1Mbps is recommended for stability.
+For Linux host:
+1. The baudrate is limited to 115200 bps temporarily for stability.
+
+V1.0.2.8 Date: 20180907
+Change:
+1. Merge Single Wire UART support code.
+Limitation:
+For Windows host:
+1. The baudrate can only be set to 1Mbps, 2Mbps or 3Mbps, other values are not supported.
+   1Mbps is recommended for stability.
+For Linux host:
+1. The baudrate is limited to 115200 bps temporarily for stability.
+
+V1.0.2.7 Date: 20180905
+Change:
+1. Add retry mechanism for command "flashverify" and "configmerge"
+2. Add mode auto-detection mechanism when -M is missing
+3. Rearrange the -M option: -M 0 for HCI Mode, -M 1 for VendorWrite Mode, -M 2 for FactoryCode Mode
+4. Map the -H option to -M 0 
+Limitation:
+For Windows host:
+1. The baudrate can only be set to 1Mbps, 2Mbps or 3Mbps, other values are not supported.
+   1Mbps is recommended for stability.
+For Linux host:
+1. The baudrate is limited to 115200 bps temporarily for stability.
+
+V1.0.2.6 Date: 20180828
+Change:
+1. support 2 JSON config files by giving 2 -f options
+2. set the default programming mode to Vendor Write mode (-M 3)
+3. exit with non-zero value when argument error is found in command line
+Limitation:
+For Windows host:
+1. The baudrate can only be set to 1Mbps, 2Mbps or 3Mbps, other values are not supported.
+   1Mbps is recommended for stability.
+For Linux host:
+1. The baudrate is limited to 115200 bps temporarily for stability.
+
+V1.0.2.5 Date: 20180821
+Change:
+1. disable load_firmware stage for FC Mode(Mode 2)
+2. fix the data length bug by resolving payload length item in mp header
+
+Limitation:
+For Windows host:
+1. The baudrate can only be set to 1Mbps, 2Mbps or 3Mbps, other values are not supported.
+   1Mbps is recommended for stability.
+For Linux host:
+1. The baudrate is limited to 115200 bps temporarily for stability.
+
+V1.0.2.4 Date: 20180731
+Change:
+1. Desert the -H option, add a -M option to support programming through HCI and factory image.
+
+Limitation:
+For Windows host:
+1. The baudrate can only be set to 1Mbps, 2Mbps or 3Mbps, other values are not supported.
+   1Mbps is recommended for stability.
+For Linux host:
+1. The baudrate is limited to 115200 bps temporarily for stability.
+
+V1.0.2.3 Date: 20180709
+Change:
+1. Restore the -H option for switching between non-security device and security device.
+Limitation:
+For Windows host:
+1. The baudrate can only be set to 1Mbps, 2Mbps or 3Mbps, other values are not supported.
+   1Mbps is recommended for stability.
+For Linux host:
+1. The baudrate is limited to 115200 bps temporarily for stability.
+
+V1.0.2.2 Date: 20180706
+Change:
+1. Remove -H option, do flash programming through HCI interface only.
+2. Speed up by adding setbaudrate support.
+3. Change the initial procedure to enable HCI communication by high baudrate.
+Limitation:
+For Windows host:
+1. The baudrate can only be set to 1Mbps, 2Mbps or 3Mbps, other values are not supported.
+   1Mbps is recommended for stability.
+For Linux host:
+1. The baudrate is limited to 115200 bps temporarily for stability.
+ 
+V1.0.2.1 Date: 20180704
+Change:
+1. Speed up by changing to UART interface.
+2. Add a -H option to support switch to HCI interface (default is UART interface).
+Limition:
+1. Changing baudrate is not supported when working by HCI interface.
+
+V1.0.2.0 Date: 20180627
+Change:
+1. Change to HCI interface.
+
+Limition:
+1. Changing baudrate in HCI mode is not supported now.
+
+V1.0.1.13 Date: 20180620
+Change:
+1. Add the function of modifying 1~32 consequent bytes in flash.
+
+V1.0.1.12 Date: 20180620
+Change:
+1. Fix the bug in checking MP header.
+
+V1.0.1.11 Date: 20180615
+Change:
+1. Add the function of sending debug password.
+
+V1.0.1.10-beta Date: 20180612
+Change:
+1. Support Linux host with compatible usage.
+2. Set baudrate limited to 115200 bps temporarily for stability.
+
+V1.0.1.9 Date: 20180604
+Change:
+1. Add IC auto detective function.
+
+V1.0.1.8 Date: 20180528
+Change:
+1. Improve the method of identifying oem-config.
+2. Add an option -P for programming packed image.
+3. Fixed known bugs.
+
+V1.0.1.7 Date: 20180515
+Change:
+1. Refacter the do_config_merge function.
+2. Add an option -d to disable merge operation for config image.
+
+V1.0.1.6 Date: 20180515
+Change:
+1. Verify the payload length field of config image automatically when programming.
+2. Add an option -x to support adding BT address manually in oem-config image.
+
+V1.0.1.5 Date: 20180418
+Change:
+1. Implement command options -s to save Flash content into a binary file.
+
+V1.0.1.4 Date: 20180416
+Change:
+2. Improve HCI event process flow to support find HCI event from dirty UART
+   receive buffer.
+3. Dump all Windows UART DCB parameters for debug.
+
+V1.0.1.3 Date: 20180411
+Change:
+1. Support merge SoC vendor and OEM config.
+2. UART port name is case insensitive.
+3. Reset all Windows UART DCB parameters which are modified by putty.
+4. Dump HCI event data when error found.
+
+V1.0.1.2 Date: 20180409
+Change:
+1. Roll back UART timeout parameters to V1.0.1.1.
+
+V1.0.1.1 Date: 20180408
+Change:
+1. Implement command options: -V --version.
+2. Adjust UART timeout and buffer parameters.
+
+V1.0.1.0 Date: 20180407
+Change:
+1. Implement command options: -e -p -v -a -r -F -A -S.
+2. Remove programming and reset actions from -f option.
+
+V1.0.0.1 Date: 20180404
+Change:
+1. Make the paths in the json file are relative to the config file rather
+   than the EXE file.
+2. Support call the EXE file in other directory by call its full path.
+2. Remove some debug log.
+
+Limition:
+1. Because the current limition of json library, the "relativepath" only support
+   C style file path, for example: Use "testdir\\bin" rather than "testdir\bin".
+2. Don't support add the EXE file's directory into the PATH environment variable,
+   and then call the EXE file by name only.
+
+V1.0.0.0 Date: 20180330
+New:
+1. Initial Release

@@ -1,0 +1,14 @@
+{
+    "mptoolconfig": {"port": "COM6","baud": "1000000",
+        "appimage": {"relativepath": "bin",
+            "file": [{"id": 0,"address": "0x00801000","name": "null","enable":"1"},
+                    {"id": 1,"address": "0x00802000","name": "null","enable":"1"},
+                    {"id": 2,"address": "0x00803000","name": "null","enable":"1"},
+                    {"id": 3,"address": "0x0080E000","name": "null","enable":"1"},
+                    {"id": 4,"address": "0x00840000","name": "null","enable":"0"},
+                    {"id": 5,"address": "0x00840000","name": "null","enable":"0"},
+                    {"id": 6,"address": "0x008F0000","name": "null","enable":"0"},
+                    {"id": 7,"address": "0x00920000","name": "null","enable":"0"}]
+        }
+    }
+}

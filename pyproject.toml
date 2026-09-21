@@ -1,0 +1,9 @@
+[project]
+name = "stationapp"
+version = "0.1.0"
+description = "BLE module programming and traceability station application"
+requires-python = ">=3.11,<3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

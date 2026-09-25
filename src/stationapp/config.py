@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     log_dir: Path = Path("./logs")
 
     # ----External Tools ---
-    mpcli_path: Path(r"D:\BLE_Projects\StationApp\MPCliTool_v1.0.4.25_Windows\mpcli_v1.0.4.25_Windows\mpcli.exe")
+    mpcli_path: Path = Path(r"D:\BLE_Projects\StationApp\MPCliTool_v1.0.4.25_Windows\mpcli_v1.0.4.25_Windows\mpcli.exe")
     pricol_app_path: Path | None = None
 
     # --- Stage 2 ---
@@ -45,6 +45,21 @@ class Settings(BaseSettings):
 
     # --- Runtime ---
     log_level: str = "INFO"
+
+    @field_validator("jig_positions", mode="before")
+    @classmethod
+    def _parse_jig_positions(cls, value):
+        """
+        Environment variables are read as strings.
+        Convert '4' or '8' to integers before literal validation.
+        """
+        if isinstance(value, str):
+            value = value.strip()
+
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise ValueError("jig_positions must be either 4 or 8")
 
     @field_validator("log_level")
     @classmethod

@@ -27,7 +27,7 @@ from stationapp.services.health import Healthcheck, Severity, run_all_checks, su
 
 _SEVERITY_COLOURS = {
     Severity.OK: QColor("#1b7f3b"),     # Green
-    Severity.WARN: QColor("#b26a00")    # Amber
+    Severity.WARN: QColor("#b26a00"),    # Amber
     Severity.FAIL: QColor("#b3261e")    # red
 }
 
@@ -68,7 +68,7 @@ class MainWindow(QMainWindow):
         summary_font = QFont()
         summary_font.setPointSize(11)
         summary_font.setBold(True)
-        self._summary_label.setFont(summar_font)
+        self._summary_label.setFont(summary_font)
         layout.addWidget(self._summary_label)
 
         self._checks_table = QTableWidget(0, 3)
@@ -84,7 +84,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._checks_table)
 
         footer = QHBoxLayout()
-        self._stage_label = QLable(
+        self._stage_label = QLabel(
         "Stage 1 - Local operation"
         if not self._context.settings.is_stage_two
         else f"LAN server: {self._context_settings.lan_server_url}"
@@ -123,4 +123,3 @@ class MainWindow(QMainWindow):
 
             for col, item in enumerate((name_item, status_item, detail_item)):
                 self._checks_table.setItem(row, col, item)
-        

@@ -51,7 +51,7 @@ def check_configuration(settings: Settings) -> Healthcheck:
     "Configuration",
     Severity.OK,
     f"station={settings.station_id}, jig={settings.jig_id}, "
-    f"positions ={settings.jig_positions}
+    f"positions ={settings.jig_positions}"
     )
 
 def check_log_directory(settings: Settings) -> Healthcheck:
@@ -77,7 +77,7 @@ def check_mpcli(settings: Settings) -> Healthcheck:
      the binary runs and reprots a version, which is the same reconnaissance step
      the verification script performs.
      """
-    path = settings.mpcli_path
+    path = Path(settings.mpcli_path)
     if not path.is_file():
          return Healthcheck(
             "MpCli",
@@ -108,7 +108,7 @@ def check_mpcli(settings: Settings) -> Healthcheck:
 
     output = (result.stdout or result.stderr or "").strip()
     first_line = output.splitlines()[0] if output else "(no output)"
-    return Healthcheck("MpCli", Severity.OK, f"responded: {first_line[:70]}"")
+    return Healthcheck("MpCli", Severity.OK, f"responded: {first_line[:70]}")
 
 def check_serial_ports(settings: Settings) -> Healthcheck :
     """ Report detected COM ports.
@@ -129,12 +129,14 @@ def check_serial_ports(settings: Settings) -> Healthcheck :
         Severity.WARN,
         "none detected (expected on a PC with no Jig attached)"
         )
-
     devices = ", ".join(p.device for p in ports)
     severity = Severity.OK
-    detail += (
-    f" - fewer than the {settings.jig_positions} positions configured"
-    )
+    detail = f"{len(ports)} port(s): {devices}"
+
+    if len(ports) < settings.jig_positions:
+        severity = Severity.WARN
+        detail += (f"-- fewer than the {settings.jig_positions} positions configured")
+    return Healthcheck("Serial ports", severity, detail)
 
 def run_all_checks(settings: Settings) -> list[Healthcheck]:
     """Run every check and return the full list is display order. """
@@ -155,5 +157,3 @@ def summarise(checks: list[Healthcheck]) -> tuple[Severity, str]:
     if warnings:
         return Severity.WARN, f"{len(warnings)} warning(s) -- station usable with care"
     return Severity.OK, "All checks passed -- station ready"
-
-    

@@ -1,0 +1,2 @@
+[console_scripts]
+stationapp = stationapp.__main__:main

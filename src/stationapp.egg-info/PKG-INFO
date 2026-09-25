@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: stationapp
+Version: 0.1.0
+Summary: BLE module programming and traceability station application
+Requires-Python: <3.12,>=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: PyQt6<7.0,>=6.6
+Requires-Dist: SQLAlchemy<3.0,>=2.0
+Requires-Dist: alembic<2.0,>=1.13
+Requires-Dist: pydantic<3.0,>=2.6
+Requires-Dist: pydantic-settings<3.0,>=2.2
+Requires-Dist: python-dotenv<2.0,>=1.0
+Requires-Dist: pyserial<4.0,>=3.5
+Requires-Dist: httpx<1.0,>=0.27
+Requires-Dist: argon2-cffi<25.0,>=23.1
+Requires-Dist: openpyxl<4.0,>=3.1
+Provides-Extra: dev
+Requires-Dist: pytest<9.0,>=8.0; extra == "dev"
+Requires-Dist: pytest-qt<5.0,>=4.4; extra == "dev"
+Requires-Dist: pyinstaller<7.0,>=6.3; extra == "dev"

@@ -34,7 +34,7 @@ def main() -> int:
 
     # Imported here, not at module top: importing UI pulls in Qt Widgets,
     # and we want a clean terminal error if bootstrap fails first
-    from stationapp.ui import MainWindow
+    from stationapp.ui.main_window import MainWindow
 
     window = MainWindow(context)
     window.show()

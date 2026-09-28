@@ -37,7 +37,7 @@ def make_demo_rf_test(mac_addresses: list[str], *, seconds_per_device: float = 0
             if monotonic() - started >= timeout_seconds:
                 raise OperationTimeout(f"RF test exceeded {timeout_seconde:.1f} seconds")
                 
-            report_progress(ProgessEvent(
+            report_progress(ProgressEvent(
                                 operation_id=operation_id,
                                 stage="rf_connect",
                                 message=f"Connecting to {mac}",
@@ -52,7 +52,7 @@ def make_demo_rf_test(mac_addresses: list[str], *, seconds_per_device: float = 0
             while remaining > 0:
                 token.raise_if_cancelled()
                 
-                if monotonic() - started >= timeout_seconde:
+                if monotonic() - started >= timeout_seconds:
                     raise OperationTimeout(f"RF test exceeded {timeout_seconds:.1f} seconds")
                     
                 interval = min(0.05, remaining)
@@ -62,7 +62,7 @@ def make_demo_rf_test(mac_addresses: list[str], *, seconds_per_device: float = 0
             result = DemoDeviceResult(mac=mac, connected=True, disconnected=True)
             results.append(result)
             
-            report_progress(ProgessEvent(
+            report_progress(ProgressEvent(
                             operation_id=operation_id,
                             stage="rf_complete",
                             message=f"{mac} connected and disconnected",

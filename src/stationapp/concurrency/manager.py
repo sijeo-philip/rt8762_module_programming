@@ -67,7 +67,7 @@ class OperationManager(QObject):
             raise OperationConflict(f"Operation {operation_id} is already running.")
             
         thread = QThread(self)
-        worker = OperationWorker(operation, operation_id)
+        worker = OperationWorker(operation, operation_id=operation_id)
         worker.moveToThread(thread)
         
         handle = OperationHandle(thread, worker, self)

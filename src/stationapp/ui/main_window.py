@@ -27,6 +27,9 @@ from stationapp.services.health import Healthcheck, Severity, run_all_checks, su
 
 import logging
 from PyQt6.QtWidgets import QProgressBar
+from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtWidgets import QMessageBox
+
 
 from stationapp.concurrency.events import( OperationFailure, OperationResult, ProgressEvent)
 from stationapp.concurrency.manager import OperationHandle, OperationManager
@@ -133,7 +136,7 @@ class MainWindow(QMainWindow):
         
         self._cancel_demo_button = QPushButton("Cancel")
         self._cancel_demo_button.setEnabled(False)
-        self._cancel_demo_button.clicked.connect(self.connect_demo_rf_test)
+        self._cancel_demo_button.clicked.connect(self.cancel_demo_rf_test)
         worker_buttons.addWidget(self._cancel_demo_button)
         
         worker_buttons.addStretch()
@@ -164,3 +167,136 @@ class MainWindow(QMainWindow):
 
             for col, item in enumerate((name_item, status_item, detail_item)):
                 self._checks_table.setItem(row, col, item)
+                
+                
+    def start_demo_rf_test(self) -> None:
+        if self._active_demo_id is not None:
+            return
+            
+        mac_addresses = [
+            f"AA:BB:CC:DD:EE:{suffix:02x}"
+            for suffix in range(1, 9)
+        ]
+        
+        operation_id = "demo-rf-test"
+        
+        def configure(worker) -> None:
+            worker.started.connect(self._on_operation_started)
+            worker.progress.connect(self._on_operation_progress)
+            worker.succeeded.connect(self._on_operation_succeeded)
+            worker.failed.connect(self._on_operation_failed)
+            worker.cancelled.connect(self._on_operation_cancelled)
+            worker.finished.connect(self._on_operation_finished)
+            
+        try:
+            handle = self._operation_manager.start(make_demo_rf_test(mac_addresses), operation_id=operation_id, configure=configure)
+        except Exception as exc:
+            logger.exception("Could not start demonstration operation")
+            self._operation_label.setText(f"Could not start: {exc}")
+            return
+            
+        self._active_demo_id = handle.operation_id
+        self._start_demo_button.setEnabled(False)
+        self._cancel_demo_button.setEnabled(True)
+        self._operation_progress.setValue(0)
+        
+        
+    def cancel_demo_rf_test(self) -> None:
+        if self._active_demo_id is None:
+            return
+            
+        self._operation_label.setText("Cancellation Requested ...")
+        self._cancel_demo_button.setEnabled(False)
+        self._operation_manager.cancel(self._active_demo_id)
+        
+    def _on_operation_started(self, operation_id: str) -> None:
+        if operation_id != self._active_demo_id:
+            return 
+        self._operation_label.setText("RF test started")
+        
+    def _on_operation_progress(self, event: ProgressEvent) -> None:
+        if event.operation_id != self._active_demo_id:
+            return 
+        
+        self._operation_label.setText(event.message)
+        
+        if event.completed is not None:
+            self._operation_progress.setValue(event.completed)
+            
+    def _on_operation_succeeded(self, result: OperationResult) -> None:
+        if result.operation_id != self._active_demo_id:
+            return 
+            
+        passed = sum(1 for item in result.value if item.connected and item.disconnected)
+        self._operation_label.setText(f"RF test completed: {passed}/{len(result.value)} passed."
+                                      f"in {result.elapsed_seconds:.2f}s")
+                                      
+    def _on_operation_failed(self, failure: OperationFailure) -> None:
+        if failure.operation_id != self._active_demo_id:
+            return 
+            
+        self._operation_label.setText(f"Failed: {failure.user_message}")
+        logger.error("Operation failure detail | operation_id=%s type=%s detail=%s",failure.operation_id, failure.error_type, failure.technical_message)
+        
+        
+    def _on_operation_cancelled(self, operation_id:str) -> None:
+        if operation_id != self._active_demo_id:
+            return 
+            
+        self._operation_label.setText("RF Test Cancelled")
+        
+    def _on_operation_finished(self, operation_id: str) -> None:
+        if operation_id != self._active_demo_id:
+            return 
+        self._active_demo_id= None
+        
+        if not self._closing:
+            self._start_demo_button.setEnabled(True)
+            self._cancel_demo_button.setEnabled(False)
+            
+            
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """ Request cooperative shutdown of all active oeprations """
+        
+        if self._operation_manager.active_count == 0:
+            event.accept()
+            return 
+            
+            
+        answer = QMessageBox.question(self, "Operations are still running",
+                (
+                    "A station operation is still active.\n\n"
+                    "Cancel the operation and close the application?"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+        )
+        
+        if answer is QMessageBox.StandardButton.No:
+            event.ignore()
+            return 
+            
+        self._closing = True
+        self._timer.stop()
+        self._operation_manager.cancel_all()
+        
+        # The demo operation observed cancellation every 50ms. Real drivers
+        # receive their own shutdown budgets in Lesson 7-10
+        
+        if not self._operation_manager.wait_for_all(timeout_ms=5_000):
+            self._closing = False
+            self._timer.start()
+            QMessageBox.critical(self, "Unable to close safely", 
+                                 (
+                                    "An operation did not stop safely within 5 seconds. \n"
+                                    "The application will remain open."
+                                 ),
+                            )
+            event.ignore()
+            return 
+            
+        event.accept()
+        
+        
+            
+            

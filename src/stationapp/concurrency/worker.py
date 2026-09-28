@@ -68,7 +68,7 @@ class OperationWorker(QObject):
         try:
             self._token.raise_if_cancelled()
             
-            value = self.operation(self.operation_id, self._token, self.progress.emit)
+            value = self._operation(self.operation_id, self._token, self.progress.emit)
             self._token.raise_if_cancelled()
             result = OperationResult(operation_id=self.operation_id, value=value, started_at = started_at, completed_at = datetime.now(timezone.utc))
             self.succeeded.emit(result)
@@ -77,7 +77,7 @@ class OperationWorker(QObject):
             logger.info("Operation succeeded | operation_id=%s elapsed=%.3fs",self.operation_id, result.elapsed_seconds)
             
         except OperationCancelled:
-            logger.info("Operation Cancelled | operation_id=%s, self.operation_id)
+            logger.info("Operation Cancelled | operation_id=%s", self.operation_id)
             self.cancelled.emit(self.operation_id)
             
         except OperationTimeout as exc:
@@ -96,8 +96,8 @@ class OperationWorker(QObject):
                                 user_message=str(exc),
                                 technical_message=str(exc)))
         except Exception as exc:
-            technical = "".join(trackback.format_exception(type(exc), exc, exc.__traceback__))
-            logger.exception("Unexcepted Operation Failure | operation_id=%s", self.operation_id)
+            technical = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            logger.exception("Unexcepted operation failure | operation_id=%s", self.operation_id)
             self.failed.emit(OperationFailure(
                                 operation_id=self.operation_id,
                                 error_type=type(exc).__name__,

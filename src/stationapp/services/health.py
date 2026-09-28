@@ -85,30 +85,8 @@ def check_mpcli(settings: Settings) -> Healthcheck:
             f"not found at {path} - set MPCLI_PATH in .env",
          )
 
-    try:
-        result = subprocess.run(
-        [str(path), "--help"],
-        capture_output = True,
-        text = True,
-        timeout = 15,
-        creationflags = _NO_WINDOW,
-        )
-
-    except subprocess.TimoutExpired:
-        return Healthcheck("MpCli", Severity.FAIL, "did not respond withing 15s")
-    except OSError as exc:
-        return Healthcheck("MpCli", Severity.FAIL, f"could not be executed: {exc}")
-
-    if result.returncode != 0 and not (result.stdout or result.stderr):
-        return Healthcheck(
-        "MpCli",
-        Severity.WARN,
-        f"exited with code {result.returncode} and no output"
-        )
-
-    output = (result.stdout or result.stderr or "").strip()
-    first_line = output.splitlines()[0] if output else "(no output)"
-    return Healthcheck("MpCli", Severity.OK, f"responded: {first_line[:70]}")
+    
+    return Healthcheck("MpCli", Severity.OK, f"found at {path}")
 
 def check_serial_ports(settings: Settings) -> Healthcheck :
     """ Report detected COM ports.

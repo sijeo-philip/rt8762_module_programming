@@ -22,8 +22,9 @@ from stationapp.domain.mac import (
 )
 
 class DeviceState(str, Enum):
+    
     EMPTY = "EMPTY"
-    QR_BOUND = "QR_BOUND"
+    
     PORT_BOUND = "PORT_BOUND"
     
     STOCK_MAC_RESERVED = "STOCK_MAC_RESERVED"
@@ -39,7 +40,11 @@ class DeviceState(str, Enum):
     FUNCTIONAL_TEST_PASSED = "FUNCTIONAL_TEST_PASSED"
     FUNCTIONAL_TEST_FAILED = "FUNCTIONAL_TEST_FAILED"
     
+    QR_BOUND = "QR_BOUND"
     HOLD = "HOLD"
+    
+    
+    
     
 @dataclass(slots=True)
 class FunctionalResults:
@@ -96,40 +101,111 @@ class JigSlot:
         return self.state is DeviceState.HOLD
         
     def bind_module(self, module_qr: str) -> None:
+        """Bind the scanned Module QR after all tests have completed.
+
+        The operator scans modules physically in slot order. This method binds
+        the QR to the slot and to both MAC genealogy records.
+        """
+        if self.state not in {
+            DeviceState.FUNCTIONAL_TEST_PASSED,
+            DeviceState.FUNCTIONAL_TEST_FAILED,
+        }:
+            raise InvalidDeviceTransition(
+                f"Module QR can be scanned only after functional testing; "
+                f"slot {self.number} is {self.state.value}"
+            )
+
         qr = module_qr.strip()
-        
-        if not qr: 
+
+        if not qr:
             raise ValueError("module QR cannot be empty")
-            
+
         if self.module_qr is not None and self.module_qr != qr:
-            raise SlotAlreadyOccupied(f"Slot {self.number} already contains {self.module_qr}")
-            
+            raise SlotAlreadyOccupied(
+                f"Slot {self.number} is already linked to "
+                f"Module QR {self.module_qr}"
+            )
+
+        if self.stock_mac_record is None:
+            raise InvalidDeviceTransition(
+                f"Slot {self.number} has no stock MAC genealogy"
+            )
+
+        if self.pricol_mac_record is None:
+            raise InvalidDeviceTransition(
+                f"Slot {self.number} has no Pricol MAC genealogy"
+            )
+
+        if self.stock_mac_record.status is not MacStatus.CONFIRMED:
+            raise InvalidDeviceTransition(
+                f"Slot {self.number} stock MAC is not confirmed"
+            )
+
+        if self.pricol_mac_record.status is not MacStatus.CONFIRMED:
+            raise InvalidDeviceTransition(
+                f"Slot {self.number} Pricol MAC is not confirmed"
+            )
+
+        # Bind both before changing the slot state. The repository will later
+        # provide database transaction atomicity for this operation.
+        self.stock_mac_record.bind_module_qr(qr)
+        self.pricol_mac_record.bind_module_qr(qr)
+
         self.module_qr = qr
         self.state = DeviceState.QR_BOUND
+
         
     def bind_port(self, port_identity: str) -> None:
-        self._require_module()
-        
+        """Bind a stable hardware-port identity before programming."""
+        if self.state not in {
+            DeviceState.EMPTY,
+            DeviceState.PORT_BOUND,
+        }:
+            raise InvalidDeviceTransition(
+                f"Port cannot be bound while slot {self.number} "
+                f"is {self.state.value}"
+            )
+
         identity = port_identity.strip()
+
         if not identity:
             raise ValueError("port identity cannot be empty")
+
+        if (
+            self.port_identity is not None
+            and self.port_identity != identity
+        ):
+            raise InvalidDeviceTransition(
+                f"Slot {self.number} is already bound to port "
+                f"{self.port_identity}"
+            )
+
         self.port_identity = identity
-        if self.state is DeviceState.QR_BOUND:
-            self.state = DeviceState.PORT_BOUND
+        self.state = DeviceState.PORT_BOUND
+
             
             
     def assign_stock_mac(self, mac_record: AllocatedMac) -> None:
-        self._require_module()
-        
+        """Attach a repository-reserved stock MAC to this physical slot."""
+        self._require_state(DeviceState.PORT_BOUND)
+
         if self.stock_mac_record is not None:
-            raise MacAlreadyAssigned(f"Slot {self.number} already has stock MAC {self.stock_mac}")
-            
+            raise MacAlreadyAssigned(
+                f"Slot {self.number} already has stock MAC "
+                f"{self.stock_mac}"
+            )
+
         if mac_record.purpose is not MacPurpose.STOCK_RF_TEST:
-            raise ValueError("Expected a STOCK_RF_TEST MAC")
-            
+            raise InvalidDeviceTransition(
+                f"MAC {mac_record.address} has purpose "
+                f"{mac_record.purpose.value}; STOCK_RF_TEST required"
+            )
+
         self._validate_reservation_owner(mac_record)
+
         self.stock_mac_record = mac_record
         self.state = DeviceState.STOCK_MAC_RESERVED
+
         
     def begin_stock_programming(self) -> None:
         self._require_state(DeviceState.STOCK_MAC_RESERVED)
@@ -167,23 +243,34 @@ class JigSlot:
         
         
     def assign_pricol_mac(self, mac_record: AllocatedMac) -> None:
+        """Attach a different production MAC after stock RF confirmation."""
         self._require_state(DeviceState.STOCK_RF_CONFIRMED)
-        
+
         if self.pricol_mac_record is not None:
-            raise MacAlreadyAssigned(f"Slot {self.number} already has Pricol MAC {self.pricol_mac}")
-            
+            raise MacAlreadyAssigned(
+                f"Slot {self.number} already has Pricol MAC "
+                f"{self.pricol_mac}"
+            )
+
         if mac_record.purpose is not MacPurpose.PRICOL_PRODUCTION:
-            raise ValueError("Expected a PRICOL_PRODUCTION MAC")
-            
+            raise InvalidDeviceTransition(
+                f"MAC {mac_record.address} has purpose "
+                f"{mac_record.purpose.value}; PRICOL_PRODUCTION required"
+            )
+
         self._validate_reservation_owner(mac_record)
-        
+
         if mac_record.address == self.stock_mac:
-            reason = (f"Pricol MAC {mac_record.address} equals the temporary stock MAC for slot {self.number}")
+            reason = (
+                f"Pricol MAC {mac_record.address} equals temporary stock "
+                f"MAC for slot {self.number}"
+            )
             self.place_on_hold(reason)
             raise VerificationMismatch(reason)
-            
+
         self.pricol_mac_record = mac_record
         self.state = DeviceState.PRICOL_MAC_RESERVED
+
         
     def begin_pricol_programming(self) -> None:
         self._require_state(DeviceState.PRICOL_MAC_RESERVED)
@@ -246,23 +333,40 @@ class JigSlot:
         self.hold_reason = text
         self.state = DeviceState.HOLD
         
-    def _validate_reservation_owner(self, mac_record: AllocatedMac) -> None:
-        self._require_module()
         
+    def _validate_reservation_owner(self, mac_record: AllocatedMac) -> None:
+        """Validate batch/slot reservation ownership.
+
+        QR ownership is deliberately absent until the post-test scan.
+        """
         if mac_record.status is not MacStatus.RESERVED:
-            raise InvalidDeviceTransition(f"MAC {mac_record.address} must be RESERVED before assignment")
-            
-        if mac_record.module_qr != self.module_qr:
-            raise InvalidDeviceTransition(f"MAC {mac_record.address} was reserved for {mac_record.module_qr}, not {self.module_qr}")
-            
+            raise InvalidDeviceTransition(
+                f"MAC {mac_record.address} must be RESERVED before assignment"
+            )
+
+        if mac_record.batch_id is None:
+            raise InvalidDeviceTransition(
+                f"MAC {mac_record.address} has no batch owner"
+            )
+
         if mac_record.slot_number != self.number:
-            raise InvalidDeviceTransition(f"MAC {mac_record.address} was reserved for slot {mac_record.slot_number}, not {self.number}")
+            raise InvalidDeviceTransition(
+                f"MAC {mac_record.address} was reserved for slot "
+                f"{mac_record.slot_number}, not slot {self.number}"
+            )
+
+        if mac_record.module_qr is not None:
+            raise InvalidDeviceTransition(
+                f"MAC {mac_record.address} was unexpectedly linked to "
+                f"Module QR {mac_record.module_qr} before post-test scanning"
+            )
+
             
             
-    def _require_module(self) -> None:
+    """def _require_module(self) -> None:
         if self.module_qr is None:
             raise SlotNotBound(f"Slot {self.number} has no Module QR")
-            
+     """       
     def _require_state(self, expected: DeviceState) -> None:
         if self.state is not expected:
             raise InvalidDeviceTransition(f"Slot {self.number} must be {expected.value}; current state is {self.state.value}")

@@ -58,7 +58,6 @@ def test_authorised_mac_lifecycle() -> None:
 
     record.reserve(
         batch_id="BATCH-1",
-        module_qr="MODULE-1",
         slot_number=1,
     )
     assert record.status is MacStatus.RESERVED
@@ -83,7 +82,6 @@ def test_confirmed_mac_cannot_be_reused() -> None:
 
     record.reserve(
         batch_id="BATCH-1",
-        module_qr="MODULE-1",
         slot_number=1,
     )
     record.begin_programming()
@@ -93,7 +91,6 @@ def test_confirmed_mac_cannot_be_reused() -> None:
     with pytest.raises(InvalidMacTransition):
         record.reserve(
             batch_id="BATCH-2",
-            module_qr="MODULE-2",
             slot_number=1,
         )
 
@@ -108,7 +105,6 @@ def test_uncertain_programming_places_mac_on_hold() -> None:
 
     record.reserve(
         batch_id="BATCH-1",
-        module_qr="MODULE-1",
         slot_number=1,
     )
     record.begin_programming()
@@ -116,3 +112,44 @@ def test_uncertain_programming_places_mac_on_hold() -> None:
 
     assert record.status is MacStatus.HOLD
     assert "lost power" in record.hold_reason
+    
+    
+@pytest.mark.unit
+def test_module_qr_can_be_bound_after_mac_confirmation() -> None:
+    record = AllocatedMac(
+        allocation_id="ALLOC-1",
+        address=MacAddress.parse("AA:BB:CC:00:00:01"),
+        purpose=MacPurpose.PRICOL_PRODUCTION,
+    )
+
+    record.reserve(
+        batch_id="BATCH-1",
+        slot_number=1,
+    )
+    record.begin_programming()
+    record.mark_issued()
+    record.confirm()
+
+    assert record.module_qr is None
+
+    record.bind_module_qr("MODULE-001")
+
+    assert record.module_qr == "MODULE-001"
+
+@pytest.mark.unit
+def test_mac_qr_cannot_be_changed_after_binding() -> None:
+    record = AllocatedMac(
+        allocation_id="ALLOC-1",
+        address=MacAddress.parse("AA:BB:CC:00:00:01"),
+        purpose=MacPurpose.PRICOL_PRODUCTION,
+    )
+
+    record.reserve(
+        batch_id="BATCH-1",
+        slot_number=1,
+    )
+    record.bind_module_qr("MODULE-001")
+
+    with pytest.raises(InvalidMacTransition):
+        record.bind_module_qr("MODULE-002")
+

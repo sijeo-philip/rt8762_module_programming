@@ -17,43 +17,47 @@ from stationapp.domain.errors import (
     VerificationMismatch,
 )
 
-from stationapp.domain.mac import AllocatedMac, MacPurpose
+from stationapp.domain.mac import AllocatedMac, MacPurpose, MacStatus
 from stationapp.domain.slot import DeviceState, JigSlot
 
 class BatchState(str, Enum):
     CREATED = "CREATED"
-    LOADING = "LOADING"
-    MODULES_BOUND = "MODULES_BOUND"
+
+    PORT_BINDING = "PORT_BINDING"
     PORTS_BOUND = "PORTS_BOUND"
-    
+
     STOCK_MACS_RESERVED = "STOCK_MACS_RESERVED"
     AWAITING_STOCK_PROGRAM_MODE = "AWAITING_STOCK_PROGRAM_MODE"
     STOCK_PROGRAMMING = "STOCK_PROGRAMMING"
     STOCK_PROGRAMMED = "STOCK_PROGRAMMED"
-    
+
     AWAITING_STOCK_RF_MODE = "AWAITING_STOCK_RF_MODE"
     STOCK_RF_TESTING = "STOCK_RF_TESTING"
     STOCK_RF_CONFIRMED = "STOCK_RF_CONFIRMED"
-    
+
     PRICOL_MACS_RESERVED = "PRICOL_MACS_RESERVED"
     AWAITING_PRICOL_PROGRAM_MODE = "AWAITING_PRICOL_PROGRAM_MODE"
     PRICOL_PROGRAMMING = "PRICOL_PROGRAMMING"
     PRICOL_PROGRAMMED = "PRICOL_PROGRAMMED"
     PRICOL_READBACK_VERIFIED = "PRICOL_READBACK_VERIFIED"
-    
+
     AWAITING_FUNCTIONAL_TEST_MODE = "AWAITING_FUNCTIONAL_TEST_MODE"
     AWAITING_PRICOLAPP_RESET = "AWAITING_PRICOLAPP_RESET"
     PRICOLAPP_TESTING = "PRICOLAPP_TESTING"
     AWAITING_PRICOLDFU_RESET = "AWAITING_PRICOLDFU_RESET"
     PRICOLDFU_TESTING = "PRICOLDFU_TESTING"
     FUNCTIONAL_TEST_COMPLETE = "FUNCTIONAL_TEST_COMPLETE"
-    
+
+    QR_SCANNING = "QR_SCANNING"
+    QR_BOUND = "QR_BOUND"
+
     COMMITTED = "COMMITTED"
     UPLOAD_PENDING = "UPLOAD_PENDING"
     UPLOADED = "UPLOADED"
-    
+
     HOLD = "HOLD"
     ABORTED = "ABORTED"
+
     
     
 @dataclass(slots=True)
@@ -89,9 +93,6 @@ class Batch:
     def ordered_slots(self) -> tuple[JigSlot, ...]:
         return tuple(self.slots[number] for number in sorted(self.slots))
         
-    @property
-    def all_modules_bound(self) -> bool:
-        return all(slot.module_qr is not None for slot in self.ordered_slots)
         
     @property
     def all_ports_bound(self) -> bool:
@@ -103,53 +104,56 @@ class Batch:
         
     @property
     def can_commit(self) -> bool:
-        return ( self.state is BatchState.FUNCTIONAL_TEST_COMPLETE and not self.any_slot_held
-                 and all(
-                    slot.state in {
-                        DeviceState.FUNCTIONAL_TEST_PASSED,
-                        DeviceState.FUNCTIONAL_TEST_FAILED,
-                    }
-                    for slot in self.ordered_slots
-                )
+        """A batch is committable only after all post-test QR scans."""
+        return (
+            self.state is BatchState.QR_BOUND
+            and not self.any_slot_held
+            and all(
+                slot.module_qr is not None
+                and slot.functional.complete
+                and slot.state is DeviceState.QR_BOUND
+                for slot in self.ordered_slots
             )
-            
+        )
+
     # ---------------------------------------------------------------------------
     # Loading and identity binding
     # ---------------------------------------------------------------------------
     
-    def begin_loading(self) -> None:
-        self._transition(BatchState.CREATED, BatchState.LOADING)
         
-    def bind_module(self, slot_number: int, module_qr: str ) -> None:
-        self._require_state(BatchState.LOADING)
-        qr = module_qr.strip()
-        
-        if not qr:
-            raise ValueError("module QR cannot be empty")
+    def begin_port_binding(self) -> None:
+        self._transition(
+            BatchState.CREATED,
+            BatchState.PORT_BINDING,
+        )
             
-        for slot in self.ordered_slots:
-            if slot.number != slot_number and slot.module_qr == qr:
-                raise DuplicateModuleQr(f"Module QR {qr} is already in slot {slot.number}")
-                    
-        self._get_slot(slot_number).bind_module(qr)
-            
-        if self.all_modules_bound:
-            self.state = BatchState.MODULES_BOUND
-            
-    def bind_port( self, slot_number: int, port_identity: str) -> None:
-        if self.state not in { BatchState.MODULES_BOUND, BatchState.PORTS_BOUND }:
-            raise InvalidBatchTransition(f"Ports cannot be bound while batch is {self.state.value}")
-            
+    def bind_port(self, slot_number: int, port_identity: str) -> None:
+        if self.state not in {
+            BatchState.PORT_BINDING,
+            BatchState.PORTS_BOUND,
+        }:
+            raise InvalidBatchTransition(
+                f"Ports cannot be bound while batch is "
+                f"{self.state.value}"
+            )
+
         identity = port_identity.strip()
+
         if not identity:
             raise ValueError("port identity cannot be empty")
-            
+
         for slot in self.ordered_slots:
-            if ( slot.number !=slot_number and slot.port_identity == identity):
-                raise InvalidBatchTransition(f"Port identity {identity} is already bound to slot {slot.number}")
-        
+            if (
+                slot.number != slot_number
+                and slot.port_identity == identity
+            ):
+                raise InvalidBatchTransition(
+                    f"Port identity {identity} is already bound "
+                    f"to slot {slot.number}"
+                )
+
         self._get_slot(slot_number).bind_port(identity)
-        
+
         if self.all_ports_bound:
             self.state = BatchState.PORTS_BOUND
             
@@ -293,8 +297,64 @@ class Batch:
         self._get_slot(slot_number).record_pricol_dfu(passed)
         
         if all( slot.functional.complete for slot in self.ordered_slots):
+            
             self.state = BatchState.FUNCTIONAL_TEST_COMPLETE
             
+            
+    def begin_qr_scanning(self) -> None:
+        """Open the final identity-binding stage after all tests finish."""
+        self._transition(
+            BatchState.FUNCTIONAL_TEST_COMPLETE,
+            BatchState.QR_SCANNING,
+            )
+
+
+    @property
+    def next_qr_slot(self) -> int | None:
+        """Return the physical slot expected for the next scanner input."""
+        for slot in self.ordered_slots:
+            if slot.module_qr is None:
+                return slot.number
+
+        return None
+
+
+    def scan_module_qr(self, module_qr: str) -> int:
+        """Bind one scanner input to the next physical slot.
+
+        The operator must scan the module physically present in the slot shown
+        by next_qr_slot. The scanner supplies only the QR text; it does not
+        select a slot.
+        """
+        self._require_state(BatchState.QR_SCANNING)
+
+        qr = module_qr.strip()
+
+        if not qr:
+            raise ValueError("module QR cannot be empty")
+
+        for slot in self.ordered_slots:
+            if slot.module_qr == qr:
+                raise DuplicateModuleQr(
+                    f"Module QR {qr} is already linked to "
+                    f"slot {slot.number}"
+                )
+
+        slot_number = self.next_qr_slot
+
+        if slot_number is None:
+            raise InvalidBatchTransition(
+                "All Module QRs have already been scanned"
+            )
+
+        slot = self.slots[slot_number]
+        slot.bind_module(qr)
+
+        if self.next_qr_slot is None:
+            self.state = BatchState.QR_BOUND
+
+        return slot_number
+  
     #--------------------------------------------------------------------------------------
     # Commit and upload lifecycle
     #--------------------------------------------------------------------------------------
@@ -334,31 +394,59 @@ class Batch:
     # -------------------------------------------------------------------------------------------
     
     def _validate_reservation_set(self, records: tuple[AllocatedMac, ...], purpose: MacPurpose) -> None:
+        """Validate a complete repository-reserved jig load."""
         if len(records) != self.slot_count:
-            raise InvalidBatchTransition(f"Expected {self.slot_count} reserved MACs, received {len(records)}")
-            
-        addresses = [ record.address for record in records ]
+            raise InvalidBatchTransition(
+                f"Expected {self.slot_count} reserved MACs, "
+                f"received {len(records)}"
+            )
+
+        addresses = [record.address for record in records]
+
         if len(set(addresses)) != len(addresses):
-            raise DuplicateMacAddress("Reservation set contains duplicate MACs")
-            
-        slots = [record.slot_number for record in records]
+            raise DuplicateMacAddress(
+                "Reservation set contains duplicate MAC addresses"
+            )
+
+        supplied_slots = [record.slot_number for record in records]
         expected_slots = set(self.slots)
-        
-        if set(slots) != expected_slots:
-            raise InvalidBatchTransition(f"Reservation slots must be {sorted(expected_slots)}; received {sorted(slot for slot in slots if slot is not None)}")
-            
+
+        if set(supplied_slots) != expected_slots:
+            display_slots = sorted(
+                slot
+                for slot in supplied_slots
+                if slot is not None
+            )
+            raise InvalidBatchTransition(
+                f"Reservation slots must be "
+                f"{sorted(expected_slots)}; received {display_slots}"
+            )
+
         for record in records:
             if record.purpose is not purpose:
-                raise InvalidBatchTransition(f"MAC {record.address} has purpose {record.purpose.value}, expected {purpose.value}")
-                
+                raise InvalidBatchTransition(
+                    f"MAC {record.address} has purpose "
+                    f"{record.purpose.value}; expected {purpose.value}"
+                )
+
+            if record.status is not MacStatus.RESERVED:
+                raise InvalidBatchTransition(
+                    f"MAC {record.address} must be RESERVED; "
+                    f"current status is {record.status.value}"
+                )
+
             if record.batch_id != self.batch_id:
-                raise InvalidBatchTransition(f"MAC {record.address} belong to batch {record.batch_id}, expected {self.batch_id}")
-                
-            assert record.slot_number is not None
-            slot = self.slots[record.slot_number]
-            
-            if record.module_qr != slot.module_qr:
-                raise InvalidBatchTransition(f"MAC {record.address} is reserved for {record.module_qr}, but slot {slot.number} contains {slot.module_qr}")
+                raise InvalidBatchTransition(
+                    f"MAC {record.address} belongs to batch "
+                    f"{record.batch_id}; expected {self.batch_id}"
+                )
+
+            if record.module_qr is not None:
+                raise InvalidBatchTransition(
+                    f"MAC {record.address} was linked to Module QR "
+                    f"{record.module_qr} before post-test scanning"
+                )
+
                 
     def _transition(self, expected: BatchState, target: BatchState) -> None:
         self._require_state(expected)

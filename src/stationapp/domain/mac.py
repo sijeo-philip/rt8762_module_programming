@@ -105,7 +105,11 @@ _ALLOWED_MAC_TRANSITIONS: dict[MacStatus, frozenset[MacStatus]] = {
 
 @dataclass(slots=True)
 class AllocatedMac:
-    """One MAC Imported from an authourized server allocation."""
+    """One MAC Imported from an authourized server allocation. 
+    
+    MAC Ownership is initially linked to batch + slot. Module QR is attached after all programming
+    and functional tests have completed.
+    """
     
     allocation_id: str
     address: MacAddress
@@ -116,20 +120,36 @@ class AllocatedMac:
     slot_number: int | None = None
     hold_reason: str | None = None
     
-    def reserve(self, *, batch_id: str, module_qr: str, slot_number: int) -> None:
+    def reserve(self, *, batch_id: str, slot_number: int) -> None:
+    
+        """ Reserve this MAC for one batch and physical jig slot.
+        Moduke QR is intentionally absent because QR scanning occurs after
+        programming and testing.
+        """
         if not batch_id.strip():
             raise ValueError("batch_id cannot be empty")
-            
-        if not module_qr.strip():
-            raise ValueError("module_qr cannot be empty")
             
         if slot_number <= 0:
             raise ValueError("slot number must be positive")
             
         self._transition(MacStatus.RESERVED)
         self.batch_id = batch_id.strip()
-        self.module_qr = module_qr.strip()
         self.slot_number = slot_number
+        
+    def bind_module_qr(self, module_qr: str) -> None:
+        """Attach the post-test QR identity to the MAC geanology"""
+        qr = module_qr.strip()
+        
+        if not qr:
+            raise ValueError("module_qr cannot be empty")
+            
+        if self.batch_id is None or self.slot_number is None:
+            raise InvalidMacTransition(f"MAC {self.address} must belong to a batch and slot before a module QR can be attached")
+        
+        if self.module_qr is not None and self.module_qr != qr:
+            raise InvalidMacTransition(f"MAC {self.address} is already linked to {self.module_qr}")
+        self.module_qr = qr
+    
         
     def begin_programming(self) -> None:
         self._transition(MacStatus.PROGRAMMING)
@@ -162,5 +182,8 @@ class AllocatedMac:
             raise InvalidMacTransition(f"MAC {self.address} cannot transition from {self.status.value} to {target.value}")
             
         self.status = target
+        
+    
+        
         
     

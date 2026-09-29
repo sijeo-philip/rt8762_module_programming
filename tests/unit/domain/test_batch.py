@@ -34,20 +34,15 @@ def reserve_records(
     records: list[AllocatedMac] = []
 
     for slot in batch.ordered_slots:
-        assert slot.module_qr is not None
-
-        address = MacAddress.parse(
-            f"{prefix}:{slot.number:02X}"
-        )
-
         record = AllocatedMac(
             allocation_id=f"ALLOC-{purpose.value}",
-            address=address,
+            address=MacAddress.parse(
+                f"{prefix}:{slot.number:02X}"
+            ),
             purpose=purpose,
         )
         record.reserve(
             batch_id=batch.batch_id,
-            module_qr=slot.module_qr,
             slot_number=slot.number,
         )
         records.append(record)
@@ -55,14 +50,8 @@ def reserve_records(
     return tuple(records)
 
 
-def load_batch(batch: Batch) -> None:
-    batch.begin_loading()
-
-    for number in range(1, batch.slot_count + 1):
-        batch.bind_module(
-            number,
-            f"MODULE-{number:03d}",
-        )
+def bind_batch_ports(batch: Batch) -> None:
+    batch.begin_port_binding()
 
     for number in range(1, batch.slot_count + 1):
         batch.bind_port(
@@ -74,7 +63,7 @@ def load_batch(batch: Batch) -> None:
 
 
 def advance_to_stock_rf(batch: Batch) -> None:
-    load_batch(batch)
+    bind_batch_ports(batch)
 
     stock_records = reserve_records(
         batch,
@@ -138,20 +127,12 @@ def advance_to_functional_app_test(batch: Batch) -> None:
     batch.confirm_pricol_app_reset()
 
 
-@pytest.mark.unit
-def test_duplicate_module_qr_is_rejected() -> None:
-    batch = make_batch()
-    batch.begin_loading()
-    batch.bind_module(1, "MODULE-001")
-
-    with pytest.raises(DuplicateModuleQr):
-        batch.bind_module(2, "MODULE-001")
 
 
 @pytest.mark.unit
 def test_stock_reservations_require_known_modules_and_ports() -> None:
     batch = make_batch()
-    load_batch(batch)
+    bind_batch_ports(batch)
 
     records = reserve_records(
         batch,
@@ -170,7 +151,7 @@ def test_stock_reservations_require_known_modules_and_ports() -> None:
 @pytest.mark.unit
 def test_stock_programming_failure_holds_batch() -> None:
     batch = make_batch()
-    load_batch(batch)
+    bind_batch_ports(batch)
 
     records = reserve_records(
         batch,
@@ -319,6 +300,142 @@ def test_functional_failure_can_be_committed() -> None:
 
     assert batch.state is BatchState.FUNCTIONAL_TEST_COMPLETE
     assert batch.slots[2].state is DeviceState.FUNCTIONAL_TEST_FAILED
+
+    # Post-test identity binding is still required.
+    assert not batch.can_commit
+
+    batch.begin_qr_scanning()
+
+    for number in range(1, batch.slot_count + 1):
+        bound = batch.scan_module_qr(f"MODULE-{number:03d}")
+        assert bound == number
+
+    assert batch.state is BatchState.QR_BOUND
+    assert batch.slots[2].state is DeviceState.QR_BOUND
+    assert batch.can_commit
+
+    batch.commit()
+    batch.queue_upload()
+    batch.mark_uploaded()
+
+    assert batch.state is BatchState.UPLOADED
+
+
+
+def advance_to_qr_scanning(batch: Batch) -> None:
+    advance_to_functional_app_test(batch)
+
+    for slot in batch.ordered_slots:
+        batch.record_pricol_app(
+            slot.number,
+            passed=True,
+        )
+
+    batch.confirm_pricol_dfu_reset()
+
+    for slot in batch.ordered_slots:
+        batch.record_pricol_dfu(
+            slot.number,
+            passed=True,
+        )
+
+    assert batch.state is BatchState.FUNCTIONAL_TEST_COMPLETE
+
+    batch.begin_qr_scanning()
+
+    assert batch.state is BatchState.QR_SCANNING
+    assert batch.next_qr_slot == 1
+
+
+@pytest.mark.unit
+def test_qr_scans_bind_to_slots_in_strict_order() -> None:
+    batch = make_batch()
+    advance_to_qr_scanning(batch)
+
+    assert batch.scan_module_qr("MODULE-001") == 1
+    assert batch.next_qr_slot == 2
+
+    assert batch.scan_module_qr("MODULE-002") == 2
+    assert batch.next_qr_slot == 3
+
+    assert batch.scan_module_qr("MODULE-003") == 3
+    assert batch.next_qr_slot == 4
+
+    assert batch.scan_module_qr("MODULE-004") == 4
+
+    assert batch.next_qr_slot is None
+    assert batch.state is BatchState.QR_BOUND
+
+
+@pytest.mark.unit
+def test_duplicate_qr_scan_is_rejected_without_advancing_slot() -> None:
+    batch = make_batch()
+    advance_to_qr_scanning(batch)
+
+    batch.scan_module_qr("MODULE-001")
+
+    assert batch.next_qr_slot == 2
+
+    with pytest.raises(DuplicateModuleQr):
+        batch.scan_module_qr("MODULE-001")
+
+    assert batch.next_qr_slot == 2
+    assert batch.slots[2].module_qr is None
+
+
+@pytest.mark.unit
+def test_batch_cannot_commit_before_all_qrs_are_scanned() -> None:
+    batch = make_batch()
+    advance_to_qr_scanning(batch)
+
+    batch.scan_module_qr("MODULE-001")
+
+    assert not batch.can_commit
+
+    with pytest.raises(InvalidBatchTransition):
+        batch.commit()
+
+
+@pytest.mark.unit
+def test_batch_commits_after_all_post_test_qrs_are_scanned() -> None:
+    batch = make_batch()
+    advance_to_qr_scanning(batch)
+
+    for number in range(1, batch.slot_count + 1):
+        bound_slot = batch.scan_module_qr(
+            f"MODULE-{number:03d}"
+        )
+        assert bound_slot == number
+
+    assert batch.state is BatchState.QR_BOUND
+    assert batch.can_commit
+
+    batch.commit()
+    batch.queue_upload()
+
+    assert batch.state is BatchState.UPLOAD_PENDING
+
+
+@pytest.mark.unit
+def test_duplicate_module_qr_is_rejected_during_post_test_scan() -> None:
+    batch = make_batch()
+    advance_to_qr_scanning(batch)
+
+    batch.scan_module_qr("MODULE-001")
+
+    with pytest.raises(DuplicateModuleQr):
+        batch.scan_module_qr("MODULE-001")
+
+
+@pytest.mark.unit
+def test_complete_batch_can_be_committed_and_queued() -> None:
+    batch = make_batch()
+    advance_to_qr_scanning(batch)
+
+    for number in range(1, batch.slot_count + 1):
+        assert batch.scan_module_qr(f"MODULE-{number:03d}") == number
+
+    assert batch.state is BatchState.QR_BOUND
     assert batch.can_commit
 
     batch.commit()

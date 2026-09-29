@@ -86,20 +86,20 @@ _ALLOWED_MAC_TRANSITIONS: dict[MacStatus, frozenset[MacStatus]] = {
     MacStatus.AVAILABLE: frozenset({
         MacStatus.RESERVED,
         MacStatus.HOLD,
-    })
+    }),
     MacStatus.RESERVED: frozenset({
         MacStatus.PROGRAMMING,
         MacStatus.HOLD,
-    })
+    }),
     MacStatus.PROGRAMMING: frozenset({
         MacStatus.ISSUED,
         MacStatus.HOLD,
-    })
+    }),
     MacStatus.ISSUED: frozenset({
         MacStatus.CONFIRMED,
         MacStatus.HOLD,
-    })
-    MacStatus.CONFIRMED: frozenset()
+    }),
+    MacStatus.CONFIRMED: frozenset(),
         MacStatus.HOLD: frozenset(),
 }
 

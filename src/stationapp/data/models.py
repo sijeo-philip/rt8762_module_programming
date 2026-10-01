@@ -100,7 +100,7 @@ class AllocatedMacModel(Base):
         UniqueConstraint(
             "address",
             name="uq_allocated_macs_address",
-        ), 
+        ),
         CheckConstraint(
             "purpose IN ('STOCK_RF_TEST', 'PRICOL_PRODUCTION')",
             name="ck_allocated_macs_purpose", 

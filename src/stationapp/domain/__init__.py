@@ -34,6 +34,7 @@ from stationapp.domain.slot import (
     FunctionalResults,
     JigSlot,
 )
+from stationapp.domain.audit import AuditRecord
 
 __all__ = [
     "AllocatedMac",
@@ -65,4 +66,5 @@ __all__ = [
     "SlotAlreadyOccupied",
     "SlotNotBound",
     "VerificationMismatch",
+    "AuditRecord",
 ]

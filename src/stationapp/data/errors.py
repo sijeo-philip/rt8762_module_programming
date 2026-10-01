@@ -29,3 +29,9 @@ class NoQrSlotAvailable(PersistenceError):
 
 class IncompleteSlotIdentity(PersistenceError):
       """A slot does not yet have both required MAC identities. """
+
+class DuplicateManufacturingEvent(PersistenceError):
+    """A manufacturing event identifier already exists."""
+
+class DuplicateAuditRecord(PersistenceError):
+    """An audit record identifier already exists."""

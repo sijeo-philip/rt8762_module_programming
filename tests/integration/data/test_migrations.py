@@ -19,6 +19,7 @@ EXPECTED_TABLES = {
     "verification_events",
     "manufacturing_events",
     "audit_records",
+    "operation_logs",
     "outbox",
 }
 

@@ -345,7 +345,64 @@ class AuditRecordModel(Base):
         ),
     )
 
+# =============================================================================
+# Runtime Station Operation History
+# =============================================================================
 
+class OperationLogModel(Base):
+    """Append-only runtime activity recorded by the station application.
+    
+    Operation logs describe what the station software and connected tools
+    were doing. They are distinct from manufacturing geanalogy and from 
+    controlled user audit history.
+
+    """
+
+    __tablename__ = "operation_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    station_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    operation_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    level: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    batch_id: Mapped[str | None] = mapped_column(ForeignKey("batches.batch_id", ondelete="RESTRICT"), nullable=True, index=True)
+    slot_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, index=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            """
+            level IN (
+                'DEBUG',
+                'INFO',
+                'WARNING',
+                'ERROR',
+                'CRITICAL'
+            )
+            """,
+            name="ck_operation_logs_level",
+        ),
+        CheckConstraint(
+            "slot_number IS NULL OR slot_number > 0",
+            name="ck_operation_logs_slot_positive",
+        ),
+        Index(
+            "ix_operation_logs_station_time",
+            "station_id",
+            "occurred_at",
+        ),
+        Index(
+            "ix_operation_logs_batch_slot",
+            "batch_id",
+            "slot_number",
+        ),
+
+    )
 # =============================================================================
 # Durable upload queue
 # =============================================================================

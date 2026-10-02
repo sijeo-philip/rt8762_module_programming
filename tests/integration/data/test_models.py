@@ -53,7 +53,9 @@ def test_expected_tables_exist(database_engine) -> None:
         "verification_events",
         "manufacturing_events",
         "audit_records",
+        "operation_logs",
         "outbox",
+       
     }.issubset(tables)
 
 

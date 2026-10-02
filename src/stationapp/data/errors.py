@@ -35,3 +35,6 @@ class DuplicateManufacturingEvent(PersistenceError):
 
 class DuplicateAuditRecord(PersistenceError):
     """An audit record identifier already exists."""
+
+class DuplicateOperationLog(PersistenceError):
+    """An operation log identifier already exists."""

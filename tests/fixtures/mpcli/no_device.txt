@@ -1,0 +1,12 @@
+CMD[0] ver
+1.0.4.25
+-OK-
+CMD[1] connect COM8
+Connecting COM8 at 115200 OK
+-OK-
+CMD[2] loadfw --autodetect "D:\BLE_Projects\StationApp\MPCliTool_v1.0.4.25_Windows\mpcli_v1.0.4.25_Windows/fw"
+recv hci evt Fail!
+Detect FW Fail
+-ERR: 6-
+disconnect -OK-
+Task execution failure

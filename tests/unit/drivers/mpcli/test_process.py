@@ -123,4 +123,35 @@ def test_cancelled_process_is_stopped() -> None:
 
     assert result.succeeded is False
 
-    
+def test_process_runner_supports_base_arguments(
+    tmp_path: Path,
+) -> None:
+
+    script = (
+        tmp_path
+        / "stub.py"
+    )
+
+    script.write_text(
+        "import sys\n"
+        "print('ARGS=' + '|'.join(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+
+    runner = MpCliProcessRunner(
+        Path(sys.executable),
+        base_arguments=(
+            str(script),
+        ),
+    )
+
+    result = runner.run(
+        (
+            "-V",
+        ),
+        timeout_seconds=2.0,
+    )
+
+    assert result.succeeded is True
+
+    assert "ARGS=-V" in result.stdout

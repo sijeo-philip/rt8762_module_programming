@@ -177,3 +177,5 @@ def test_secret_key_is_redacted_from_logged_command() -> None:
     assert "<REDACTED>" in safe
 
     assert "AABBCCDDEE01" in safe
+
+    

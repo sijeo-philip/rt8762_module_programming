@@ -20,9 +20,12 @@ class MpCliProcessRunner:
     Cancellation and timeout operate only on the external MPCLI process.
     """
 
-    def __init__(self, executable: Path, *, termination_grace_seconds: float = 2.0, poll_interval_seconds: float = 0.05) -> None:
+    def __init__(self, executable: Path, *, base_arguments: Sequence[str] = (), termination_grace_seconds: float = 2.0, poll_interval_seconds: float = 0.05) -> None:
 
         self._executable = executable
+
+        self._base_arguments = tuple(base_arguments)
+
         self._termination_grace_seconds = (
             termination_grace_seconds
         )
@@ -58,6 +61,7 @@ class MpCliProcessRunner:
             )
         command = (
             str(self._executable),
+            *self._base_arguments,
             *tuple(arguments),
         )
         start_time = time.monotonic()

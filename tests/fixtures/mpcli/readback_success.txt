@@ -1,0 +1,20 @@
+Read Val = 6838FEF2
+FW Loader:  RTL8762C_FW_B.bin
+Firmware Loader Size is 18688
+Flash AVL Size is 1224
+Loading firmware...
+Download FW success, prepare to trigger
+Vendor Write OK!
+-OK-
+CMD[3] setbaudrate 1000000
+send set baudrate command!
+set baudrate 1000000 ok!
+-OK-
+EUID: 12 2D 50 41 56 57 36 39 30 38 43 31 C1 05
+CMD[4] dumpmac
+send read [0x00801000 , 0x1000] command!
+Original MAC: 11:11:11:11:11:05
+-OK-
+CMD[5] disconnect
+-OK-
+Task executed successfully

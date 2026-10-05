@@ -1,0 +1,115 @@
+CMD[0] ver
+1.0.4.25
+-OK-
+CMD[1] connect COM8
+Connecting COM8 at 115200 OK
+-OK-
+CMD[2] loadfw --autodetect "D:\BLE_Projects\StationApp\MPCliTool_v1.0.4.25_Windows\mpcli_v1.0.4.25_Windows/fw"
+Read Val = 6838FEF2
+FW Loader:  RTL8762C_FW_B.bin
+Firmware Loader Size is 18688
+Flash AVL Size is 1224
+Loading firmware...
+Download FW success, prepare to trigger
+Vendor Write OK!
+-OK-
+CMD[3] setbaudrate 1000000
+send set baudrate command!
+set baudrate 1000000 ok!
+-OK-
+EUID: 12 2D 50 41 56 57 36 39 30 38 43 31 C1 05
+
+CMD[4] pageerase 0x801000 0x1000
+send erase [0x00801000 , 0x00802000] command!
+
+-OK-
+CMD[5] program C:\Users\Admin\AppData\Local\Temp\RTK_MP_CLI_6780/image_0x801000.bin 0x801000
+payloadSize: 3688
+send write [0x00801000 , 0x0E68] command!
+
+-OK-
+CMD[6] flashverify C:\Users\Admin\AppData\Local\Temp\RTK_MP_CLI_6780/image_0x801000.bin 0x801000
+payloadSize: 3688
+crc16 = 4737
+-OK-
+CMD[7] pageerase 0x802000 0x1000
+send erase [0x00802000 , 0x00803000] command!
+
+-OK-
+CMD[8] program C:\Users\Admin\AppData\Local\Temp\RTK_MP_CLI_6780/image_0x802000.bin 0x802000
+payloadSize: 1024
+send write [0x00802000 , 0x0400] command!
+
+-OK-
+CMD[9] flashverify C:\Users\Admin\AppData\Local\Temp\RTK_MP_CLI_6780/image_0x802000.bin 0x802000
+payloadSize: 1024
+crc16 = FD70
+-OK-
+CMD[10] pageerase 0x80d000 0x1000
+send erase [0x0080D000 , 0x0080E000] command!
+
+-OK-
+CMD[11] program C:\Users\Admin\AppData\Local\Temp\RTK_MP_CLI_6780/image_0x80d000.bin 0x80d000
+payloadSize: 2956
+send write [0x0080D000 , 0x0B8C] command!
+
+-OK-
+CMD[12] flashverify C:\Users\Admin\AppData\Local\Temp\RTK_MP_CLI_6780/image_0x80d000.bin 0x80d000
+payloadSize: 2956
+crc16 = 3DBF
+-OK-
+CMD[13] pageerase 0x803000 0xa000
+send erase [0x00803000 , 0x0080D000] command!
+
+-OK-
+CMD[14] program C:\Users\Admin\AppData\Local\Temp\RTK_MP_CLI_6780/image_0x803000.bin 0x803000
+payloadSize: 40928
+send write [0x00803000 , 0x4000] command!
+
+send write [0x00807000 , 0x4000] command!
+
+send write [0x0080B000 , 0x1FE0] command!
+
+-OK-
+CMD[15] flashverify C:\Users\Admin\AppData\Local\Temp\RTK_MP_CLI_6780/image_0x803000.bin 0x803000
+payloadSize: 40928
+crc16 = E938
+-OK-
+CMD[16] pageerase 0x80e000 0x11000
+send erase [0x0080E000 , 0x00810000] command!
+
+send erase [0x00810000 , 0x0081F000] command!
+
+-OK-
+CMD[17] program C:\Users\Admin\AppData\Local\Temp\RTK_MP_CLI_6780/image_0x80e000.bin 0x80e000
+payloadSize: 65596
+send write [0x0080E000 , 0x4000] command!
+
+send write [0x00812000 , 0x4000] command!
+
+send write [0x00816000 , 0x4000] command!
+
+send write [0x0081A000 , 0x4000] command!
+
+send write [0x0081E000 , 0x003C] command!
+
+-OK-
+CMD[18] flashverify C:\Users\Admin\AppData\Local\Temp\RTK_MP_CLI_6780/image_0x80e000.bin 0x80e000
+payloadSize: 65596
+crc16 = 4EC2
+-OK-
+CMD[19] reboot
+-OK-
+CMD[20] disconnect
+-OK-
+Task executed successfully
+
+
+STDERR:
+
+
+Now performing read-back...
+Readback outcome: READ
+Reported MAC: 00AA12121212
+
+FAIL: programmed MAC was not verified.

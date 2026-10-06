@@ -102,14 +102,13 @@ def test_flash_with_mac_command() -> None:
         "1000000",
 
         "-x",
-        "AABBCCDDEE01",
+        "AA:BB:CC:DD:EE:01",
 
         "-n",
         "11223344",
 
         "-k",
         VALID_KEY,
-
         "-r",
     )
 

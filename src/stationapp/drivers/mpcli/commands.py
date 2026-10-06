@@ -47,9 +47,41 @@ def build_flash_with_mac_command( *, com_port: str, mac: MacAddress, profile: Mp
     """
     port = normalize_com_port(com_port)
     image = _path_text(profile.image_packet)
-    command: list[str] = ["-P",image, "-c", port, "-b", str(profile.baud), "-x", mac.compact, "-n", profile.product_id, "-k", profile.secret_key]
+    command: list[str] = ["-P",image, "-c", port, "-b", str(profile.baud), "-x", mac.colon, "-n", profile.product_id, "-k", profile.secret_key]
     if profile.reboot_after_programming:
         command.append("-r")
+    return tuple(command)
+
+def build_flash_command( *, com_port: str, profile: MpCliProgrammingProfile) -> tuple[str, ...]:
+    """Build one packed-image programming command.
+    The operation:
+        selects COM port,
+        selects baud,
+        provides packed firmware image,
+        provides the configured Product ID,
+        provides the configured Secret Key,
+        optionally reboots after programming.
+        """
+    port = normalize_com_port(com_port)
+    image = _path_text(profile.image_packet)
+    return ("-P", image, "-c", port, "-b", str(profile.baud), "-r" if profile.reboot_after_programming else "")
+
+def build_set_mac_command( *, com_port: str, mac: MacAddress, profile: MpCliProgrammingProfile, reboot: bool = True) -> tuple[str, ...]:
+    """Build standalone MAC programming command."""
+
+    port = normalize_com_port(com_port)
+    command: list[str] = [
+        "-c",
+        port,
+        "-b",
+        str(profile.baud),
+        "-x",
+        mac.colon,
+    ]
+
+    if reboot:
+        command.append("-r")
+
     return tuple(command)
 
 def build_read_mac_command(*, com_port: str, baud: int = 1_000_000) -> tuple[str, ...]:
@@ -57,6 +89,7 @@ def build_read_mac_command(*, com_port: str, baud: int = 1_000_000) -> tuple[str
     port = normalize_com_port(com_port)
     _validate_baud(baud) 
     return ("-c", port, "-b", str(baud), "-I")
+
 
 
 def build_reboot_command(*, com_port: str, baud: int = 1_000_000) -> tuple[str, ...]:

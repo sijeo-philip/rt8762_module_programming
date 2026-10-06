@@ -121,7 +121,7 @@ def test_flash_builds_expected_arguments(
 
     assert "-x" in runner.arguments
 
-    assert "AABBCCDDEE01" in runner.arguments
+    assert "AA:BB:CC:DD:EE:01" in runner.arguments
 
     assert result.succeeded is True
 

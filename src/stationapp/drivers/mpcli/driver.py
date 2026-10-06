@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from stationapp.concurrency.cancellation import (CancellationToken)
 from stationapp.domain.mac import MacAddress
-from stationapp.drivers.mpcli.commands import (build_flash_with_mac_command, build_read_mac_command, build_reboot_command, build_version_command)
+from stationapp.drivers.mpcli.commands import (build_flash_command, build_read_mac_command, build_reboot_command, build_version_command, build_set_mac_command, build_flash_with_mac_command)
 from stationapp.drivers.mpcli.configuration import (MpCliProgrammingProfile)
 from stationapp.drivers.mpcli.errors import (MpCliInvalidCommand)
 from stationapp.drivers.mpcli.process import (MpCliProcessRunner)
@@ -56,3 +56,14 @@ class MpCliDriver:
 
         raw = self.read_mac(com_port=com_port, baud=baud,timeout_seconds=timeout_seconds, cancellation_token=cancellation_token)
         return parse_mac_readback(raw)
+
+    def flash(self, *, com_port: str, profile: MpCliProgrammingProfile, timeout_seconds: float = 60.0, cancellation_token: CancellationToken | None = None) -> ProcessResult:
+        self._require_image(profile.image_packet)
+        args = build_flash_command(com_port=com_port, profile=profile)
+
+        return self._runner.run(args, timeout_seconds=timeout_seconds, cancellation_token=cancellation_token)
+
+    def set_mac(self, *, com_port: str, mac: MacAddress, profile: MpCliProgrammingProfile, timeout_seconds: float = 15.0, cancellation_token: CancellationToken | None = None) -> ProcessResult:
+
+        args = build_set_mac_command(com_port=com_port, mac=mac, profile=profile, reboot=True)
+        return self._runner.run(args, timeout_seconds=timeout_seconds, cancellation_token=cancellation_token)

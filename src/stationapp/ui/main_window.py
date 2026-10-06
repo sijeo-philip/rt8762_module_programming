@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import QMessageBox
 from stationapp.concurrency.events import( OperationFailure, OperationResult, ProgressEvent)
 from stationapp.concurrency.manager import OperationHandle, OperationManager
 from stationapp.services.demo_operation import make_demo_rf_test
+from stationapp.services.serial_topology import (StationSerialTopologyService, SlotTopologyStatus, SerialTopology)
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +46,16 @@ _SEVERITY_COLOURS = {
     Severity.FAIL: QColor("#b3261e")    # red
 }
 
+_TOPOLOGY_COLOURS = {
+    SlotTopologyStatus.READY: QColor("#1b7f3b"),     # Green
+    SlotTopologyStatus.UNBOUND: QColor("#7a7a7a"),    # Grey
+    SlotTopologyStatus.MISSING: QColor("#b3261e"),    # red
+    SlotTopologyStatus.MOVED: QColor("#b26a00")       # Amber
+}
+
 # Health is re-checked on this interval while window is open
 _HEALTH_REFRESH_MS = 30_000
+_SERIAL_TOPOLOGY_REFRESH_MS = 5_000
 
 class MainWindow(QMainWindow):
     def __init__(self, context: AppContext) -> None:
@@ -62,12 +71,16 @@ class MainWindow(QMainWindow):
         self.resize(860, 520)
         self._build_ui()
         self.refresh_health()
+        self.refresh_serial_topology()
         #Periodic re-check: Mpcli can be closed, a USB cable pulled. The
         # station's condition is not a startup time fact
         self._timer = QTimer(self)
         self._timer.setInterval(_HEALTH_REFRESH_MS)
         self._timer.timeout.connect(self.refresh_health)
         self._timer.start()
+        self._topology_timer = QTimer(self)
+        self._topology_timer.setInterval(_SERIAL_TOPOLOGY_REFRESH_MS)
+        self._topology_timer.start()
 
         #-----------------UI CONSTRUCTION -------------------------------
     def _build_ui(self) -> None:
@@ -94,6 +107,35 @@ class MainWindow(QMainWindow):
         self._checks_table.setEditTriggers(
             QTableWidget.EditTrigger.NoEditTriggers
         )
+
+        slot_title = QLabel("Jig Serial Topology")
+        slot_title_font = QFont()
+        slot_title_font.setBold(True)
+        slot_title.setFont(slot_title_font)
+        layout.addWidget(slot_title)
+
+        self._slot_summary_label = QLabel("Checking Jig...")
+        layout.addWidget(self._slot_summary_label)
+        self._slot_table = QTableWidget(0, 5)
+        self._slot_table.setHorizontalHeaderLabels(
+            [
+                "Slot",
+                "Status",
+                "COM Port",
+                "USB Location",
+                "Identity",
+            ]
+        )
+        self._slot_table.verticalHeader().setVisible(False)
+        self._slot_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        slot_header = (self._slot_table.horizontalHeader())
+        slot_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        slot_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        slot_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        slot_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        slot_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self._slot_table)
+
         header = self._checks_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -102,9 +144,13 @@ class MainWindow(QMainWindow):
 
         footer = QHBoxLayout()
         self._stage_label = QLabel(
-        "Stage 1 - Local operation"
-        if not self._context.settings.is_stage_two
-        else f"LAN server: {self._context_settings.lan_server_url}"
+        (
+            "Stage 1 - Local operation"
+            if not self._context.settings.is_stage_two
+            else (
+                    f"LAN server: {self._context_settings.lan_server_url}"
+                )
+            )
         )
         footer.addWidget(self._stage_label)
         footer.addStretch()
@@ -112,6 +158,10 @@ class MainWindow(QMainWindow):
         self._refresh_button = QPushButton("Re-check now")
         self._refresh_button.clicked.connect(self.refresh_health)
         footer.addWidget(self._refresh_button)
+
+        self._refresh_topology_button = QPushButton("Re-check Jig")
+        self._refresh_topology_button.clicked.connect(self.refresh_serial_topology)
+        footer.addWidget(self._refresh_topology_button)
 
         layout.addLayout(footer)
         worker_title = QLabel("Concurrency Demonstration")
@@ -208,6 +258,66 @@ class MainWindow(QMainWindow):
         self._operation_label.setText("Cancellation Requested ...")
         self._cancel_demo_button.setEnabled(False)
         self._operation_manager.cancel(self._active_demo_id)
+
+    def refresh_serial_topology(self) -> None:
+        """Refresh and render current jig serial topology."""
+
+        self._refresh_topology_button.setEnabled(False)
+
+        try:
+            topology = (self._context.serial_topology_service.refresh())
+            self._render_serial_topology(topology)
+
+        except Exception as exc:
+            logger.exception("Serial topology refresh failed")
+
+            self._slot_summary_label.setText(f"Topology check failed: {exc}")
+            self._slot_summary_label.setStyleSheet("color: #b3261e;")
+
+        finally:
+            self._refresh_topology_button.setEnabled(True)
+
+
+    def _render_serial_topology(self, topology: SerialTopology) -> None:
+
+        self._slot_table.setRowCount(len(topology.slots))
+
+        for row, slot in enumerate(topology.slots):
+            slot_item = QTableWidgetItem(str(slot.slot_number))
+            status_item = QTableWidgetItem(slot.status.value)
+            status_item.setForeground(_TOPOLOGY_COLOURS[slot.status])
+            com_item = QTableWidgetItem(slot.com_port or "-")
+            location = "-"
+
+            if slot.port is not None:
+                location = (slot.port.identity.location or "-" )
+
+            location_item = QTableWidgetItem(location)
+            identity_item = QTableWidgetItem(slot.stable_key or "-")
+
+            items = (slot_item, status_item, com_item, location_item, identity_item)
+
+            for column, item in enumerate(items):
+                self._slot_table.setItem(row, column, item)
+
+        if topology.all_ready:
+
+            self._slot_summary_label.setText(f"Jig ready: {topology.ready_count}/"
+            f"{len(topology.slots)} "
+            "serial positions available"
+            )
+
+            self._slot_summary_label.setStyleSheet("color: #1b7f3b;")
+
+        else:
+
+            self._slot_summary_label.setText(
+                f"Jig not ready: "
+                f"{topology.ready_count}/"
+                f"{len(topology.slots)} "
+                "positions available"
+            )
+            self._slot_summary_label.setStyleSheet("color: #b3261e;")
         
     def _on_operation_started(self, operation_id: str) -> None:
         if operation_id != self._active_demo_id:
@@ -262,7 +372,6 @@ class MainWindow(QMainWindow):
             event.accept()
             return 
             
-            
         answer = QMessageBox.question(self, "Operations are still running",
                 (
                     "A station operation is still active.\n\n"
@@ -278,6 +387,7 @@ class MainWindow(QMainWindow):
             
         self._closing = True
         self._timer.stop()
+        self._topology_timer.stop()
         self._operation_manager.cancel_all()
         
         # The demo operation observed cancellation every 50ms. Real drivers
@@ -286,6 +396,7 @@ class MainWindow(QMainWindow):
         if not self._operation_manager.wait_for_all(timeout_ms=5_000):
             self._closing = False
             self._timer.start()
+            self._topology_timer.start()
             QMessageBox.critical(self, "Unable to close safely", 
                                  (
                                     "An operation did not stop safely within 5 seconds. \n"

@@ -20,6 +20,9 @@ from datetime import datetime, timezone
 from stationapp.config import Settings, get_settings
 from stationapp.logging_setup import setup_logging
 
+from stationapp.services.serial_topology import (StationSerialTopologyService, SlotTopologyStatus, SerialTopology)
+from stationapp.services.slot_binding import (SlotBindingService)
+
 logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +37,9 @@ class AppContext:
 
     settings: Settings
     started_at: datetime
+    serial_topology_service: StationSerialTopologyService
+
+
 
     @property
     def app_version(self) -> str:
@@ -42,7 +48,10 @@ class AppContext:
 
     @property
     def station_label(self) -> str:
-        return f"{self.settings.station_id} / (self.settings.jig_id)"
+        return (
+        f"{self.settings.station_id} / "
+        f"{self.settings.jig_id}"
+        )
 
 def bootstrap() -> AppContext:
     """ Initialize the application runtime and return its context.
@@ -53,8 +62,9 @@ def bootstrap() -> AppContext:
         at startup, not run with defaults and corrupt the traceability record.
     """
     settings = get_settings()
-    print(settings.jig_positions)
-    print(type(settings.jig_positions))
+    
+    #print(settings.jig_positions)
+    #print(type(settings.jig_positions))
     app_logger = setup_logging(settings.log_dir, settings.log_level)
     app_logger.info("-"*60)
     app_logger.info(" Station App is %s starting | station=%s jig=%s position=%d",
@@ -62,7 +72,18 @@ def bootstrap() -> AppContext:
     app_logger.info("Host: %s | Python %s", platform.node(), platform.python_version())
     app_logger.info("Stage 2 (LAN SERVER) %s", "configured" if settings.is_stage_two else
     "not configure -- offline mode")
-    context = AppContext( settings=settings, started_at=datetime.now(timezone.utc))
+    binding_service = SlotBindingService(
+            binding_file=(settings.serial_binding_file),
+            station_id=settings.station_id,
+            jig_id=settings.jig_id,
+            jig_positions=settings.jig_positions,
+        )
+    serial_topology_service = (StationSerialTopologyService(binding_service=binding_service))
+    context = AppContext(
+            settings=settings,
+            started_at=datetime.now(timezone.utc),
+            serial_topology_service=serial_topology_service,
+        )
     logger.debug("Bootstrap Complete")
     return context
 

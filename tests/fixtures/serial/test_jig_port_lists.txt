@@ -1,0 +1,50 @@
+Detected serial interfaces
+==========================================================================================
+Device       : COM3
+VID:PID      : -:-
+Serial       : -
+Location     : -
+Manufacturer : Microsoft
+Product      : -
+Stable key   : UNUSABLE: Serial interface has no USB VID/PID and cannot be used as a stable jig identity.
+------------------------------------------------------------------------------------------
+Device       : COM4
+VID:PID      : 0403:6001
+Serial       : BG001SQEA
+Location     : -
+Manufacturer : FTDI
+Product      : -
+Stable key   : USB:0403:6001:SERIAL:BG001SQEA
+------------------------------------------------------------------------------------------
+Device       : COM5
+VID:PID      : -:-
+Serial       : -
+Location     : -
+Manufacturer : Microsoft
+Product      : -
+Stable key   : UNUSABLE: Serial interface has no USB VID/PID and cannot be used as a stable jig identity.
+------------------------------------------------------------------------------------------
+Device       : COM6
+VID:PID      : 0403:6001
+Serial       : BG001SQFA
+Location     : -
+Manufacturer : FTDI
+Product      : -
+Stable key   : USB:0403:6001:SERIAL:BG001SQFA
+------------------------------------------------------------------------------------------
+Device       : COM7
+VID:PID      : 0403:6001
+Serial       : BG001SQMA
+Location     : -
+Manufacturer : FTDI
+Product      : -
+Stable key   : USB:0403:6001:SERIAL:BG001SQMA
+------------------------------------------------------------------------------------------
+Device       : COM8
+VID:PID      : 0403:6001
+Serial       : BG001SQNA
+Location     : -
+Manufacturer : FTDI
+Product      : -
+Stable key   : USB:0403:6001:SERIAL:BG001SQNA
+------------------------------------------------------------------------------------------

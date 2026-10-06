@@ -1,0 +1,52 @@
+{
+  "format_version": 1,
+  "station_id": "STN-01",
+  "jig_id": "JIG-01",
+  "jig_positions": 8,
+  "bindings": [
+    {
+      "slot_number": 1,
+      "stable_key": "USB:0403:6001:SERIAL:BG001SQEA",
+      "vid": 1027,
+      "pid": 24577,
+      "serial_number": "BG001SQEA",
+      "location": null,
+      "description": "USB Serial Port (COM4)",
+      "manufacturer": "FTDI",
+      "product": null
+    },
+    {
+      "slot_number": 2,
+      "stable_key": "USB:0403:6001:SERIAL:BG001SQFA",
+      "vid": 1027,
+      "pid": 24577,
+      "serial_number": "BG001SQFA",
+      "location": null,
+      "description": "USB Serial Port (COM6)",
+      "manufacturer": "FTDI",
+      "product": null
+    },
+    {
+      "slot_number": 3,
+      "stable_key": "USB:0403:6001:SERIAL:BG001SQMA",
+      "vid": 1027,
+      "pid": 24577,
+      "serial_number": "BG001SQMA",
+      "location": null,
+      "description": "USB Serial Port (COM7)",
+      "manufacturer": "FTDI",
+      "product": null
+    },
+    {
+      "slot_number": 4,
+      "stable_key": "USB:0403:6001:SERIAL:BG001SQNA",
+      "vid": 1027,
+      "pid": 24577,
+      "serial_number": "BG001SQNA",
+      "location": null,
+      "description": "USB Serial Port (COM8)",
+      "manufacturer": "FTDI",
+      "product": null
+    }
+  ]
+}

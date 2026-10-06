@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     # --- Local Storage ---
     database_url: str = "sqlite:///./data/station.db"
     log_dir: Path = Path("./logs")
+    serial_binding_file: Path = Path("./data/serial_bindings.json")
+    
 
     # ----External Tools ---
     mpcli_path: Path = Path(r"D:\BLE_Projects\StationApp\MPCliTool_v1.0.4.25_Windows\mpcli_v1.0.4.25_Windows\mpcli.exe")

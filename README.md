@@ -1,0 +1,563 @@
+# Production Workflow
+
+The Station Application shall guide the Supervisor and Operator through a fixed, non-skippable production workflow. The user interface should clearly indicate the current required action, for example by highlighting the active step and enabling only the controls that are valid at that stage.
+
+The objective is to make the production sequence self-explanatory and to minimize the possibility of operator error.
+
+## 1. Supervisor Starts Session
+
+The Supervisor logs in and starts a production session.
+
+During session setup, the Supervisor:
+
+- Identifies the production jig.
+- Binds detected COM ports to physical jig slots.
+- Confirms the jig configuration.
+- Starts the controlled production session.
+
+The COM-port-to-slot binding remains valid for the active session unless explicitly changed by an authorized Supervisor.
+
+---
+
+## 2. Operator Login / Badge
+
+The Operator logs in using the supported login or badge mechanism.
+
+The Operator then configures the batch to be processed on the DUT test jig.
+
+The batch setup includes:
+
+- Batch identification.
+- Stock firmware path.
+- Pricol firmware path.
+- Required programming mode.
+
+The programming mode may be:
+
+- **Stock only**
+- **Stock + Pricol**
+
+If **Stock only** is selected, the Pricol programming and functional-test stages are skipped as described later in this workflow.
+
+---
+
+## 3. Jig Auto-Detection
+
+The application automatically detects the connected jig and associated interfaces.
+
+The detected hardware is compared against the Supervisor-approved session configuration.
+
+---
+
+## 4. Configuration Auto-Validation
+
+Before production can start, the application validates the complete station configuration.
+
+The validation includes, but is not limited to:
+
+- Number of jig slots.
+- Number of detected COM ports.
+- COM-port-to-slot bindings.
+- Jig identity.
+- LAN server connectivity.
+- Stock firmware configuration.
+- Pricol firmware configuration.
+- Programming mode.
+- Required station resources and services.
+
+The application shall not allow the batch to continue if any mandatory configuration is invalid.
+
+---
+
+## 5. Authorized MAC Cache Check
+
+The application checks the local authorized MAC-address cache for both:
+
+- Stock MAC addresses.
+- Pricol production MAC addresses.
+
+If the available quantity falls below the configured threshold, the Station Application requests additional authorized MAC-address blocks from the LAN Server.
+
+---
+
+## 6. Import Authorized MAC Blocks Locally
+
+Authorized MAC-address blocks received from the LAN Server are validated and imported into the local station database/cache.
+
+Only MAC addresses belonging to a valid authorized block may be reserved for programming.
+
+---
+
+## 7. Ready
+
+Once all configuration, allocation and hardware checks are successful, the station enters the **READY** state.
+
+The UI clearly indicates that modules may now be loaded into the jig.
+
+---
+
+## 8. Load 4 or 8 Modules
+
+The Operator loads modules into the production jig.
+
+Depending on the configured jig, the batch may contain:
+
+- 4 modules, or
+- 8 modules.
+
+The application uses the previously established physical slot bindings to associate each module position with its programming interface.
+
+---
+
+## 9. Start
+
+The Operator starts the batch.
+
+After START is accepted, the application controls the production workflow and prevents steps from being executed out of sequence.
+
+---
+
+## 10. Reserve Stock MAC Addresses
+
+One Stock MAC address is reserved from the local authorized Stock MAC cache for each occupied jig slot.
+
+The reservation is recorded in the local station database before programming begins.
+
+A reserved MAC must not be silently reassigned if programming later becomes uncertain.
+
+---
+
+## 11. Stock Programming
+
+All occupied slots are programmed with the Stock firmware.
+
+The number of parallel programming subprocesses is equal to the number of active/bound jig slots.
+
+For example:
+
+```text
+4-slot jig
+    ↓
+4 parallel MPCLI subprocesses
+
+8-slot jig
+    ↓
+8 parallel MPCLI subprocesses
+```
+
+Each programming operation follows the validated MPCLI sequence:
+
+```text
+Flash Stock firmware
+        ↓
+Wait for operation completion
+        ↓
+Program reserved Stock MAC
+        ↓
+Read back device identity
+```
+
+Programming results are tracked independently for every slot.
+
+---
+
+## 12. Stock MAC Readback
+
+After Stock programming, the application reads the MAC address back from each DUT using MPCLI.
+
+For every slot:
+
+```text
+Allocated Stock MAC
+        ↓
+Programmed Stock MAC
+        ↓
+MPCLI Readback
+        ↓
+Compare
+```
+
+The readback MAC must match the MAC reserved for that slot.
+
+A mismatch, unreadable MAC, ambiguous result, timeout, or uncertain programming state prevents that slot from being accepted as successfully programmed.
+
+---
+
+## 13. Stock RF Test
+
+After Stock programming and readback verification, the programmed Stock MAC addresses are transmitted over the LAN/Wi-Fi connection to the Golden Module Test Jig.
+
+The Golden Module Test Jig performs the RF verification for each DUT by:
+
+1. Receiving the expected Stock MAC address.
+2. Connecting to the corresponding DUT over Bluetooth.
+3. Confirming successful connection.
+4. Disconnecting from the DUT.
+5. Reporting the result back to the Station Application.
+
+The Station Application records the RF result for each slot as:
+
+- PASS
+- FAIL
+- HOLD, where applicable
+
+The RF test result is stored in the local station database.
+
+---
+
+## 14. Reserve Pricol MAC Addresses
+
+If the batch is configured for **Stock + Pricol**, one permanent Pricol MAC address is reserved from the local authorized Pricol MAC cache for each valid slot.
+
+The Pricol MAC must be different from the temporary Stock MAC assigned to the same module.
+
+---
+
+## 15. Pricol Programming
+
+All applicable slots are programmed with the Pricol firmware.
+
+As with Stock programming, the number of parallel MPCLI subprocesses is equal to the number of active/bound slots.
+
+For example:
+
+```text
+Slot 1 ── MPCLI subprocess 1
+Slot 2 ── MPCLI subprocess 2
+Slot 3 ── MPCLI subprocess 3
+...
+Slot 8 ── MPCLI subprocess 8
+```
+
+Each slot performs the validated programming sequence independently.
+
+---
+
+## 16. Pricol MAC Readback
+
+After Pricol programming, the application reads the programmed MAC address back from each DUT.
+
+For every slot:
+
+```text
+Reserved Pricol MAC
+        ↓
+Programmed Pricol MAC
+        ↓
+MPCLI Readback
+        ↓
+Compare
+```
+
+The readback MAC must exactly match the Pricol MAC reserved for that module.
+
+A mismatch is treated as an identity failure and the affected module must not proceed as PASS.
+
+---
+
+## 17. Functional Test
+
+After successful Pricol programming and MAC verification, the Station Application performs the required functional tests.
+
+A defined sequence of AT commands is issued to each module to validate the Pricol firmware.
+
+Each command result is recorded independently for every slot.
+
+The functional-test stage produces a PASS or FAIL result based on the configured acceptance criteria.
+
+---
+
+## 18. QR Scan
+
+After programming and testing are complete, the Operator scans the QR code printed on each module.
+
+The scan order is fixed:
+
+```text
+Slot 1
+  ↓
+Slot 2
+  ↓
+Slot 3
+  ↓
+...
+  ↓
+Slot 8
+```
+
+The Operator does not manually select the destination slot.
+
+The Station Application always knows which slot is expected next and binds the scanned QR code to that slot.
+
+The application shall reject:
+
+- Duplicate QR codes.
+- Out-of-sequence scans.
+- Invalid QR data.
+- Scans when the workflow is not in the QR-scanning state.
+
+---
+
+## 19. Final Validation
+
+Before the batch can be completed, the application validates that all required production records exist for every slot.
+
+The final validation includes, as applicable:
+
+- Stock MAC reservation.
+- Stock programming result.
+- Stock MAC readback.
+- Stock RF test.
+- Pricol MAC reservation.
+- Pricol programming result.
+- Pricol MAC readback.
+- Functional-test result.
+- QR-code binding.
+
+Each module is recorded in the local station database with its final production disposition:
+
+- **PASS**
+- **FAIL**
+- **HOLD**
+
+No module may be recorded as PASS if a mandatory operation or verification step is missing or unsuccessful.
+
+---
+
+## 20. Queue Server Upload
+
+At the end of the batch, after confirmation by the Operator, the completed batch records are committed to the local station database and queued for upload to the LAN Server.
+
+Server upload shall not block preparation of the next batch.
+
+If the LAN Server is temporarily unavailable:
+
+```text
+Batch completed locally
+        ↓
+Upload queued
+        ↓
+Production may continue
+        ↓
+Upload retries later
+```
+
+The original production timestamps and station identity must be preserved.
+
+---
+
+## 21. Auto-Prepare Next Batch
+
+After the current batch is completed, the application automatically prepares the station for the next batch.
+
+The Operator:
+
+1. Unloads the tested modules.
+2. Loads the next set of modules.
+3. Starts the next batch.
+
+The applicable production workflow is then repeated.
+
+---
+
+# Session Completion and Server Synchronization
+
+At the end of the complete production session, the local station database is synchronized with the LAN Server.
+
+The synchronization includes:
+
+- Completed batch records.
+- Programming history.
+- MAC-address consumption.
+- Test results.
+- QR associations.
+- PASS / FAIL / HOLD dispositions.
+- Audit records.
+- Pending uploads.
+
+The Supervisor closes the production session only after the required session-level checks are completed.
+
+---
+
+# Stock-Only Programming Mode
+
+If the Operator selects **Stock Only** during Step 2, the following Pricol-specific stages are skipped:
+
+```text
+Step 14 - Reserve Pricol MAC
+Step 15 - Pricol Programming
+Step 16 - Pricol MAC Readback
+Step 17 - Functional Test
+```
+
+The workflow therefore becomes:
+
+```text
+Session Setup
+    ↓
+Stock Programming
+    ↓
+Stock Readback
+    ↓
+Stock RF Test
+    ↓
+QR Scan
+    ↓
+Final Validation
+    ↓
+Queue Upload
+    ↓
+Next Batch
+```
+
+---
+
+# Full Stock + Pricol Programming Mode
+
+If the Operator selects **Stock + Pricol**, the complete production sequence is executed:
+
+```text
+Supervisor Session Setup
+        ↓
+Operator Login / Batch Setup
+        ↓
+Jig Detection
+        ↓
+Configuration Validation
+        ↓
+Authorized MAC Cache Check
+        ↓
+Import Authorized MAC Blocks
+        ↓
+READY
+        ↓
+Load Modules
+        ↓
+START
+        ↓
+Reserve Stock MACs
+        ↓
+Stock Programming
+        ↓
+Stock Readback
+        ↓
+Stock RF Test
+        ↓
+Reserve Pricol MACs
+        ↓
+Pricol Programming
+        ↓
+Pricol Readback
+        ↓
+Functional Test
+        ↓
+QR Scan
+        ↓
+Final Validation
+        ↓
+Queue Server Upload
+        ↓
+Prepare Next Batch
+```
+
+---
+
+# Operator UI Behaviour
+
+The Station Application UI shall actively guide the Operator through the production process.
+
+The workflow must not depend only on the Operator remembering the correct sequence.
+
+At any point in time, the UI should clearly indicate:
+
+- The current production step.
+- The next required action.
+- Which physical slot is active, where applicable.
+- Whether Operator action is required.
+- Whether the station is waiting for an automatic operation to complete.
+- PASS / FAIL / HOLD status for each slot.
+- Any condition that prevents the workflow from continuing.
+
+Recommended UI behaviour includes:
+
+- Highlighting the active step.
+- Enabling only the button required for the current state.
+- Disabling operations that are not currently valid.
+- Providing clear plain-language instructions.
+- Automatically advancing after successful automatic operations.
+- Preventing steps from being skipped.
+- Preventing repeated programming unless explicitly allowed by the workflow.
+- Requiring Supervisor intervention for HOLD, uncertain programming, configuration changes, or exceptional recovery.
+
+The production workflow shall be enforced by the application state/service layer and not only by disabled GUI buttons.
+
+---
+
+# Simplified Production State Flow
+
+```text
+SUPERVISOR STARTS SESSION
+        ↓
+OPERATOR LOGIN / BATCH SETUP
+        ↓
+JIG AUTO-DETECTED
+        ↓
+CONFIG AUTO-VALIDATED
+        ↓
+AUTHORIZED MAC CACHE CHECK
+        ↓
+IMPORT AUTHORIZED MAC BLOCKS
+        ↓
+READY
+        ↓
+LOAD MODULES
+        ↓
+START
+        ↓
+STOCK MAC RESERVED
+        ↓
+STOCK PROGRAMMING
+        ↓
+STOCK MAC READBACK
+        ↓
+STOCK RF TEST
+        ↓
+[ STOCK ONLY? ]
+      /       \
+    YES        NO
+     │          ↓
+     │     PRICOL MAC RESERVED
+     │          ↓
+     │     PRICOL PROGRAMMING
+     │          ↓
+     │     PRICOL MAC READBACK
+     │          ↓
+     │     FUNCTIONAL TEST
+     │          │
+     └──────────┘
+          ↓
+       QR SCAN
+          ↓
+   FINAL VALIDATION
+          ↓
+   PASS / FAIL / HOLD
+          ↓
+   QUEUE SERVER UPLOAD
+          ↓
+   PREPARE NEXT BATCH
+```
+
+## Important Production Rules
+
+- Only authorized MAC addresses may be programmed.
+- Stock and Pricol MAC pools are maintained separately.
+- Stock and Pricol MAC addresses assigned to the same module must be different.
+- A MAC involved in uncertain programming must not be automatically returned to the available pool.
+- Programming, readback and test results are maintained independently for each physical slot.
+- Multiple DUTs may be programmed in parallel, but each slot retains its own subprocess, result and traceability record.
+- A successful MPCLI process return alone is not sufficient identity verification; the written MAC must be read back and compared.
+- Stock firmware requires both MAC readback and RF confirmation.
+- Pricol firmware requires MAC readback and functional AT-command testing.
+- QR codes are bound only after the required programming and testing stages are complete.
+- Production history is append-only; retries and rework create additional records rather than overwriting previous results.
+- Local production may continue while completed records are waiting to synchronize with the LAN Server, subject to availability of authorized local MAC allocations.

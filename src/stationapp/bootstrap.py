@@ -23,6 +23,8 @@ from stationapp.logging_setup import setup_logging
 from stationapp.services.serial_topology import (StationSerialTopologyService, SlotTopologyStatus, SerialTopology)
 from stationapp.services.slot_binding import (SlotBindingService)
 
+from stationapp.services.slot_eligibility import (SlotEligibilityService)
+
 logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +40,7 @@ class AppContext:
     settings: Settings
     started_at: datetime
     serial_topology_service: StationSerialTopologyService
-
+    slot_eligibility_service: SlotEligibilityService
 
 
     @property
@@ -62,7 +64,7 @@ def bootstrap() -> AppContext:
         at startup, not run with defaults and corrupt the traceability record.
     """
     settings = get_settings()
-    
+    slot_eligibility_service = (SlotEligibilityService())
     #print(settings.jig_positions)
     #print(type(settings.jig_positions))
     app_logger = setup_logging(settings.log_dir, settings.log_level)
@@ -83,6 +85,7 @@ def bootstrap() -> AppContext:
             settings=settings,
             started_at=datetime.now(timezone.utc),
             serial_topology_service=serial_topology_service,
+            slot_eligibility_service=slot_eligibility_service,
         )
     logger.debug("Bootstrap Complete")
     return context
@@ -90,3 +93,5 @@ def bootstrap() -> AppContext:
 def _app_version() -> str:
     from stationapp import __version__
     return __version__
+
+

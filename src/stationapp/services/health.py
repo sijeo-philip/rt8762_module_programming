@@ -31,7 +31,7 @@ class Severity(str, Enum):
     FAIL = "FAIL"
 
 @dataclass
-class Healthcheck:
+class HealthCheck:
     name: str
     severity: Severity
     detail: str
@@ -40,21 +40,21 @@ class Healthcheck:
     def is_blocking(self) -> bool:
         return self.severity is Severity.FAIL
 
-def check_configuration(settings: Settings) -> Healthcheck:
+def check_configuration(settings: Settings) -> HealthCheck:
     """ Configurations is validated at load; this confirms it is usable."""
     if settings.jig_positions not in (4, 8):
-        return Healthcheck(Configurations,
+        return HealthCheck("Configuration",
         Severity.OK,
         f"station={settings.station_id}, jig={settings.jid_id},"
         f"positions={settings.jig_positions}" )
-    return Healthcheck(
+    return HealthCheck(
     "Configuration",
     Severity.OK,
     f"station={settings.station_id}, jig={settings.jig_id}, "
     f"positions ={settings.jig_positions}"
     )
 
-def check_log_directory(settings: Settings) -> Healthcheck:
+def check_log_directory(settings: Settings) -> HealthCheck:
     """The log directory must be writable -- It is the stations own record."""
     try:
         settings.log_dir.mkdir(parents=True, exist_ok =True)
@@ -63,15 +63,15 @@ def check_log_directory(settings: Settings) -> Healthcheck:
         probe.unlink()
 
     except OSError as exc:
-        return Healthcheck(
+        return HealthCheck(
         "Log directory",
         Severity.FAIL,
         f"{settings.log_dir} is not writable: {exc}",
         )
 
-    return Healthcheck("Log directory", Severity.OK, str(settings.log_dir))
+    return HealthCheck("Log directory", Severity.OK, str(settings.log_dir))
 
-def check_mpcli(settings: Settings) -> Healthcheck:
+def check_mpcli(settings: Settings) -> HealthCheck:
     """ MPCli.exe must exist and respond.
      Lesson 7 turns this into the real read_back wrapper. For now we only prove
      the binary runs and reprots a version, which is the same reconnaissance step
@@ -79,16 +79,16 @@ def check_mpcli(settings: Settings) -> Healthcheck:
      """
     path = Path(settings.mpcli_path)
     if not path.is_file():
-         return Healthcheck(
+         return HealthCheck(
             "MpCli",
             Severity.WARN,
             f"not found at {path} - set MPCLI_PATH in .env",
          )
 
     
-    return Healthcheck("MpCli", Severity.OK, f"found at {path}")
+    return HealthCheck("MpCli", Severity.OK, f"found at {path}")
 
-def check_serial_ports(settings: Settings) -> Healthcheck :
+def check_serial_ports(settings: Settings) -> HealthCheck :
     """ Report detected COM ports.
 
     Delibrately WARN, never FAIL: a dev PC legitimately has no jig. The real
@@ -98,11 +98,11 @@ def check_serial_ports(settings: Settings) -> Healthcheck :
     try:
         from serial.tools import list_ports
     except ImportError:
-        return Healthcheck("Serial ports", Severity.FAIL, "pyseral not installed")
+        return HealthCheck("Serial ports", Severity.FAIL, "pyseral not installed")
 
     ports = sorted(list_ports.comports(), key=lambda p: p.device)
     if not ports:
-        return Healthcheck(
+        return HealthCheck(
         "Serial ports",
         Severity.WARN,
         "none detected (expected on a PC with no Jig attached)"
@@ -114,9 +114,9 @@ def check_serial_ports(settings: Settings) -> Healthcheck :
     if len(ports) < settings.jig_positions:
         severity = Severity.WARN
         detail += (f"-- fewer than the {settings.jig_positions} positions configured")
-    return Healthcheck("Serial ports", severity, detail)
+    return HealthCheck("Serial ports", severity, detail)
 
-def run_all_checks(settings: Settings) -> list[Healthcheck]:
+def run_all_checks(settings: Settings) -> list[HealthCheck]:
     """Run every check and return the full list is display order. """
     return[
         check_configuration(settings),
@@ -125,7 +125,7 @@ def run_all_checks(settings: Settings) -> list[Healthcheck]:
         check_serial_ports(settings),
     ]
 
-def summarise(checks: list[Healthcheck]) -> tuple[Severity, str]:
+def summarise(checks: list[HealthCheck]) -> tuple[Severity, str]:
     """ Reduce a list checks to one overall severity and a summary line."""
     failures  = [ c for c in checks if c.severity is Severity.FAIL ]
     warnings = [ c for c in checks if c.severity is Severity.WARN ]

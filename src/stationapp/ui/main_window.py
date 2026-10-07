@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from stationapp.bootstrap import AppContext
-from stationapp.services.health import Healthcheck, Severity, run_all_checks, summarise
+from stationapp.services.health import HealthCheck, Severity, run_all_checks, summarise
 
 import logging
 from PyQt6.QtWidgets import QProgressBar
@@ -35,6 +35,8 @@ from stationapp.concurrency.events import( OperationFailure, OperationResult, Pr
 from stationapp.concurrency.manager import OperationHandle, OperationManager
 from stationapp.services.demo_operation import make_demo_rf_test
 from stationapp.services.serial_topology import (StationSerialTopologyService, SlotTopologyStatus, SerialTopology)
+
+from stationapp.services.slot_eligibility import (JigEligibility, SlotEligibilityStatus)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,13 @@ _TOPOLOGY_COLOURS = {
     SlotTopologyStatus.MOVED: QColor("#b26a00")       # Amber
 }
 
+_ELIGIBILITY_COLOURS = {
+    SlotEligibilityStatus.ELIGIBLE: QColor("#1b7f3b"),
+    SlotEligibilityStatus.BLOCKED_UNBOUND: QColor("#7a7a7a"),
+    SlotEligibilityStatus.BLOCKED_MISSING: QColor("#b3261e"),
+    SlotEligibilityStatus.BLOCKED_MOVED: QColor("#b26a00"),
+}
+
 # Health is re-checked on this interval while window is open
 _HEALTH_REFRESH_MS = 30_000
 _SERIAL_TOPOLOGY_REFRESH_MS = 5_000
@@ -64,6 +73,8 @@ class MainWindow(QMainWindow):
         self._active_demo_id: str | None = None
         self._closing = False
         self._context = context
+        self._last_topology: SerialTopology | None = None
+        self._last_eligibility: (JigEligibility | None) = None
 
         self.setWindowTitle(
         f"Station App {context.app_version} - { context.station_label}"
@@ -116,11 +127,12 @@ class MainWindow(QMainWindow):
 
         self._slot_summary_label = QLabel("Checking Jig...")
         layout.addWidget(self._slot_summary_label)
-        self._slot_table = QTableWidget(0, 5)
+        self._slot_table = QTableWidget(0, 6)
         self._slot_table.setHorizontalHeaderLabels(
             [
                 "Slot",
-                "Status",
+                "Topology",
+                "Eligibility",
                 "COM Port",
                 "USB Location",
                 "Identity",
@@ -222,6 +234,28 @@ class MainWindow(QMainWindow):
     def start_demo_rf_test(self) -> None:
         if self._active_demo_id is not None:
             return
+
+        if self._last_eligibility is None:
+            QMessageBox.warning(
+                self,
+                "Jig state unavailable",
+                "Refresh the jig before starting."
+            )
+            return
+
+        if self._last_eligibility.none_eligible:
+            QMessageBox.warning(
+                self,
+                "No Eligible Slots",
+                (
+                    "No Jig position is currently "
+                    "eligible for operation."
+                ),
+            )
+            return
+
+        eligible_slots = (self._last_eligibility.eligible_slot_numbers)
+        
             
         mac_addresses = [
             f"AA:BB:CC:DD:EE:{suffix:02x}"
@@ -266,7 +300,23 @@ class MainWindow(QMainWindow):
 
         try:
             topology = (self._context.serial_topology_service.refresh())
+            eligibility = (self._context.slot_eligibility_service.evaluate(topology))
+            self._last_topology = topology
+            self._last_eligibility = eligibility
             self._render_serial_topology(topology)
+            if self._last_eligibility is not None:
+                eligible = (self._last_eligibility.eligible_count)
+                total = len(self._last_eligibility.slots)
+                blocked = (self._last_eligibility.blocked_count)
+                if blocked == 0:
+                    self._slot_summary_label.setText(f"All {total} slots available")
+                    self._slot_summary_label.setStyleSheet("color: #1b7f3b;")
+                elif eligible > 0:
+                    self._slot_summary_label.setText(f"{eligible}/{total} slots available; {blocked} blocked")
+                    self._slot_summary_label.setStyleSheet("color: #b26a00;")
+                else:
+                    self._slot_summary_label.setText(f"No slots available; {blocked}/{total} blocked")
+                    self._slot_summary_label.setStyleSheet("color: #b3261e;")
 
         except Exception as exc:
             logger.exception("Serial topology refresh failed")
@@ -278,45 +328,92 @@ class MainWindow(QMainWindow):
             self._refresh_topology_button.setEnabled(True)
 
 
-    def _render_serial_topology(self, topology: SerialTopology) -> None:
+    def _render_serial_topology(self,topology: SerialTopology) -> None:
 
+        self._last_topology = topology
         self._slot_table.setRowCount(len(topology.slots))
 
         for row, slot in enumerate(topology.slots):
+            eligibility = None
+
+            if self._last_eligibility is not None:
+                eligibility = (self._last_eligibility.get(slot.slot_number))
+
             slot_item = QTableWidgetItem(str(slot.slot_number))
             status_item = QTableWidgetItem(slot.status.value)
+
             status_item.setForeground(_TOPOLOGY_COLOURS[slot.status])
-            com_item = QTableWidgetItem(slot.com_port or "-")
+            eligibility_item = QTableWidgetItem((eligibility.status.value if eligibility is not None else "-"))
+
+            if eligibility is not None:
+                eligibility_item.setForeground(_ELIGIBILITY_COLOURS[eligibility.status])
+
+                eligibility_item.setToolTip(eligibility.reason)
+
+            # Important:
+            # only show the COM port when the slot is actually eligible.
+            if (eligibility is not None and eligibility.eligible):
+                visible_com = (eligibility.com_port or "-")
+            else:
+                visible_com = "-"
+
+            com_item = QTableWidgetItem(visible_com)
             location = "-"
 
             if slot.port is not None:
-                location = (slot.port.identity.location or "-" )
+                location = (slot.port.identity.location or "-")
 
             location_item = QTableWidgetItem(location)
+
             identity_item = QTableWidgetItem(slot.stable_key or "-")
 
-            items = (slot_item, status_item, com_item, location_item, identity_item)
+            items = (
+                slot_item,
+                status_item,
+                eligibility_item,
+                com_item,
+                location_item,
+                identity_item,
+            )
+
+            # Show topology diagnostic on every cell.
+            for item in items:
+                item.setToolTip(slot.message)
+
+            # Keep the more specific eligibility message
+            # on the eligibility cell.
+            if eligibility is not None:
+                eligibility_item.setToolTip(eligibility.reason)
+
+            # Optional visual indication for blocked slots.
+            if (eligibility is not None and not eligibility.eligible):
+                for item in items:
+                    font = item.font()
+                    font.setItalic(True)
+                    item.setFont(font)
 
             for column, item in enumerate(items):
                 self._slot_table.setItem(row, column, item)
 
-        if topology.all_ready:
+        # ----- Summary ----------------------------------------
 
-            self._slot_summary_label.setText(f"Jig ready: {topology.ready_count}/"
-            f"{len(topology.slots)} "
-            "serial positions available"
-            )
+        if self._last_eligibility is None:
+            self._slot_summary_label.setText("Jig eligibility unavailable")
+            self._slot_summary_label.setStyleSheet("color: #b3261e;")
+            return
+        eligible = (self._last_eligibility.eligible_count)
+        total = len(self._last_eligibility.slots)
 
+        blocked = (self._last_eligibility.blocked_count)
+
+        if blocked == 0:
+            self._slot_summary_label.setText(f"All {total} slots available")
             self._slot_summary_label.setStyleSheet("color: #1b7f3b;")
-
+        elif eligible > 0:
+            self._slot_summary_label.setText(f"{eligible}/{total} slots available; {blocked} blocked")
+            self._slot_summary_label.setStyleSheet("color: #b26a00;")
         else:
-
-            self._slot_summary_label.setText(
-                f"Jig not ready: "
-                f"{topology.ready_count}/"
-                f"{len(topology.slots)} "
-                "positions available"
-            )
+            self._slot_summary_label.setText(f"No slots available; {blocked}/{total} blocked")
             self._slot_summary_label.setStyleSheet("color: #b3261e;")
         
     def _on_operation_started(self, operation_id: str) -> None:

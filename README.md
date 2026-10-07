@@ -96,16 +96,28 @@ The UI clearly indicates that modules may now be loaded into the jig.
 
 ---
 
-## 8. Load 4 or 8 Modules
+## 8. Load Modules
 
 The Operator loads modules into the production jig.
 
-Depending on the configured jig, the batch may contain:
+The jig may support 4 or 8 physical slots, but all slots do not have to be populated for every batch.
 
-- 4 modules, or
-- 8 modules.
+The Station Application shall detect or allow confirmation of which physical slots are populated and shall treat each slot independently.
 
-The application uses the previously established physical slot bindings to associate each module position with its programming interface.
+For example, an 8-slot jig may contain modules only in:
+
+```text
+Slot 1
+Slot 2
+Slot 4
+Slot 7
+```
+
+while the remaining slots are empty.
+
+Empty slots shall be clearly shown in the UI and shall not block the populated slots from being processed.
+
+The application uses the previously established physical slot bindings to associate each populated module position with its programming interface.
 
 ---
 
@@ -129,20 +141,24 @@ A reserved MAC must not be silently reassigned if programming later becomes unce
 
 ## 11. Stock Programming
 
-All occupied slots are programmed with the Stock firmware.
+All populated slots are programmed with the Stock firmware.
 
-The number of parallel programming subprocesses is equal to the number of active/bound jig slots.
+The number of parallel programming subprocesses is equal to the number of populated and active/bound jig slots.
 
 For example:
 
 ```text
-4-slot jig
-    ↓
-4 parallel MPCLI subprocesses
-
-8-slot jig
-    ↓
+8-slot jig with 8 modules
+        ↓
 8 parallel MPCLI subprocesses
+```
+
+or:
+
+```text
+8-slot jig with modules only in Slots 1, 2, 4 and 7
+        ↓
+4 parallel MPCLI subprocesses
 ```
 
 Each programming operation follows the validated MPCLI sequence:
@@ -159,13 +175,48 @@ Read back device identity
 
 Programming results are tracked independently for every slot.
 
+### Per-Slot Programming Progress Display
+
+While firmware programming and MAC writing are in progress, the Operator UI shall display one progress/status panel for every physical slot in the jig.
+
+For an 8-slot jig, the UI shall show eight slot panels or progress bars:
+
+```text
+Slot 1  [##########]  Firmware Programmed / MAC Written
+Slot 2  [######....]  Programming
+Slot 3  [..........]  Empty
+Slot 4  [##########]  Firmware Programmed / MAC Written
+Slot 5  [..........]  Empty
+Slot 6  [###.......]  Writing MAC
+Slot 7  [##########]  Firmware Programmed / MAC Written
+Slot 8  [..........]  Empty
+```
+
+Each slot shall have an independent state such as:
+
+- EMPTY
+- READY
+- PROGRAMMING FIRMWARE
+- FIRMWARE PROGRAMMED
+- WRITING MAC
+- MAC WRITTEN
+- READBACK VERIFYING
+- PASS
+- FAIL
+- HOLD
+- UNCERTAIN
+
+The progress indication shall reflect the actual status of that slot and shall not imply that the complete batch succeeded merely because some slots succeeded.
+
+A failed or empty slot shall not prevent other successfully programmed slots from completing their programming operations.
+
 ---
 
 ## 12. Stock MAC Readback
 
-After Stock programming, the application reads the MAC address back from each DUT using MPCLI.
+After Stock programming, the application reads the MAC address back from each successfully programmed DUT using MPCLI.
 
-For every slot:
+For every populated slot that reached the MAC-written stage:
 
 ```text
 Allocated Stock MAC
@@ -179,13 +230,19 @@ Compare
 
 The readback MAC must match the MAC reserved for that slot.
 
-A mismatch, unreadable MAC, ambiguous result, timeout, or uncertain programming state prevents that slot from being accepted as successfully programmed.
+A mismatch, unreadable MAC, ambiguous result, timeout, or uncertain programming state prevents that particular slot from being accepted as successfully programmed.
+
+The result of one slot shall not automatically invalidate other slots.
+
+Only slots that have successfully completed Stock programming and Stock MAC readback shall be eligible to proceed to the Stock RF Test.
 
 ---
 
 ## 13. Stock RF Test
 
-After Stock programming and readback verification, the programmed Stock MAC addresses are transmitted over the LAN/Wi-Fi connection to the Golden Module Test Jig.
+After Stock programming and readback verification, only the successfully verified Stock MAC addresses are transmitted over the LAN/Wi-Fi connection to the Golden Module Test Jig.
+
+Slots that are empty, failed, uncertain, or did not complete MAC verification are excluded from the RF-test request.
 
 The Golden Module Test Jig performs the RF verification for each DUT by:
 
@@ -207,7 +264,9 @@ The RF test result is stored in the local station database.
 
 ## 14. Reserve Pricol MAC Addresses
 
-If the batch is configured for **Stock + Pricol**, one permanent Pricol MAC address is reserved from the local authorized Pricol MAC cache for each valid slot.
+If the batch is configured for **Stock + Pricol**, one permanent Pricol MAC address is reserved from the local authorized Pricol MAC cache only for each slot that successfully completed the required Stock programming, Stock readback, and Stock RF-test stages.
+
+Slots that failed earlier stages are not automatically assigned a Pricol MAC and do not block valid slots from continuing.
 
 The Pricol MAC must be different from the temporary Stock MAC assigned to the same module.
 
@@ -215,9 +274,9 @@ The Pricol MAC must be different from the temporary Stock MAC assigned to the sa
 
 ## 15. Pricol Programming
 
-All applicable slots are programmed with the Pricol firmware.
+All eligible slots are programmed with the Pricol firmware.
 
-As with Stock programming, the number of parallel MPCLI subprocesses is equal to the number of active/bound slots.
+As with Stock programming, the number of parallel MPCLI subprocesses is equal to the number of eligible populated slots, not necessarily the total physical slot count.
 
 For example:
 
@@ -230,6 +289,14 @@ Slot 8 ── MPCLI subprocess 8
 ```
 
 Each slot performs the validated programming sequence independently.
+
+The Operator UI shall again show independent per-slot progress bars/status indicators during:
+
+- Pricol firmware flashing.
+- Pricol MAC writing.
+- Pricol MAC readback verification.
+
+A failure on one slot shall not stop another valid slot from completing its Pricol programming sequence.
 
 ---
 
@@ -253,11 +320,13 @@ The readback MAC must exactly match the Pricol MAC reserved for that module.
 
 A mismatch is treated as an identity failure and the affected module must not proceed as PASS.
 
+Other slots whose Pricol MAC readback matches correctly may continue to the Functional Test.
+
 ---
 
 ## 17. Functional Test
 
-After successful Pricol programming and MAC verification, the Station Application performs the required functional tests.
+After successful Pricol programming and MAC verification, the Station Application performs the required functional tests only on the slots that remain eligible.
 
 A defined sequence of AT commands is issued to each module to validate the Pricol firmware.
 
@@ -269,9 +338,13 @@ The functional-test stage produces a PASS or FAIL result based on the configured
 
 ## 18. QR Scan
 
-After programming and testing are complete, the Operator scans the QR code printed on each module.
+After programming and testing are complete, the Operator scans the QR code printed on each module that has successfully completed the required workflow stages.
 
-The scan order is fixed:
+Slots that are empty, failed, HOLD, or otherwise ineligible are skipped automatically.
+
+The scan order is fixed by ascending eligible slot number.
+
+For a fully populated and successful 8-slot batch:
 
 ```text
 Slot 1
@@ -285,9 +358,25 @@ Slot 3
 Slot 8
 ```
 
+For a partially populated or partially successful batch, the application skips ineligible slots automatically.
+
+For example, if only Slots 1, 2, 4 and 7 are eligible:
+
+```text
+Slot 1
+  ↓
+Slot 2
+  ↓
+Slot 4
+  ↓
+Slot 7
+```
+
 The Operator does not manually select the destination slot.
 
-The Station Application always knows which slot is expected next and binds the scanned QR code to that slot.
+The Station Application always knows which eligible slot is expected next and binds the scanned QR code to that slot.
+
+The Operator shall not be required to manually choose or skip slots during QR scanning.
 
 The application shall reject:
 
@@ -314,11 +403,13 @@ The final validation includes, as applicable:
 - Functional-test result.
 - QR-code binding.
 
-Each module is recorded in the local station database with its final production disposition:
+Each populated slot/module is recorded independently in the local station database with its final production disposition:
 
 - **PASS**
 - **FAIL**
 - **HOLD**
+
+Empty physical slots are recorded or represented as unpopulated/unused for that batch and are not treated as production failures.
 
 No module may be recorded as PASS if a mandatory operation or verification step is missing or unsuccessful.
 
@@ -462,6 +553,104 @@ Prepare Next Batch
 
 ---
 
+# Partial Population and Per-Slot Continuation
+
+The production workflow is slot-based rather than all-or-nothing at batch level.
+
+An 8-slot jig does not require all eight slots to be populated, and a batch is not required to stop merely because one or more slots fail.
+
+Each physical slot shall be tracked independently from batch start through final disposition.
+
+For example:
+
+```text
+Slot 1  PASS
+Slot 2  PASS
+Slot 3  EMPTY
+Slot 4  PROGRAMMING FAIL
+Slot 5  EMPTY
+Slot 6  PASS
+Slot 7  HOLD
+Slot 8  PASS
+```
+
+In this example:
+
+- Slots 1, 2, 6 and 8 may continue to the next eligible workflow stage.
+- Slot 3 and Slot 5 remain EMPTY.
+- Slot 4 is recorded as FAIL and does not proceed.
+- Slot 7 is recorded as HOLD and does not proceed without authorized disposition.
+
+The application shall therefore maintain an eligibility set for each workflow stage.
+
+Conceptually:
+
+```text
+Loaded Slots
+    ↓
+Successful Stock Programming Slots
+    ↓
+Successful Stock Readback Slots
+    ↓
+Successful Stock RF Test Slots
+    ↓
+Successful Pricol Programming Slots
+    ↓
+Successful Pricol Readback Slots
+    ↓
+Successful Functional Test Slots
+    ↓
+QR-Eligible Slots
+    ↓
+Final PASS / FAIL / HOLD
+```
+
+A slot may leave the active flow because of FAIL, HOLD, UNCERTAIN, or EMPTY state without forcing unrelated successful slots to stop.
+
+The final batch record may therefore contain a mixture of PASS, FAIL, HOLD, and EMPTY slot outcomes.
+
+---
+
+# Per-Slot Progress and Status Requirements
+
+The Operator UI shall provide a clearly visible status/progress indication for every physical slot.
+
+For an 8-slot jig, eight slot indicators shall always be visible so the Operator can immediately understand the state of the jig.
+
+During programming, each slot indicator should show both progress and the current action.
+
+Example:
+
+```text
+Slot 1  [##########]  PASS - MAC 01:02:03:04:05:06
+Slot 2  [#####.....]  Programming Firmware
+Slot 3  [..........]  EMPTY
+Slot 4  [########..]  Writing MAC
+Slot 5  [..........]  EMPTY
+Slot 6  [##########]  PASS - MAC Readback Verified
+Slot 7  [##########]  FAIL - MAC Readback Mismatch
+Slot 8  [###.......]  Programming Firmware
+```
+
+The slot indication shall remain available during:
+
+- Stock firmware programming.
+- Stock MAC writing.
+- Stock MAC readback.
+- Stock RF testing.
+- Pricol firmware programming.
+- Pricol MAC writing.
+- Pricol MAC readback.
+- Functional testing.
+- QR scanning.
+- Final validation.
+
+The UI should make successful, failed, hold, uncertain, empty, and in-progress slots visually distinct.
+
+Only eligible slots shall be enabled for the next workflow stage.
+
+---
+
 # Operator UI Behaviour
 
 The Station Application UI shall actively guide the Operator through the production process.
@@ -554,7 +743,13 @@ STOCK RF TEST
 - Stock and Pricol MAC addresses assigned to the same module must be different.
 - A MAC involved in uncertain programming must not be automatically returned to the available pool.
 - Programming, readback and test results are maintained independently for each physical slot.
-- Multiple DUTs may be programmed in parallel, but each slot retains its own subprocess, result and traceability record.
+- All physical slots do not have to be populated for a batch.
+- Empty slots are allowed and do not cause the batch to fail.
+- A failure on one slot does not automatically stop successfully progressing slots.
+- Only slots that satisfy the previous stage's acceptance criteria are eligible for the next stage.
+- Multiple DUTs may be programmed in parallel, but each slot retains its own subprocess, progress indication, result and traceability record.
+- The UI shall show one independent progress/status indicator per physical slot during programming and verification activities.
+- QR scanning shall proceed only through eligible slots, in ascending slot order, automatically skipping empty, failed or HOLD slots.
 - A successful MPCLI process return alone is not sufficient identity verification; the written MAC must be read back and compared.
 - Stock firmware requires both MAC readback and RF confirmation.
 - Pricol firmware requires MAC readback and functional AT-command testing.

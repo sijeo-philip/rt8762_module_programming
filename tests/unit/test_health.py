@@ -11,7 +11,7 @@ import pytest
 
 from stationapp.config import Settings
 from stationapp.services.health import(
-    Healthcheck,
+    HealthCheck,
     Severity,
     check_configuration,
     check_log_directory,
@@ -19,7 +19,7 @@ from stationapp.services.health import(
     summarise
 )
 
-def _settings(temp_path: Path, **overrides) -> Settings:
+def _settings(tmp_path: Path, **overrides) -> Settings:
     """Build a Settings instance for tests, bypassing .env entirely."""
     base = {
         "station_id": "TEST-01",

@@ -756,3 +756,4 @@ STOCK RF TEST
 - QR codes are bound only after the required programming and testing stages are complete.
 - Production history is append-only; retries and rework create additional records rather than overwriting previous results.
 - Local production may continue while completed records are waiting to synchronize with the LAN Server, subject to availability of authorized local MAC allocations.
+- Finally the Application have to converted to installable application so that it can be installed on each test Jig/station

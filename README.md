@@ -13,9 +13,35 @@ During session setup, the Supervisor:
 - Identifies the production jig.
 - Binds detected COM ports to physical jig slots.
 - Confirms the jig configuration.
+- Confirms the approved Golden Rig binding.
 - Starts the controlled production session.
 
 The COM-port-to-slot binding remains valid for the active session unless explicitly changed by an authorized Supervisor.
+
+Before production begins, the Station Application also verifies that the Golden Rig connected or reachable on the LAN matches the Golden Rig previously approved for this station.
+
+---
+
+## 1A. Golden Rig Binding During Initial Station Configuration
+
+Golden Rig binding is a Supervisor-controlled station configuration activity and shall be completed during the initial setup of the Station Application, before the station is released for normal production use.
+
+The binding procedure is:
+
+1. Supervisor logs into the Station Application.
+2. Opens **Station Configuration → Golden Rig Binding**.
+3. Discovers Golden Rigs on the LAN or enters a configured hostname/IP address.
+4. Selects the intended rig and requests its identity.
+5. The Station Application validates the rig's authenticated identity against the approved inventory/trust configuration.
+6. The Supervisor approves the station-to-rig association.
+7. The application stores the binding in the local configuration database together with a Supervisor audit record.
+8. Before each production session, the Station Application checks that the connected Golden Rig matches the approved binding.
+
+The approved binding shall identify the trusted Golden Rig associated with the station and shall not be silently changed during normal Operator use.
+
+Any change to the Golden Rig binding shall require authorized Supervisor access and shall create an audit record.
+
+If the expected Golden Rig is unavailable, presents an unexpected identity, or does not match the approved station binding, the Station Application shall block the Stock RF Test stage and clearly indicate that Supervisor intervention is required.
 
 ---
 
@@ -59,6 +85,9 @@ The validation includes, but is not limited to:
 - Number of detected COM ports.
 - COM-port-to-slot bindings.
 - Jig identity.
+- Approved Golden Rig binding.
+- Golden Rig identity/authentication status.
+- Golden Rig LAN reachability, where required for the configured workflow.
 - LAN server connectivity.
 - Stock firmware configuration.
 - Pricol firmware configuration.
@@ -738,6 +767,8 @@ STOCK RF TEST
 
 ## Important Production Rules
 
+- The station shall use only the Supervisor-approved Golden Rig binding for Stock RF testing.
+- Golden Rig binding changes require Supervisor authorization and an audit record.
 - Only authorized MAC addresses may be programmed.
 - Stock and Pricol MAC pools are maintained separately.
 - Stock and Pricol MAC addresses assigned to the same module must be different.

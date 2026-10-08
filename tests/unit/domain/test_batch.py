@@ -80,6 +80,15 @@ def advance_to_stock_rf(batch: Batch) -> None:
             succeeded=True,
         )
 
+    assert batch.state is BatchState.STOCK_PROGRAMMED
+
+    for slot in batch.ordered_slots:
+        assert slot.stock_mac is not None
+
+        batch.record_stock_readback(slot.number, str(slot.stock_mac))
+
+    assert batch.state is BatchState.STOCK_READBACK_VERIFIED
+
     batch.request_stock_rf_mode()
     batch.begin_stock_rf_test()
 
@@ -443,3 +452,52 @@ def test_complete_batch_can_be_committed_and_queued() -> None:
     batch.mark_uploaded()
 
     assert batch.state is BatchState.UPLOADED
+
+@pytest.mark.unit
+def test_batch_rf_mode_requires_stock_readback() -> None:
+    batch = make_batch()
+
+    bind_batch_ports(batch)
+
+    records = reserve_records(
+        batch,
+        purpose=MacPurpose.STOCK_RF_TEST,
+        prefix="AA:BB:CC:00:00",
+    )
+
+    batch.accept_stock_reservations(records)
+    batch.request_stock_program_mode()
+    batch.confirm_stock_program_mode()
+
+    for slot in batch.ordered_slots:
+        batch.record_stock_programming(
+            slot.number,
+            succeeded=True,
+        )
+
+    assert batch.state is BatchState.STOCK_PROGRAMMED
+
+    with pytest.raises(InvalidBatchTransition):
+        batch.request_stock_rf_mode()
+
+    for slot in batch.ordered_slots:
+        assert slot.stock_mac is not None
+
+        batch.record_stock_readback(
+            slot.number,
+            str(slot.stock_mac),
+        )
+
+    assert (
+        batch.state
+        is BatchState.STOCK_READBACK_VERIFIED
+    )
+
+    batch.request_stock_rf_mode()
+
+    assert (
+        batch.state
+        is BatchState.AWAITING_STOCK_RF_MODE
+    )
+
+

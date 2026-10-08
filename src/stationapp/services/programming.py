@@ -160,6 +160,26 @@ class ProgrammingService:
             programming=result,
         )
 
+    def read_stock_mac(self, target: ProgrammingTarget, *, cancellation_token: CancellationToken | None = None) -> MacReadbackResult:
+        """Read the device MAC after Stock programming."""
+
+        self._require_purpose(target, MacPurpose.STOCK_RF_TEST)
+
+        return self._driver.read_mac_structured(
+            com_port=target.com_port,
+            baud=self._stock_profile.baud,
+            timeout_seconds=self._readback_timeout_seconds,
+            cancellation_token=cancellation_token,
+        )
+
+
+    def verify_stock_mac(self, target: ProgrammingTarget, *, cancellation_token: CancellationToken | None = None) -> SlotReadbackResult:
+        """Read back and verify the temporary Stock RF-test MAC."""
+
+        readback = self.read_stock_mac(target, cancellation_token=cancellation_token)
+        verification = compare_readback(expected=target.mac, readback=readback)
+        return SlotReadbackResult(target=target, readback=readback,verification=verification)
+
     def read_pricol_mac(self, target: ProgrammingTarget, *, cancellation_token: CancellationToken | None = None) -> MacReadbackResult:
         """Read the device MAC after Pricol programming."""
 

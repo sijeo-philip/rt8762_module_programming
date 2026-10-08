@@ -30,6 +30,7 @@ class BatchState(str, Enum):
     AWAITING_STOCK_PROGRAM_MODE = "AWAITING_STOCK_PROGRAM_MODE"
     STOCK_PROGRAMMING = "STOCK_PROGRAMMING"
     STOCK_PROGRAMMED = "STOCK_PROGRAMMED"
+    STOCK_READBACK_VERIFIED = "STOCK_READBACK_VERIFIED"
 
     AWAITING_STOCK_RF_MODE = "AWAITING_STOCK_RF_MODE"
     STOCK_RF_TESTING = "STOCK_RF_TESTING"
@@ -190,13 +191,28 @@ class Batch:
             
         if all(item.state is DeviceState.STOCK_PROGRAMMED for item in self.ordered_slots):
             self.state = BatchState.STOCK_PROGRAMMED
-            
+
+
+    def record_stock_readback(self, slot_number: int, reported_mac: str) -> None:
+        """Record and validate an MPCLI Stock MAC readback."""
+
+        self._require_state(BatchState.STOCK_PROGRAMMED)
+        slot = self._get_slot(slot_number)
+        try:
+            slot.verify_stock_readback(reported_mac)
+
+        except VerificationMismatch:
+            self.place_on_hold(slot.hold_reason or (f"Stock MAC readback verification failed for slot {slot_number}"))
+            raise
+
+        if all(item.state is DeviceState.STOCK_READBACK_VERIFIED for item in self.ordered_slots):
+            self.state = BatchState.STOCK_READBACK_VERIFIED     
     # -----------------------------------------------------------------------------------
     # Only RF-test stage: stock firmware
     # -----------------------------------------------------------------------------------
     
     def request_stock_rf_mode(self) -> None:
-        self._transition(BatchState.STOCK_PROGRAMMED, BatchState.AWAITING_STOCK_RF_MODE)
+        self._transition(BatchState.STOCK_READBACK_VERIFIED, BatchState.AWAITING_STOCK_RF_MODE)
         
     def begin_stock_rf_test(self) -> None:
         self._transition(BatchState.AWAITING_STOCK_RF_MODE, BatchState.STOCK_RF_TESTING)

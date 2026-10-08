@@ -45,6 +45,7 @@ def test_stock_programming_and_rf_confirmation() -> None:
     slot.assign_stock_mac(stock)
     slot.begin_stock_programming()
     slot.complete_stock_programming(True)
+    slot.verify_stock_readback(stock.address)
 
     assert stock.status is MacStatus.ISSUED
 
@@ -66,6 +67,7 @@ def test_stock_rf_mismatch_holds_device_and_mac() -> None:
     slot.assign_stock_mac(stock)
     slot.begin_stock_programming()
     slot.complete_stock_programming(True)
+    slot.verify_stock_readback(stock.address)
 
     with pytest.raises(VerificationMismatch):
         slot.verify_stock_rf("AA:BB:CC:00:00:02")
@@ -88,6 +90,7 @@ def test_pricol_uses_different_mac_and_readback_only() -> None:
     slot.assign_stock_mac(stock)
     slot.begin_stock_programming()
     slot.complete_stock_programming(True)
+    slot.verify_stock_readback(stock.address)
     slot.verify_stock_rf(stock.address)
 
     pricol = reserved_mac(
@@ -116,6 +119,7 @@ def test_stock_mac_cannot_be_reused_as_pricol_mac() -> None:
     slot.assign_stock_mac(stock)
     slot.begin_stock_programming()
     slot.complete_stock_programming(True)
+    slot.verify_stock_readback(stock.address)
     slot.verify_stock_rf(stock.address)
 
     pricol = reserved_mac(
@@ -141,6 +145,7 @@ def test_pricol_readback_mismatch_holds_device() -> None:
     slot.assign_stock_mac(stock)
     slot.begin_stock_programming()
     slot.complete_stock_programming(True)
+    slot.verify_stock_readback(stock.address)
     slot.verify_stock_rf(stock.address)
 
     pricol = reserved_mac(
@@ -178,6 +183,7 @@ def completed_slot() -> JigSlot:
     slot.assign_stock_mac(stock)
     slot.begin_stock_programming()
     slot.complete_stock_programming(True)
+    slot.verify_stock_readback(stock.address)
     slot.verify_stock_rf(stock.address)
 
     pricol = reserved_mac(
@@ -226,3 +232,64 @@ def test_failed_device_still_receives_qr_genealogy() -> None:
 
     assert slot.state is DeviceState.QR_BOUND
     assert slot.module_qr == "MODULE-FAILED-001"
+
+@pytest.mark.unit
+def test_stock_rf_requires_mpcli_readback() -> None:
+    slot = JigSlot(1)
+    slot.bind_port("USB-SERIAL-001")
+
+    stock = reserved_mac(
+        address="AA:BB:CC:00:00:01",
+        purpose=MacPurpose.STOCK_RF_TEST,
+    )
+
+    slot.assign_stock_mac(stock)
+    slot.begin_stock_programming()
+    slot.complete_stock_programming(True)
+
+    with pytest.raises(InvalidDeviceTransition):
+        slot.verify_stock_rf(stock.address)
+
+    assert slot.state is DeviceState.STOCK_PROGRAMMED
+
+    slot.verify_stock_readback(stock.address)
+
+    assert (
+        slot.state
+        is DeviceState.STOCK_READBACK_VERIFIED
+    )
+
+    assert slot.stock_readback_mac == stock.address
+    assert stock.status is MacStatus.ISSUED
+
+    slot.verify_stock_rf(stock.address)
+
+    assert slot.state is DeviceState.STOCK_RF_CONFIRMED
+    assert stock.status is MacStatus.CONFIRMED
+
+@pytest.mark.unit
+def test_stock_readback_mismatch_holds_slot() -> None:
+    slot = JigSlot(1)
+    slot.bind_port("USB-SERIAL-001")
+
+    stock = reserved_mac(
+        address="AA:BB:CC:00:00:01",
+        purpose=MacPurpose.STOCK_RF_TEST,
+    )
+
+    slot.assign_stock_mac(stock)
+    slot.begin_stock_programming()
+    slot.complete_stock_programming(True)
+
+    with pytest.raises(VerificationMismatch):
+        slot.verify_stock_readback(
+            "AA:BB:CC:00:00:02"
+        )
+
+    assert slot.state is DeviceState.HOLD
+    assert stock.status is MacStatus.HOLD
+
+    assert slot.stock_readback_mac == MacAddress.parse(
+        "AA:BB:CC:00:00:02"
+    )
+

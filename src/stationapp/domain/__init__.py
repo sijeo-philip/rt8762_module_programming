@@ -36,6 +36,16 @@ from stationapp.domain.slot import (
 )
 from stationapp.domain.audit import AuditRecord
 
+from stationapp.domain.golden_rig import (
+    GOLDEN_RIG_PROTOCOL_VERSION,
+    GoldenRigOutcome,
+    GoldenRigProtocolError,
+    GoldenRigRequest,
+    GoldenRigResponse,
+    GoldenRigSlotResult,
+    GoldenRigTarget,
+)
+
 __all__ = [
     "AllocatedMac",
     "AllocationDocument",
@@ -67,4 +77,11 @@ __all__ = [
     "SlotNotBound",
     "VerificationMismatch",
     "AuditRecord",
+    "GOLDEN_RIG_PROTOCOL_VERSION",
+    "GoldenRigOutcome",
+    "GoldenRigProtocolError",
+    "GoldenRigRequest",
+    "GoldenRigResponse",
+    "GoldenRigSlotResult",
+    "GoldenRigTarget",
 ]

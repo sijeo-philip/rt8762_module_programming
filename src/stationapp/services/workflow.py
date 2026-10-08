@@ -155,6 +155,17 @@ class WorkflowService:
             )
 
         if state is BatchState.STOCK_PROGRAMMED:
+            return self._automatic(
+                batch, 
+                headline="VERIFYING STOCK MACS",
+                instruction=(
+                    "Reading Stock MAC addresses through MPCLI "
+                    "and verifying each address aganist its "
+                    "reserved identity. Do not remove modules."
+                ),
+            )
+
+        if state is BatchState.STOCK_READBACK_VERIFIED:
             return OperatorWorkflow(
                 batch_id=batch.batch_id,
                 batch_state=state,
@@ -163,9 +174,11 @@ class WorkflowService:
                 ),
                 headline="PREPARE FOR RF TEST",
                 instruction=(
-                    "Set the jig for Stock RF verification."
+                    "Stock MAC readback verification passed."
+                    "Set the jig for Golden Module Rig "
+                    "RF verification."
                 ),
-                allow_start_button=True,
+                allow_start_button=True
             )
 
         if state is BatchState.AWAITING_STOCK_RF_MODE:

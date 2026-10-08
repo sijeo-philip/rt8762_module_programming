@@ -30,6 +30,7 @@ class DeviceState(str, Enum):
     STOCK_MAC_RESERVED = "STOCK_MAC_RESERVED"
     STOCK_PROGRAMMING = "STOCK_PROGRAMMING"
     STOCK_PROGRAMMED = "STOCK_PROGRAMMED"
+    STOCK_READBACK_VERIFIED = "STOCK_READBACK_VERIFIED"
     STOCK_RF_CONFIRMED = "STOCK_RF_CONFIRMED"
     
     PRICOL_MAC_RESERVED = "PRICOL_MAC_RESERVED"
@@ -72,7 +73,8 @@ class JigSlot:
     
     stock_mac_record: AllocatedMac | None = None
     pricol_mac_record: AllocatedMac | None = None
-    
+
+    stock_readback_mac: MacAddress | None = None
     golden_reported_mac: MacAddress | None = None
     pricol_readback_mac: MacAddress | None = None
     
@@ -225,9 +227,31 @@ class JigSlot:
         self.stock_mac_record.mark_issued()
         self.state = DeviceState.STOCK_PROGRAMMED
         
-        
-    def verify_stock_rf(self, reported: str | MacAddress) -> None:
+    def verify_stock_readback(self, reported: str | MacAddress) -> None:
+        """Verify Stock MAC through local MPCLI readback."""
+
         self._require_state(DeviceState.STOCK_PROGRAMMED)
+
+        expected = self._require_stock_mac()
+        actual = MacAddress.parse(reported)
+
+        self.stock_readback_mac = actual
+
+        if actual != expected:
+
+            reason = (
+                f"Stock MAC readback mismatch for slot "
+                f"{self.number}: expected {expected}, "
+                f"reported {actual}"
+            )
+
+            self.place_on_hold(reason)
+            raise VerificationMismatch(reason)
+
+        self.state = DeviceState.STOCK_READBACK_VERIFIED
+
+    def verify_stock_rf(self, reported: str | MacAddress) -> None:
+        self._require_state(DeviceState.STOCK_READBACK_VERIFIED)
         expected = self._require_stock_mac()
         actual = MacAddress.parse(reported)
         self.golden_reported_mac = actual

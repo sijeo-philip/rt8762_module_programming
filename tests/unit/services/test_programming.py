@@ -519,5 +519,89 @@ def test_cancellation_token_is_forwarded() -> None:
         is token
     )
 
+def test_stock_readback_match() -> None:
+
+    expected = MacAddress.parse(
+        "AABBCCDDEE01"
+    )
+
+    driver = FakeDriver(
+        readback_mac=expected
+    )
+
+    service = make_service(driver)
+
+    result = service.verify_stock_mac(
+        stock_target()
+    )
+
+    assert (
+        result.verification.outcome
+        is IdentityOutcome.MATCH
+    )
+
+    assert result.verification.matched is True
+    assert result.readback.mac == expected
+
+def test_stock_readback_mismatch() -> None:
+
+    driver = FakeDriver(
+        readback_mac=MacAddress.parse(
+            "AABBCCDDEE02"
+        )
+    )
+
+    service = make_service(driver)
+
+    result = service.verify_stock_mac(
+        stock_target()
+    )
+
+    assert (
+        result.verification.outcome
+        is IdentityOutcome.MISMATCH
+    )
+
+    assert result.verification.matched is False
+
+    assert (
+        result.verification.expected
+        == MacAddress.parse(
+            "AABBCCDDEE01"
+        )
+    )
+
+    assert (
+        result.verification.reported
+        == MacAddress.parse(
+            "AABBCCDDEE02"
+        )
+    )
+
+def test_stock_readback_missing_is_not_verified() -> None:
+
+    driver = FakeDriver(
+        readback_mac=None
+    )
+
+    service = make_service(driver)
+
+    result = service.verify_stock_mac(
+        stock_target()
+    )
+
+    assert (
+        result.verification.outcome
+        is IdentityOutcome.NOT_VERIFIED
+    )
+
+    assert result.verification.matched is False
+
+def test_stock_readback_rejects_pricol_target() -> None:
+
+    service = make_service(FakeDriver())
+
+    with pytest.raises(ValueError, match="expected STOCK_RF_TEST"):
+        service.verify_stock_mac(pricol_target())
 
 

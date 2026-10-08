@@ -10,6 +10,7 @@ from stationapp.services.serial_topology import (
     ResolvedSlot,
     SerialTopology,
     SlotTopologyStatus,
+    SlotBindingService,
 )
 from stationapp.services.slot_binding import (
     SlotBinding,
@@ -20,6 +21,12 @@ from stationapp.ui.main_window import (
 
 from stationapp.services.slot_eligibility import (
     SlotEligibilityService,
+)
+
+import pytest
+
+from stationapp.services.slot_binding import (
+    InvalidBindingFileError,
 )
 
 class FakeTopologyService:
@@ -84,4 +91,40 @@ def test_topology_table_displays_slot(qtbot):
     assert (window._slot_table.item(0,2).text() == "ELIGIBLE")
     assert (window._slot_table.item(0, 3).text() == "COM7")
 
-    
+
+
+def test_corrupted_binding_file_is_not_silently_ignored(tmp_path):
+
+    binding_file = (tmp_path / "serial_bindings.json")
+
+    binding_file.write_text("{ invalid json", encoding="utf-8")
+
+    service = SlotBindingService(
+        binding_file=binding_file,
+        station_id="STATION-01",
+        jig_id="JIG-01",
+        jig_positions=8,
+    )
+
+    with pytest.raises(InvalidBindingFileError):
+        service.load()
+
+
+def test_empty_binding_file_means_uncommissioned_jig(tmp_path):
+
+    binding_file = (tmp_path / "serial_bindings.json")
+
+    binding_file.write_text("", encoding="utf-8")
+
+    service = SlotBindingService(
+        binding_file=binding_file,
+        station_id="STATION-01",
+        jig_id="JIG-01",
+        jig_positions=8,
+    )
+
+    config = service.load()
+
+    assert config.bindings == ()
+    assert config.complete is False
+

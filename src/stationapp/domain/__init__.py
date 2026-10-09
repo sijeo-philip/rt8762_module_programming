@@ -46,6 +46,13 @@ from stationapp.domain.golden_rig import (
     GoldenRigTarget,
 )
 
+from stationapp.domain.golden_rig_binding import (
+    GoldenRigAuthorizationError,
+    GoldenRigBinding,
+    GoldenRigBindingError,
+    GoldenRigNotBoundError,
+)
+
 __all__ = [
     "AllocatedMac",
     "AllocationDocument",
@@ -84,4 +91,8 @@ __all__ = [
     "GoldenRigResponse",
     "GoldenRigSlotResult",
     "GoldenRigTarget",
+    "GoldenRigAuthorizationError",
+    "GoldenRigBinding",
+    "GoldenRigBindingError",
+    "GoldenRigNotBoundError",
 ]

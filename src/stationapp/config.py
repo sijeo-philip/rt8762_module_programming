@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/station.db"
     log_dir: Path = Path("./logs")
     serial_binding_file: Path = Path("./data/serial_bindings.json")
+    golden_rig_binding_file: Path = Path("./data/golden_rig_binding.json")
+    golden_rig_ca_certificate: Path = Path("./config/certificates/golden_rig_ca.pem")
     
 
     # ----External Tools ---

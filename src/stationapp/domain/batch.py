@@ -20,6 +20,16 @@ from stationapp.domain.errors import (
 from stationapp.domain.mac import AllocatedMac, MacPurpose, MacStatus
 from stationapp.domain.slot import DeviceState, JigSlot
 
+from stationapp.domain.golden_rig import (
+    GoldenRigOutcome,
+    GoldenRigProtocolError,
+)
+
+from stationapp.services.golden_rig_service import (
+    GoldenRigTestReport,
+    INFRASTRUCTURE_ERROR_CODES,
+)
+
 class BatchState(str, Enum):
     CREATED = "CREATED"
 

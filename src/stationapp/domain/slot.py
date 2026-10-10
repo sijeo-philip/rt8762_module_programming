@@ -21,6 +21,11 @@ from stationapp.domain.mac import (
     MacStatus,
 )
 
+from stationapp.domain.golden_rig import (
+    GoldenRigOutcome,
+    GoldenRigSlotResult,
+)
+
 class DeviceState(str, Enum):
     
     EMPTY = "EMPTY"
@@ -77,6 +82,7 @@ class JigSlot:
     stock_readback_mac: MacAddress | None = None
     golden_reported_mac: MacAddress | None = None
     pricol_readback_mac: MacAddress | None = None
+    golden_rf_result: GoldenRigSlotResult | None = None
     
     functional: FunctionalResults = field(default_factory = FunctionalResults)
     state: DeviceState = DeviceState.EMPTY
@@ -264,6 +270,54 @@ class JigSlot:
         assert self.stock_mac_record is not None
         self.stock_mac_record.confirm()
         self.state = DeviceState.STOCK_RF_CONFIRMED
+
+
+    
+    def record_golden_rf_evidence(self, result: GoldenRigSlotResult) -> None:
+        """Apply one fully validated Golden Rig DUT result.
+
+        The caller must validate the complete request/response
+        and classify infrastructure faults before calling this.
+        """
+
+        self._require_state(DeviceState.STOCK_READBACK_VERIFIED)
+
+        if self.golden_rf_result is not None:
+            raise InvalidDeviceTransition(f"Slot {self.number} already has an RF result")
+
+        if result.slot_number != self.number:
+            raise InvalidDeviceTransition("Golden Rig result belongs to another slot")
+
+        expected = self._require_stock_mac()
+
+        if result.expected_mac != expected:
+            raise VerificationMismatch(
+                f"Slot {self.number} expected MAC mismatch"
+            )
+
+        # Preserve the original observations.
+        self.golden_rf_result = result
+        self.golden_reported_mac = result.reported_mac
+
+        outcome = result.outcome
+
+        if outcome is GoldenRigOutcome.PASS:
+            # Existing method performs identity verification,
+            # MAC confirmation, and state transition.
+            self.verify_stock_rf(result.reported_mac)
+            return
+
+        reason = (
+            f"Golden Rig RF {outcome.value} "
+            f"for slot {self.number}: "
+            f"{result.error_code or 'NO_ERROR_CODE'}"
+        )
+
+        if result.detail:
+            reason += f" - {result.detail}"
+
+        self.place_on_hold(reason)
+
         
         
     def assign_pricol_mac(self, mac_record: AllocatedMac) -> None:
@@ -294,6 +348,9 @@ class JigSlot:
 
         self.pricol_mac_record = mac_record
         self.state = DeviceState.PRICOL_MAC_RESERVED
+
+
+    
 
         
     def begin_pricol_programming(self) -> None:

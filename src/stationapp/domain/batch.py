@@ -30,6 +30,8 @@ from stationapp.services.golden_rig_service import (
     INFRASTRUCTURE_ERROR_CODES,
 )
 
+from stationapp.domain.golden_rig import GoldenRigOutcome
+
 class BatchState(str, Enum):
     CREATED = "CREATED"
 
@@ -303,56 +305,165 @@ class Batch:
     # Pricol reservation, programming, and MP CLI read-back
     #-----------------------------------------------------------------------------------
     
-    def accept_pricol_reservations(self, records: tuple[AllocatedMac, ...]) -> None:
+    def accept_pricol_reservations(self,records: tuple[AllocatedMac, ...]) -> None:
+        """Reserve Pricol MACs only for RF-confirmed DUT slots."""
+
         self._require_state(BatchState.STOCK_RF_CONFIRMED)
-        self._validate_reservation_set(records, MacPurpose.PRICOL_PRODUCTION)
-        
-        stock_addresses = { slot.stock_mac for slot in self.ordered_slots }
-        pricol_addresses = {record.address for record in records}
-        
-        overlap = stock_addresses & pricol_addresses
+        eligible = self.pricol_eligible_slots
+        expected_slots = {slot.number for slot in eligible}
+        if not expected_slots:
+            raise InvalidBatchTransition("No RF-confirmed DUTs available for Pricol")
+        if not isinstance(records, tuple):
+            raise InvalidBatchTransition("Pricol reservations must be a tuple")
+        if len(records) != len(expected_slots):
+            raise InvalidBatchTransition(f"Expected {len(expected_slots)} Pricol MACs, received {len(records)}")
+
+        supplied_slots = [record.slot_number for record in records]
+        if (len(supplied_slots) != len(set(supplied_slots)) or set(supplied_slots) != expected_slots):
+            raise InvalidBatchTransition("Pricol reservation slots must match RF-confirmed slots {sorted(expected_slots)}")
+
+        addresses = [record.address for record in records]
+        if len(addresses) != len(set(addresses)):
+            raise DuplicateMacAddress("Duplicate Pricol MAC in reservation set")
+
+        # Check against all Stock MAC addresses,
+        # including failed and held slots.
+        stock_addresses = {slot.stock_mac for slot in self.occupied_slots if slot.stock_mac is not None}
+        overlap = stock_addresses.intersection(addresses)
+
         if overlap:
-            raise DuplicateMacAddress("Pricol allocation reuses stock MAC(s): "+", ".join(str(mac) for mac in sorted(overlap)))
-            
+            raise DuplicateMacAddress(
+                "Pricol MAC reuses a Stock MAC: "
+                + ", ".join(
+                    str(mac)
+                    for mac in sorted(overlap)
+                )
+            )
+
+        # Validate the complete reservation set
+        # before modifying individual DUT slots.
+        for record in records:
+
+            if record.purpose is not MacPurpose.PRICOL_PRODUCTION:
+                raise InvalidBatchTransition("Incorrect Pricol MAC purpose")
+
+            if record.status is not MacStatus.RESERVED:
+                raise InvalidBatchTransition("Pricol MAC is not RESERVED")
+
+            if record.batch_id != self.batch_id:
+                raise InvalidBatchTransition("Pricol MAC belongs to another batch")
+
+            if record.slot_number not in expected_slots:
+                raise InvalidBatchTransition("Pricol MAC reserved for an ineligible slot")
+
+            if record.module_qr is not None:
+                raise InvalidBatchTransition("Pricol MAC unexpectedly has a module QR")
+
+            slot = self.slots[record.slot_number]
+
+            if slot.pricol_mac_record is not None:
+                raise InvalidBatchTransition(f"Slot {slot.number} already has a Pricol MAC")
+
+        # All validation has passed.
         for record in records:
             assert record.slot_number is not None
+
             self.slots[record.slot_number].assign_pricol_mac(record)
-            
+
         self.state = BatchState.PRICOL_MACS_RESERVED
         
     def request_pricol_program_mode(self) -> None:
         self._transition(BatchState.PRICOL_MACS_RESERVED, BatchState.AWAITING_PRICOL_PROGRAM_MODE)
         
     def confirm_pricol_program_mode(self) -> None:
-        self._transition(BatchState.AWAITING_PRICOL_PROGRAM_MODE, BatchState.PRICOL_PROGRAMMING)
-        for slot in self.ordered_slots:
+        self._require_state(BatchState.AWAITING_PRICOL_PROGRAM_MODE)
+
+        candidates = tuple(
+            slot
+            for slot in self.occupied_slots
+            if slot.state is DeviceState.PRICOL_MAC_RESERVED
+        )
+
+        if not candidates:
+            raise InvalidBatchTransition(
+                "No Pricol programming candidates"
+            )
+
+        for slot in candidates:
+            if (slot.pricol_mac_record is None or slot.pricol_mac_record.status is not MacStatus.RESERVED):
+                raise InvalidBatchTransition(f"Slot {slot.number} has invalid Pricol reservation")
+
+        for slot in candidates:
             slot.begin_pricol_programming()
+
+        self.state = BatchState.PRICOL_PROGRAMMING
             
+    
     def record_pricol_programming(self, slot_number: int, *, succeeded: bool) -> None:
+        """Record independent Pricol programming outcome."""
         self._require_state(BatchState.PRICOL_PROGRAMMING)
+        if slot_number not in self.occupied_slot_numbers:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not occupied")
         slot = self._get_slot(slot_number)
+        if slot.state is not DeviceState.PRICOL_PROGRAMMING:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not programming Pricol")
         slot.complete_pricol_programming(succeeded)
-        
-        if not succeeded:
-            self.place_on_hold(f"Pricol programming failed or become uncertain for slot {slot_number}")
+        if any(item.state is DeviceState.PRICOL_PROGRAMMING for item in self.occupied_slots):
             return
-            
-        if all(item.state is DeviceState.PRICOL_PROGRAMMED for item in self.ordered_slots):
+        if any(item.state is DeviceState.PRICOL_PROGRAMMED for item in self.occupied_slots):
             self.state = BatchState.PRICOL_PROGRAMMED
+            return
+        self.place_on_hold("No DUTs completed Pricol programming")
+
             
+    
     def record_pricol_readback(self, slot_number: int, reported_mac: str) -> None:
-        """ Record MP CLI read-back; no RF test is performed here."""
+        """Verify one permanent Pricol MAC through MPCLI."""
+
         self._require_state(BatchState.PRICOL_PROGRAMMED)
+
+        if slot_number not in self.occupied_slot_numbers:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not occupied")
         slot = self._get_slot(slot_number)
-        
         try:
             slot.verify_pricol_readback(reported_mac)
         except VerificationMismatch:
-            self.place_on_hold(slot.hold_reason or f"Pricol read-back failed for slot {slot_number}")
+            # Only this slot and its unconfirmed Pricol MAC
+            # are quarantined. Other candidates continue.
+            self._complete_pricol_readback_stage()
             raise
-            
-        if all(item.state is DeviceState.PRICOL_MAC_CONFIRMED for item in self.ordered_slots):
+        self._complete_pricol_readback_stage()
+
+
+    def record_pricol_readback_unverified(self, slot_number: int, *, reason: str) -> None:
+        """Quarantine uncertain or unavailable MPCLI readback."""
+
+        self._require_state(BatchState.PRICOL_PROGRAMMED)
+
+        if slot_number not in self.occupied_slot_numbers:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not occupied")
+        slot = self._get_slot(slot_number)
+        if slot.state is not DeviceState.PRICOL_PROGRAMMED:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not awaiting Pricol readback")
+
+        if not reason.strip():
+            raise ValueError("Readback failure reason is required")
+
+        slot.place_on_hold(f"Pricol MAC readback not verified: {reason}")
+        self._complete_pricol_readback_stage()
+
+
+    def _complete_pricol_readback_stage(self) -> None:
+        """Advance after all remaining Pricol readbacks resolve."""
+
+        if any(slot.state is DeviceState.PRICOL_PROGRAMMED for slot in self.occupied_slots):
+            return
+
+        if any(slot.state is DeviceState.PRICOL_MAC_CONFIRMED for slot in self.occupied_slots):
             self.state = BatchState.PRICOL_READBACK_VERIFIED
+        else:
+            self.place_on_hold("No Pricol MAC addresses passed readback")
+
             
     # ---------------------------------------------------------------------------------
     # Two-reset functional test
@@ -604,6 +715,44 @@ class Batch:
     def stock_readback_targets(self) -> tuple[int, ...]:
         return tuple(slot.number for slot in self.occupied_slots if slot.state is DeviceState.STOCK_PROGRAMMED)
 
-            
-            
-        
+    
+    @property
+    def pricol_eligible_slots(self) -> tuple[JigSlot, ...]:
+        """Occupied slots with confirmed Stock RF evidence."""
+        return tuple(
+            slot
+            for slot in self.occupied_slots
+            if slot.state is DeviceState.STOCK_RF_CONFIRMED
+            and slot.stock_mac_record is not None
+            and slot.stock_mac_record.status is MacStatus.CONFIRMED
+            and slot.golden_rf_result is not None
+            and slot.golden_rf_result.outcome is GoldenRigOutcome.PASS
+        )
+
+
+    @property
+    def pricol_programming_targets(self) -> tuple[int, ...]:
+        return tuple(
+            slot.number
+            for slot in self.occupied_slots
+            if slot.state is DeviceState.PRICOL_MAC_RESERVED
+        )
+
+
+    @property
+    def pricol_readback_targets(self) -> tuple[int, ...]:
+        return tuple(
+            slot.number
+            for slot in self.occupied_slots
+            if slot.state is DeviceState.PRICOL_PROGRAMMED
+        )
+
+
+    @property
+    def pricol_confirmed_slots(self) -> tuple[int, ...]:
+        return tuple(
+            slot.number
+            for slot in self.occupied_slots
+            if slot.state is DeviceState.PRICOL_MAC_CONFIRMED
+        )
+

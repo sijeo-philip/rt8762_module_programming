@@ -17,6 +17,27 @@ from stationapp.domain import (
 )
 
 
+from uuid import uuid4
+
+from stationapp.domain.golden_rig import (
+    GoldenRigRequest,
+    GoldenRigResponse,
+    GoldenRigSlotResult,
+)
+
+from stationapp.services.golden_rig_eligibility import (
+    GoldenRigEligibilityService,
+)
+
+from stationapp.services.golden_rig_result_processor import (
+    GoldenRigResultProcessor,
+)
+
+from stationapp.services.golden_rig_service import (
+    GoldenRigTestReport,
+)
+
+
 def make_batch(slot_count: int = 4) -> Batch:
     return Batch(
         station_id="STN-01",
@@ -93,31 +114,74 @@ def advance_to_stock_rf(batch: Batch) -> None:
     batch.request_stock_rf_mode()
     batch.begin_stock_rf_test()
 
+def confirm_stock_rf_with_evidence(batch: Batch) -> None:
+    """Simulate complete, successful Golden Rig RF verification."""
+
+    assert batch.state is BatchState.STOCK_RF_TESTING
+
+    targets = GoldenRigEligibilityService().build_targets(
+        batch
+    )
+
+    request = GoldenRigRequest(
+        request_id=str(uuid4()),
+        batch_id=batch.batch_id,
+        station_id=batch.station_id,
+        jig_id=batch.jig_id,
+        targets=targets,
+    )
+
+    response = GoldenRigResponse(
+        request_id=request.request_id,
+        rig_id="GOLDEN-RIG-01",
+        results=tuple(
+            GoldenRigSlotResult(
+                slot_number=target.slot_number,
+                expected_mac=target.expected_mac,
+                reported_mac=target.expected_mac,
+                connected=True,
+                disconnected=True,
+                error_code=None,
+            )
+            for target in targets
+        ),
+    )
+
+    report = GoldenRigTestReport(
+        request=request,
+        response=response,
+    )
+
+    GoldenRigResultProcessor().apply(
+        batch,
+        report,
+    )
+
+    assert batch.state is BatchState.STOCK_RF_CONFIRMED
+
+    for target in targets:
+        slot = batch.slots[target.slot_number]
+
+        assert slot.golden_rf_result is not None
+        assert slot.state is DeviceState.STOCK_RF_CONFIRMED
+        assert slot.stock_mac_record.status is MacStatus.CONFIRMED
+
 
 def advance_to_pricol_readback(batch: Batch) -> None:
     advance_to_stock_rf(batch)
 
-    for slot in batch.ordered_slots:
-        assert slot.stock_mac is not None
-        batch.record_stock_rf_result(
-            slot.number,
-            str(slot.stock_mac),
-        )
+    # Replace legacy MAC-only RF confirmation
+    # with complete Golden Rig evidence.
+    confirm_stock_rf_with_evidence(batch)
 
-    pricol_records = reserve_records(
-        batch,
-        purpose=MacPurpose.PRICOL_PRODUCTION,
-        prefix="DD:EE:FF:00:00",
-    )
+    pricol_records = reserve_records(batch, purpose=MacPurpose.PRICOL_PRODUCTION, prefix="DD:EE:FF:00:00")
+
     batch.accept_pricol_reservations(pricol_records)
     batch.request_pricol_program_mode()
     batch.confirm_pricol_program_mode()
 
     for slot in batch.ordered_slots:
-        batch.record_pricol_programming(
-            slot.number,
-            succeeded=True,
-        )
+        batch.record_pricol_programming(slot.number, succeeded=True)
 
 
 def advance_to_functional_app_test(batch: Batch) -> None:
@@ -255,24 +319,20 @@ def test_pricol_macs_are_different_from_stock_macs() -> None:
     batch = make_batch()
     advance_to_stock_rf(batch)
 
-    for slot in batch.ordered_slots:
-        batch.record_stock_rf_result(
-            slot.number,
-            str(slot.stock_mac),
-        )
+    confirm_stock_rf_with_evidence(batch)
 
     records = reserve_records(
         batch,
         purpose=MacPurpose.PRICOL_PRODUCTION,
         prefix="DD:EE:FF:00:00",
     )
+
     batch.accept_pricol_reservations(records)
 
     for slot in batch.ordered_slots:
         assert slot.stock_mac is not None
         assert slot.pricol_mac is not None
         assert slot.stock_mac != slot.pricol_mac
-
 
 @pytest.mark.unit
 def test_pricol_readback_leads_directly_to_functional_test() -> None:
@@ -293,7 +353,7 @@ def test_pricol_readback_leads_directly_to_functional_test() -> None:
 
 
 @pytest.mark.unit
-def test_wrong_pricol_readback_holds_batch() -> None:
+def test_wrong_pricol_readback_holds_only_affected_slot() -> None:
     batch = make_batch()
     advance_to_pricol_readback(batch)
 
@@ -303,7 +363,27 @@ def test_wrong_pricol_readback_holds_batch() -> None:
             "DD:EE:FF:FF:FF:FF",
         )
 
-    assert batch.state is BatchState.HOLD
+    assert batch.slots[1].state is DeviceState.HOLD
+    assert batch.slots[1].pricol_mac_record.status is MacStatus.HOLD
+
+    # Three other DUTs still need readback.
+    assert batch.state is BatchState.PRICOL_PROGRAMMED
+
+    for number in (2, 3, 4):
+        assert batch.slots[number].pricol_mac is not None
+
+        batch.record_pricol_readback(
+            number,
+            str(batch.slots[number].pricol_mac),
+        )
+
+    assert batch.state is BatchState.PRICOL_READBACK_VERIFIED
+
+    for number in (2, 3, 4):
+        assert (
+            batch.slots[number].state
+            is DeviceState.PRICOL_MAC_CONFIRMED
+        )
 
 
 @pytest.mark.unit
@@ -568,5 +648,31 @@ def test_all_stock_programming_failures_hold_batch() -> None:
             is MacStatus.HOLD
         )
 
+@pytest.mark.unit
+def test_legacy_mac_only_rf_cannot_authorize_pricol() -> None:
+    batch = make_batch()
+    advance_to_stock_rf(batch)
 
+    for slot in batch.ordered_slots:
+        batch.record_stock_rf_result(
+            slot.number,
+            str(slot.stock_mac),
+        )
 
+    assert batch.state is BatchState.STOCK_RF_CONFIRMED
+
+    # MAC-only verification does not provide
+    # Bluetooth connection/disconnection evidence.
+    assert batch.pricol_eligible_slots == ()
+
+    records = reserve_records(
+        batch,
+        purpose=MacPurpose.PRICOL_PRODUCTION,
+        prefix="DD:EE:FF:00:00",
+    )
+
+    with pytest.raises(
+        InvalidBatchTransition,
+        match="No RF-confirmed DUTs",
+    ):
+        batch.accept_pricol_reservations(records)

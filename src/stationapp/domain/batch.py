@@ -84,6 +84,7 @@ class Batch:
     
     slots: dict[int, JigSlot] = field(init=False)
     hold_reason: str | None = None
+    occupied_slot_numbers: tuple[int, ...] | None = None
     
     def __post_init__(self) -> None:
         if self.slot_count not in (4, 8):
@@ -99,15 +100,19 @@ class Batch:
             raise ValueError("batch_id cannot be empty")
             
         self.slots = { number: JigSlot(number) for number in range(1, self.slot_count + 1) }
-        
+        if self.occupied_slot_numbers is None:
+            self.occupied_slot_numbers = tuple(range(1, self.slot_count + 1))
+        else:
+            self._validate_occupied_slots(self.occupied_slot_numbers)
+
     @property
     def ordered_slots(self) -> tuple[JigSlot, ...]:
+        """Return every physical jig position in slot order."""
         return tuple(self.slots[number] for number in sorted(self.slots))
-        
         
     @property
     def all_ports_bound(self) -> bool:
-        return all(slot.port_identity is not None for slot in self.ordered_slots)
+        return all(slot.port_identity is not None for slot in self.occupied_slots)
         
     @property
     def any_slot_held(self) -> bool:
@@ -139,13 +144,18 @@ class Batch:
         )
             
     def bind_port(self, slot_number: int, port_identity: str) -> None:
-        if self.state not in {
-            BatchState.PORT_BINDING,
-            BatchState.PORTS_BOUND,
-        }:
+        """Bind a USB port to one occupied physical DUT slot."""
+
+        if self.state not in { BatchState.PORT_BINDING, BatchState.PORTS_BOUND}:
             raise InvalidBatchTransition(
                 f"Ports cannot be bound while batch is "
                 f"{self.state.value}"
+            )
+
+        if slot_number not in self.occupied_slot_numbers:
+            raise InvalidBatchTransition(
+                f"Slot {slot_number} is not populated "
+                "in the current batch"
             )
 
         identity = port_identity.strip()
@@ -153,21 +163,21 @@ class Batch:
         if not identity:
             raise ValueError("port identity cannot be empty")
 
+        # Detect duplicate USB identities across
+        # the entire physical jig.
         for slot in self.ordered_slots:
-            if (
-                slot.number != slot_number
-                and slot.port_identity == identity
-            ):
+            if (slot.number != slot_number and slot.port_identity == identity):
                 raise InvalidBatchTransition(
-                    f"Port identity {identity} is already bound "
-                    f"to slot {slot.number}"
+                    f"Port identity {identity} is already "
+                    f"bound to slot {slot.number}"
                 )
 
         self._get_slot(slot_number).bind_port(identity)
 
+        # Only occupied positions are required
+        # to complete this production stage.
         if self.all_ports_bound:
             self.state = BatchState.PORTS_BOUND
-            
     # --------------------------------------------------------------------------------
     # Stock MAC reservation and programming
     # --------------------------------------------------------------------------------
@@ -186,37 +196,86 @@ class Batch:
         self._transition(BatchState.STOCK_MACS_RESERVED, BatchState.AWAITING_STOCK_PROGRAM_MODE)
         
     def confirm_stock_program_mode(self) -> None:
-        self._transition(BatchState.AWAITING_STOCK_PROGRAM_MODE, BatchState.STOCK_PROGRAMMING)
-        for slot in self.ordered_slots:
-            slot.begin_stock_programming()
-            
-    def record_stock_programming(self, slot_number: int, *, succeeded: bool) -> None:
-        self._require_state(BatchState.STOCK_PROGRAMMING)
-        slot = self._get_slot(slot_number)
-        slot.complete_stock_programming(succeeded)
-        
-        if not succeeded:
-            self.place_on_hold(f"Stock programming failed or become uncertain for slot {slot_number}")
-            return 
-            
-        if all(item.state is DeviceState.STOCK_PROGRAMMED for item in self.ordered_slots):
-            self.state = BatchState.STOCK_PROGRAMMED
+        self._require_state(BatchState.AWAITING_STOCK_PROGRAM_MODE)
 
+        for slot in self.occupied_slots:
+            if slot.state is not DeviceState.STOCK_MAC_RESERVED:
+                raise InvalidBatchTransition(f"Slot {slot.number} is not ready for Stock programming")
+
+        for slot in self.occupied_slots:
+            slot.begin_stock_programming()
+
+        self.state = BatchState.STOCK_PROGRAMMING
+            
+    
+    def record_stock_programming(self, slot_number: int, *, succeeded: bool) -> None:
+        """Record one independent Stock programming result."""
+
+        self._require_state(BatchState.STOCK_PROGRAMMING)
+
+        if slot_number not in self.occupied_slot_numbers:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not populated")
+
+        slot = self._get_slot(slot_number)
+
+        slot.complete_stock_programming(succeeded)
+
+        # Wait until all occupied slots have reported an outcome.
+        if any(item.state is DeviceState.STOCK_PROGRAMMING for item in self.occupied_slots):
+            return
+
+        # At least one module must have programmed successfully.
+        if any(item.state is DeviceState.STOCK_PROGRAMMED for item in self.occupied_slots):
+            self.state = BatchState.STOCK_PROGRAMMED
+            return
+
+        # There is no valid module to continue.
+        self.place_on_hold("No occupied slots completed Stock programming")
 
     def record_stock_readback(self, slot_number: int, reported_mac: str) -> None:
-        """Record and validate an MPCLI Stock MAC readback."""
+        """Record one MPCLI Stock MAC readback result."""
 
         self._require_state(BatchState.STOCK_PROGRAMMED)
+        if slot_number not in self.occupied_slot_numbers:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not populated")
+
         slot = self._get_slot(slot_number)
         try:
             slot.verify_stock_readback(reported_mac)
-
         except VerificationMismatch:
-            self.place_on_hold(slot.hold_reason or (f"Stock MAC readback verification failed for slot {slot_number}"))
+            # The affected slot and its issued MAC are held.
+            # Do not place the entire batch on HOLD.
+            self._complete_stock_readback_stage()
             raise
 
-        if all(item.state is DeviceState.STOCK_READBACK_VERIFIED for item in self.ordered_slots):
-            self.state = BatchState.STOCK_READBACK_VERIFIED     
+        self._complete_stock_readback_stage()
+
+
+    def record_stock_readback_unverified(self, slot_number: int, *, reason: str) -> None:
+        """Quarantine a Stock MAC when MPCLI cannot verify it."""
+
+        self._require_state(BatchState.STOCK_PROGRAMMED)
+        if slot_number not in self.occupied_slot_numbers:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not populated")
+        slot = self._get_slot(slot_number)
+        if slot.state is not DeviceState.STOCK_PROGRAMMED:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not awaiting readback")
+        if not reason.strip():
+            raise ValueError("Readback failure reason is required")
+        slot.place_on_hold(f"Stock MAC readback not verified: {reason}")
+        self._complete_stock_readback_stage()
+
+
+    def _complete_stock_readback_stage(self) -> None:
+        """Advance after every programming-success slot is resolved."""
+
+        if any(slot.state is DeviceState.STOCK_PROGRAMMED for slot in self.occupied_slots):
+            return
+        if any(slot.state is DeviceState.STOCK_READBACK_VERIFIED for slot in self.occupied_slots):
+            self.state = BatchState.STOCK_READBACK_VERIFIED
+        else:
+            self.place_on_hold("No Stock MAC addresses passed readback")
+
     # -----------------------------------------------------------------------------------
     # Only RF-test stage: stock firmware
     # -----------------------------------------------------------------------------------
@@ -421,9 +480,9 @@ class Batch:
     
     def _validate_reservation_set(self, records: tuple[AllocatedMac, ...], purpose: MacPurpose) -> None:
         """Validate a complete repository-reserved jig load."""
-        if len(records) != self.slot_count:
+        if len(records) != self.occupied_count:
             raise InvalidBatchTransition(
-                f"Expected {self.slot_count} reserved MACs, "
+                f"Expected {self.occupied_count} reserved MACs, "
                 f"received {len(records)}"
             )
 
@@ -435,7 +494,7 @@ class Batch:
             )
 
         supplied_slots = [record.slot_number for record in records]
-        expected_slots = set(self.slots)
+        expected_slots = set(self.occupied_slot_numbers)
 
         if set(supplied_slots) != expected_slots:
             display_slots = sorted(
@@ -490,6 +549,61 @@ class Batch:
             return self.slots[slot_number]
         except KeyError as exc:
             raise ValueError(f"slot number must be between 1 and {self.slot_count}") from exc
+
+    
+    def _validate_occupied_slots(self, numbers: tuple[int, ...]) -> None:
+        if not isinstance(numbers, tuple):
+            raise ValueError("occupied_slot_numbers must be a tuple")
+
+        if not numbers:
+            raise ValueError("At least one occupied slot is required")
+
+        if any(type(number) is not int for number in numbers):
+            raise ValueError("Occupied slot numbers must be integers")
+
+        if len(numbers) != len(set(numbers)):
+            raise ValueError("Duplicate occupied jig slot")
+
+        if any(number not in self.slots for number in numbers):
+            raise ValueError("Occupied slot outside jig capacity")
+
+
+    def configure_occupied_slots(self, numbers: tuple[int, ...]) -> None:
+        """Record the operator-confirmed jig load.
+
+        Occupancy becomes immutable when port binding begins.
+        """
+        self._require_state(BatchState.CREATED)
+        self._validate_occupied_slots(numbers)
+        self.occupied_slot_numbers = tuple(sorted(numbers))
+
+
+    @property
+    def occupied_slots(self) -> tuple[JigSlot, ...]:
+        return tuple(self.slots[number] for number in self.occupied_slot_numbers)
+
+
+    @property
+    def empty_slot_numbers(self) -> tuple[int, ...]:
+        occupied = set(self.occupied_slot_numbers)
+
+        return tuple(number for number in self.slots if number not in occupied)
+
+
+    @property
+    def occupied_count(self) -> int:
+        return len(self.occupied_slot_numbers)
+
+
+    @property
+    def stock_programming_targets(self) -> tuple[int, ...]:
+        return tuple(slot.number for slot in self.occupied_slots if slot.state is DeviceState.STOCK_MAC_RESERVED)
+
+
+    @property
+    def stock_readback_targets(self) -> tuple[int, ...]:
+        return tuple(slot.number for slot in self.occupied_slots if slot.state is DeviceState.STOCK_PROGRAMMED)
+
             
             
         

@@ -12,6 +12,7 @@ from stationapp.domain import (
     InvalidBatchTransition,
     MacAddress,
     MacPurpose,
+    MacStatus,
     VerificationMismatch,
 )
 
@@ -158,7 +159,9 @@ def test_stock_reservations_require_known_modules_and_ports() -> None:
 
 
 @pytest.mark.unit
-def test_stock_programming_failure_holds_batch() -> None:
+def test_stock_programming_failure_isolated_to_slot() -> None:
+    """A failed DUT must not stop other occupied slots."""
+
     batch = make_batch()
     bind_batch_ports(batch)
 
@@ -167,17 +170,52 @@ def test_stock_programming_failure_holds_batch() -> None:
         purpose=MacPurpose.STOCK_RF_TEST,
         prefix="AA:BB:CC:00:00",
     )
+
     batch.accept_stock_reservations(records)
     batch.request_stock_program_mode()
     batch.confirm_stock_program_mode()
 
-    batch.record_stock_programming(1, succeeded=False)
+    # Slot 1 fails programming.
+    batch.record_stock_programming(
+        1,
+        succeeded=False,
+    )
 
-    assert batch.state is BatchState.HOLD
+    # Only Slot 1 is quarantined.
+    assert batch.slots[1].state is DeviceState.HOLD
+    assert batch.slots[1].stock_mac_record.status is MacStatus.HOLD
+
+    # Other slots must remain available.
+    assert batch.state is BatchState.STOCK_PROGRAMMING
+
+    for number in (2, 3, 4):
+        assert (
+            batch.slots[number].state
+            is DeviceState.STOCK_PROGRAMMING
+        )
+
+    # Continue processing the remaining DUTs.
+    for number in (2, 3, 4):
+        batch.record_stock_programming(
+            number,
+            succeeded=True,
+        )
+
+    # The batch can proceed with the successful DUTs.
+    assert batch.state is BatchState.STOCK_PROGRAMMED
+
     assert batch.slots[1].state is DeviceState.HOLD
 
-    with pytest.raises(BatchOnHold):
-        batch.request_stock_rf_mode()
+    for number in (2, 3, 4):
+        assert (
+            batch.slots[number].state
+            is DeviceState.STOCK_PROGRAMMED
+        )
+
+        assert (
+            batch.slots[number].stock_mac_record.status
+            is MacStatus.ISSUED
+        )
 
 
 @pytest.mark.unit
@@ -499,5 +537,36 @@ def test_batch_rf_mode_requires_stock_readback() -> None:
         batch.state
         is BatchState.AWAITING_STOCK_RF_MODE
     )
+
+@pytest.mark.unit
+def test_all_stock_programming_failures_hold_batch() -> None:
+    batch = make_batch()
+    bind_batch_ports(batch)
+
+    records = reserve_records(
+        batch,
+        purpose=MacPurpose.STOCK_RF_TEST,
+        prefix="AA:BB:CC:00:00",
+    )
+
+    batch.accept_stock_reservations(records)
+    batch.request_stock_program_mode()
+    batch.confirm_stock_program_mode()
+
+    for number in (1, 2, 3, 4):
+        batch.record_stock_programming(
+            number,
+            succeeded=False,
+        )
+
+    assert batch.state is BatchState.HOLD
+
+    for number in (1, 2, 3, 4):
+        assert batch.slots[number].state is DeviceState.HOLD
+        assert (
+            batch.slots[number].stock_mac_record.status
+            is MacStatus.HOLD
+        )
+
 
 

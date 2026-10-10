@@ -161,7 +161,7 @@ class GoldenRigResponse:
     protocol_version: int = GOLDEN_RIG_PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
-        if self.protocol_version != GOLDEN_RIG_PROTOCOL_VERSION:
+        if (type(self.protocol_version) is not int or self.protocol_version != GOLDEN_RIG_PROTOCOL_VERSION ):
             raise GoldenRigProtocolError("Unsupported response protocol version")
 
         try:

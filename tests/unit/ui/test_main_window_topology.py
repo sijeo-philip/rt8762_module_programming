@@ -29,6 +29,9 @@ from stationapp.services.slot_binding import (
     InvalidBindingFileError,
 )
 
+import pytest
+from stationapp.domain.batch import Batch
+
 class FakeTopologyService:
 
     def __init__(
@@ -75,6 +78,32 @@ def make_ready_topology():
     return SerialTopology(
         slots=(slot,)
     )
+
+@pytest.fixture
+def window(qtbot):
+    """Construct MainWindow using the existing test services."""
+
+    settings = Settings(
+        station_id="STATION-01",
+        jig_id="JIG-01",
+        jig_positions=8,
+    )
+
+    context = AppContext(
+        settings=settings,
+        started_at=datetime.now(timezone.utc),
+        serial_topology_service=FakeTopologyService(
+            make_ready_topology()
+        ),
+        slot_eligibility_service=SlotEligibilityService(),
+    )
+
+    main_window = MainWindow(context)
+
+    qtbot.addWidget(main_window)
+
+    yield main_window
+
 
 def test_topology_table_displays_slot(qtbot):
 
@@ -127,4 +156,40 @@ def test_empty_binding_file_means_uncommissioned_jig(tmp_path):
 
     assert config.bindings == ()
     assert config.complete is False
+
+@pytest.mark.unit
+def test_main_window_contains_jig_grid(window):
+    assert window._jig_slot_grid is not None
+
+    expected = window._context.settings.jig_positions
+
+    assert len(window._jig_slot_grid.cards) == expected
+    assert window._slot_table is not None
+    assert window._start_demo_button is not None
+
+@pytest.mark.unit
+def test_main_window_displays_real_batch_snapshot(window):
+    settings = window._context.settings
+
+    batch = Batch(
+        station_id=settings.station_id,
+        jig_id=settings.jig_id,
+        slot_count=settings.jig_positions,
+    )
+
+    if settings.jig_positions == 8:
+        batch.configure_occupied_slots((1, 2, 4, 7))
+    else:
+        batch.configure_occupied_slots((1, 4))
+
+    batch.slots[1].bind_port("USB-SERIAL-001")
+
+    window.show_batch(batch)
+
+    assert window._jig_slot_grid.cards[1].status_label.text() == "READY"
+    assert window._jig_slot_grid.cards[2].status_label.text() == "EMPTY"
+
+    window.clear_active_batch()
+
+    assert window._jig_slot_grid.cards[1].status_label.text() == "EMPTY"
 

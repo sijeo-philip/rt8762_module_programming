@@ -37,6 +37,10 @@ from stationapp.services.demo_operation import make_demo_rf_test
 from stationapp.services.serial_topology import (StationSerialTopologyService, SlotTopologyStatus, SerialTopology)
 
 from stationapp.services.slot_eligibility import (JigEligibility, SlotEligibilityStatus)
+from stationapp.domain.batch import Batch
+
+from stationapp.services.jig_status_projection import (JigStatusProjection, JigView)
+from stationapp.ui.widgets.jig_slot_grid import (JigSlotGrid)
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +83,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(
         f"Station App {context.app_version} - { context.station_label}"
         )
-        self.resize(860, 520)
+        self.resize(1150, 850)
+        self._jig_status_projection = JigStatusProjection()
+        self._active_batch_id: str | None = None
         self._build_ui()
         self.refresh_health()
         self.refresh_serial_topology()
@@ -118,6 +124,13 @@ class MainWindow(QMainWindow):
         self._checks_table.setEditTriggers(
             QTableWidget.EditTrigger.NoEditTriggers
         )
+
+        production_title = QLabel("Jig Production Status")
+        production_title.setStyleSheet("font-size: 15px; font-weight: bold;")
+        layout.addWidget(production_title)
+
+        self._jig_slot_grid = JigSlotGrid(self._context.settings.jig_positions, self)
+        layout.addWidget(self._jig_slot_grid)
 
         slot_title = QLabel("Jig Serial Topology")
         slot_title_font = QFont()
@@ -504,7 +517,33 @@ class MainWindow(QMainWindow):
             return 
             
         event.accept()
-        
-        
+
+    
+    def show_batch_snapshot(self, view: JigView) -> None:
+        """Render an already-projected manufacturing snapshot.
+
+        Call this only on the Qt GUI thread.
+        """
+        if view.station_id != self._context.settings.station_id:
+            raise ValueError("Batch belongs to another station")
+
+        if view.jig_id != self._context.settings.jig_id:
+            raise ValueError("Batch belongs to another jig")
+
+        self._jig_slot_grid.update_view(view)
+        self._active_batch_id = view.batch_id
+
+
+    def show_batch(self, batch: Batch) -> None:
+        """Convenience adapter for GUI-thread batch updates."""
+        self.show_batch_snapshot(self._jig_status_projection.project(batch))
+
+
+    def clear_active_batch(self) -> None:
+        """Clear display after the production controller closes a batch."""
+        self._active_batch_id = None
+        self._jig_slot_grid.clear_batch()
+    
+       
             
             

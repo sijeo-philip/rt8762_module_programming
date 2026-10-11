@@ -101,12 +101,24 @@ class JigStatusProjection:
             )
 
         if state is DeviceState.QR_BOUND:
+            if slot.functional.passed:
+                return SlotView(
+                    number=slot.number,
+                    status=SlotVisualStatus.QR_BOUND,
+                    stage="Identity bound / Functional PASS",
+                    mac=cls._mac(slot),
+                    detail=f"QR: {slot.module_qr or '—'}",
+                )
+
             return SlotView(
-                slot.number,
-                SlotVisualStatus.QR_BOUND,
-                "Identity binding",
+                number=slot.number,
+                status=SlotVisualStatus.FUNCTIONAL_FAIL,
+                stage="Identity bound / Functional FAIL",
                 mac=cls._mac(slot),
-                detail=f"QR: {slot.module_qr or '—'}",
+                detail=(
+                    f"QR: {slot.module_qr or '—'} | "
+                    "Module rejected after functional testing"
+                ),
             )
 
         mapping = {
@@ -160,4 +172,3 @@ class JigStatusProjection:
             held_count=sum(slot.state is DeviceState.HOLD for slot in batch.occupied_slots),
             rf_pass_count=sum(slot.golden_rf_result is not None and slot.golden_rf_result.outcome.value == "PASS" for slot in batch.occupied_slots),
         )
-

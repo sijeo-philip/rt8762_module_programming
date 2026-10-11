@@ -349,6 +349,21 @@ class WorkflowService:
 
             slot_number = batch.next_qr_slot
 
+            if slot_number is None:
+                return OperatorWorkflow(
+                    batch_id=batch.batch_id,
+                    batch_state=state,
+                    action=OperatorAction.CALL_SUPERVISOR,
+                    headline="QR SCANNING STATE INCONSISTENT",
+                    instruction=(
+                        "No eligible module remains for QR scanning, "
+                        "but the batch is still in QR_SCANNING. "
+                        "Request supervisor review."
+                    ),
+                    scanner_enabled=False,
+                    requires_supervisor=True,
+                )
+
             return OperatorWorkflow(
                 batch_id=batch.batch_id,
                 batch_state=state,

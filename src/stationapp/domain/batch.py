@@ -120,19 +120,57 @@ class Batch:
     def any_slot_held(self) -> bool:
         return any(slot.is_held for slot in self.ordered_slots)
         
+    
     @property
     def can_commit(self) -> bool:
-        """A batch is committable only after all post-test QR scans."""
-        return (
-            self.state is BatchState.QR_BOUND
-            and not self.any_slot_held
-            and all(
-                slot.module_qr is not None
-                and slot.functional.complete
-                and slot.state is DeviceState.QR_BOUND
-                for slot in self.ordered_slots
+        """All occupied DUTs must have a documented final outcome.
+
+        This is a mixed-disposition manufacturing commit,
+        not authorization to ship every DUT.
+        """
+        if self.state is not BatchState.QR_BOUND:
+            return False
+
+        candidates = self.qr_candidates
+
+        # No completed, identified module means no
+        # normal batch commit.
+        if not candidates:
+            return False
+
+        if any(
+            slot.state is not DeviceState.QR_BOUND
+            or not slot.module_qr
+            or not slot.functional.complete
+            or slot.stock_mac_record is None
+            or slot.pricol_mac_record is None
+            or slot.stock_mac_record.status is not MacStatus.CONFIRMED
+            or slot.pricol_mac_record.status is not MacStatus.CONFIRMED
+            or slot.stock_mac_record.module_qr != slot.module_qr
+            or slot.pricol_mac_record.module_qr != slot.module_qr
+            for slot in candidates
+        ):
+            return False
+
+        # Every occupied position must be either:
+        # - QR-bound after completed functional testing, or
+        # - quarantined with a documented reason.
+        return all(
+            (
+                slot.state is DeviceState.QR_BOUND
+                and slot in candidates
             )
+            or (
+                slot.state is DeviceState.HOLD
+                and bool(slot.hold_reason)
+                and (
+                    slot.stock_mac_record is not None
+                    or slot.pricol_mac_record is not None
+                )
+            )
+            for slot in self.occupied_slots
         )
+
 
     # ---------------------------------------------------------------------------
     # Loading and identity binding
@@ -475,82 +513,158 @@ class Batch:
     def confirm_functional_test_mode(self) -> None:
         self._transition(BatchState.AWAITING_FUNCTIONAL_TEST_MODE, BatchState.AWAITING_PRICOLAPP_RESET)
         
+    
     def confirm_pricol_app_reset(self) -> None:
-        self._transition(BatchState.AWAITING_PRICOLAPP_RESET, BatchState.PRICOLAPP_TESTING)
-        
+        """Start APP testing after the first physical reset."""
+        self._require_state(BatchState.AWAITING_PRICOLAPP_RESET)
+        if not self.functional_app_targets:
+            raise InvalidBatchTransition("No Pricol-confirmed DUTs available for APP testing")
+        self.state = BatchState.PRICOLAPP_TESTING
+
+
+    def _require_functional_slot(self, slot_number: int) -> JigSlot:
+        if slot_number not in self.occupied_slot_numbers:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not occupied")
+        slot = self._get_slot(slot_number)
+        if (slot.state is not DeviceState.PRICOL_MAC_CONFIRMED or slot.pricol_mac_record is None or slot.pricol_mac_record.status is not MacStatus.CONFIRMED):
+            raise InvalidBatchTransition(f"Slot {slot_number} is not eligible for functional testing")
+        return slot
+
+
+    def _complete_app_stage(self) -> None:
+        """Leave APP testing only after all candidates resolve."""
+        if self.functional_app_targets:
+            return
+        if self.functional_dfu_targets:
+            self.state = BatchState.AWAITING_PRICOLDFU_RESET
+        else:
+            self.place_on_hold("No eligible DUTs remain for DFU testing")
+
+
     def record_pricol_app(self, slot_number: int, passed: bool) -> None:
         self._require_state(BatchState.PRICOLAPP_TESTING)
-        self._get_slot(slot_number).record_pricol_app(passed)
-        
-        if all( slot.functional.pricol_app_passed is not None for slot in self.ordered_slots):
-            self.state = BatchState.AWAITING_PRICOLDFU_RESET
-            
+        slot = self._require_functional_slot(slot_number)
+        if slot.functional.pricol_app_passed is not None:
+            raise InvalidBatchTransition(f"Slot {slot_number} already has an APP result")
+        slot.record_pricol_app(passed)
+        self._complete_app_stage()
+
+
+    def record_pricol_app_unverified(self, slot_number: int, *,  reason: str) -> None:
+        """Quarantine a DUT without trustworthy APP evidence."""
+        self._require_state(BatchState.PRICOLAPP_TESTING)
+        slot = self._require_functional_slot(slot_number)
+        if slot.functional.pricol_app_passed is not None:
+            raise InvalidBatchTransition(f"Slot {slot_number} already has an APP result")
+        if not reason.strip():
+            raise ValueError("APP failure reason required")
+        slot.place_on_hold(f"PRICOLAPP outcome unverified: {reason.strip()}")
+        self._complete_app_stage()
+
+
     def confirm_pricol_dfu_reset(self) -> None:
-        self._transition(BatchState.AWAITING_PRICOLDFU_RESET, BatchState.PRICOLDFU_TESTING)
-        
+        """Start DFU testing only after all APP outcomes resolve."""
+        self._require_state(BatchState.AWAITING_PRICOLDFU_RESET)
+        if self.functional_app_targets:
+            raise InvalidBatchTransition("APP testing is incomplete")
+        if not self.functional_dfu_targets:
+            raise InvalidBatchTransition("No DUTs available for DFU testing")
+        self.state = BatchState.PRICOLDFU_TESTING
+
+
+    def _complete_dfu_stage(self) -> None:
+        """Advance after all DFU candidates finish or are held."""
+        if self.functional_dfu_targets:
+            return
+        if self.qr_candidates:
+            self.state = BatchState.FUNCTIONAL_TEST_COMPLETE
+        else:
+            self.place_on_hold("No completed functional results remain")
+
+
     def record_pricol_dfu(self, slot_number: int, passed: bool) -> None:
         self._require_state(BatchState.PRICOLDFU_TESTING)
-        self._get_slot(slot_number).record_pricol_dfu(passed)
-        
-        if all( slot.functional.complete for slot in self.ordered_slots):
-            
-            self.state = BatchState.FUNCTIONAL_TEST_COMPLETE
-            
+        slot = self._require_functional_slot(slot_number)
+        if slot.functional.pricol_app_passed is None:
+            raise InvalidBatchTransition(f"APP result missing for slot {slot_number}")
+        if slot.functional.pricol_dfu_passed is not None:
+            raise InvalidBatchTransition(f"Slot {slot_number} already has a DFU result")
+        slot.record_pricol_dfu(passed)
+        self._complete_dfu_stage()
+
+
+    def record_pricol_dfu_unverified(self, slot_number: int, *, reason: str) -> None:
+        """Quarantine a DUT without trustworthy DFU evidence."""
+        self._require_state(BatchState.PRICOLDFU_TESTING)
+        slot = self._require_functional_slot(slot_number)
+        if slot.functional.pricol_app_passed is None:
+            raise InvalidBatchTransition(f"APP result missing for slot {slot_number}")
+        if slot.functional.pricol_dfu_passed is not None:
+            raise InvalidBatchTransition(f"Slot {slot_number} already has a DFU result")
+        if not reason.strip():
+            raise ValueError("DFU failure reason required")
+        slot.place_on_hold(f"PRICOLDFU outcome unverified: {reason.strip()}")
+        self._complete_dfu_stage()
+           
             
     def begin_qr_scanning(self) -> None:
-        """Open the final identity-binding stage after all tests finish."""
-        self._transition(
-            BatchState.FUNCTIONAL_TEST_COMPLETE,
-            BatchState.QR_SCANNING,
+        self._require_state(
+            BatchState.FUNCTIONAL_TEST_COMPLETE
+        )
+        if not self.qr_candidates:
+            raise InvalidBatchTransition(
+                "No completed DUTs eligible for QR scanning"
             )
+
+        self.state = BatchState.QR_SCANNING
 
 
     @property
     def next_qr_slot(self) -> int | None:
-        """Return the physical slot expected for the next scanner input."""
-        for slot in self.ordered_slots:
+        """Next completed functional DUT needing QR binding."""
+
+        for slot in self.qr_candidates:
             if slot.module_qr is None:
                 return slot.number
 
         return None
 
 
+    
     def scan_module_qr(self, module_qr: str) -> int:
-        """Bind one scanner input to the next physical slot.
-
-        The operator must scan the module physically present in the slot shown
-        by next_qr_slot. The scanner supplies only the QR text; it does not
-        select a slot.
-        """
+        """Bind the next completed DUT in physical slot order."""
         self._require_state(BatchState.QR_SCANNING)
-
         qr = module_qr.strip()
 
         if not qr:
-            raise ValueError("module QR cannot be empty")
+            raise ValueError("Module QR cannot be empty")
 
+        # Check across all slots, not only scan candidates.
         for slot in self.ordered_slots:
             if slot.module_qr == qr:
                 raise DuplicateModuleQr(
-                    f"Module QR {qr} is already linked to "
-                    f"slot {slot.number}"
+                    f"Module QR {qr} already belongs "
+                    f"to slot {slot.number}"
                 )
 
         slot_number = self.next_qr_slot
 
         if slot_number is None:
             raise InvalidBatchTransition(
-                "All Module QRs have already been scanned"
+                "All eligible Module QRs have been scanned"
             )
 
         slot = self.slots[slot_number]
+
+        # Existing JigSlot method validates completed
+        # functional testing and MAC genealogy.
         slot.bind_module(qr)
 
         if self.next_qr_slot is None:
             self.state = BatchState.QR_BOUND
 
         return slot_number
-  
+
     #--------------------------------------------------------------------------------------
     # Commit and upload lifecycle
     #--------------------------------------------------------------------------------------
@@ -755,4 +869,109 @@ class Batch:
             for slot in self.occupied_slots
             if slot.state is DeviceState.PRICOL_MAC_CONFIRMED
         )
+
+    
+    @property
+    def functional_candidates(self) -> tuple[JigSlot, ...]:
+        """DUTs that entered functional testing successfully.
+
+        The Pricol MAC must already be confirmed.
+        """
+        return tuple(
+            slot
+            for slot in self.occupied_slots
+            if (
+                slot.pricol_mac_record is not None
+                and slot.pricol_mac_record.status is MacStatus.CONFIRMED
+                and slot.state in {
+                    DeviceState.PRICOL_MAC_CONFIRMED,
+                    DeviceState.FUNCTIONAL_TEST_PASSED,
+                    DeviceState.FUNCTIONAL_TEST_FAILED,
+                    DeviceState.QR_BOUND,
+                }
+            )
+        )
+
+
+    @property
+    def functional_app_targets(self) -> tuple[int, ...]:
+        """Slots still waiting for an APP test outcome."""
+        return tuple(
+            slot.number
+            for slot in self.functional_candidates
+            if (
+                slot.state is DeviceState.PRICOL_MAC_CONFIRMED
+                and slot.functional.pricol_app_passed is None
+            )
+        )
+
+
+    @property
+    def functional_dfu_targets(self) -> tuple[int, ...]:
+        """Slots still waiting for a DFU test outcome."""
+        return tuple(
+            slot.number
+            for slot in self.functional_candidates
+            if (
+                slot.state is DeviceState.PRICOL_MAC_CONFIRMED
+                and slot.functional.pricol_app_passed is not None
+                and slot.functional.pricol_dfu_passed is None
+            )
+        )
+
+    @property
+    def qr_candidates(self) -> tuple[JigSlot, ...]:
+        """Completed functional DUTs requiring post-test identity."""
+        return tuple(
+            slot
+            for slot in self.occupied_slots
+            if (
+                slot.functional.complete
+                and slot.pricol_mac_record is not None
+                and slot.pricol_mac_record.status is MacStatus.CONFIRMED
+                and slot.stock_mac_record is not None
+                and slot.stock_mac_record.status is MacStatus.CONFIRMED
+                and slot.state in {
+                    DeviceState.FUNCTIONAL_TEST_PASSED,
+                    DeviceState.FUNCTIONAL_TEST_FAILED,
+                    DeviceState.QR_BOUND,
+                }
+            )
+        )
+
+
+    @property
+    def rejected_slot_numbers(self) -> tuple[int, ...]:
+        """Held or functionally failed DUTs."""
+        return tuple(
+            slot.number
+            for slot in self.occupied_slots
+            if (
+                slot.state is DeviceState.HOLD
+                or (
+                    slot.functional.complete
+                    and not slot.functional.passed
+                )
+            )
+        )
+
+    @property
+    def releasable_slot_numbers(self) -> tuple[int, ...]:
+        """Functionally passed DUTs with both MACs QR-bound."""
+        return tuple(
+            slot.number
+            for slot in self.occupied_slots
+            if (
+                slot.state is DeviceState.QR_BOUND
+                and slot.functional.passed
+                and slot.module_qr is not None
+                and slot.stock_mac_record is not None
+                and slot.pricol_mac_record is not None
+                and slot.stock_mac_record.status is MacStatus.CONFIRMED
+                and slot.pricol_mac_record.status is MacStatus.CONFIRMED
+                and slot.stock_mac_record.module_qr == slot.module_qr
+                and slot.pricol_mac_record.module_qr == slot.module_qr
+            )
+        )
+
 

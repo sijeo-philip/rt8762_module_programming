@@ -90,3 +90,34 @@ def test_functional_failure_has_distinct_status():
     view = JigStatusProjection().project(batch)
 
     assert (view.slots[3].status is SlotVisualStatus.FUNCTIONAL_FAIL)
+
+
+@pytest.mark.unit
+def test_qr_binding_does_not_hide_functional_failure():
+    from stationapp.domain.slot import FunctionalResults
+
+    batch = Batch(
+        station_id="STATION-01",
+        jig_id="JIG-4UP",
+        slot_count=4,
+    )
+
+    slot = batch.slots[2]
+
+    # Projection-specific fixture.
+    slot.state = DeviceState.QR_BOUND
+    slot.module_qr = "MODULE-002"
+    slot.functional = FunctionalResults(
+        pricol_app_passed=False,
+        pricol_dfu_passed=True,
+    )
+
+    view = JigStatusProjection().project(batch)
+
+    assert (
+        view.slots[1].status
+        is SlotVisualStatus.FUNCTIONAL_FAIL
+    )
+
+
+    

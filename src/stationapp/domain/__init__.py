@@ -2,7 +2,7 @@
 """Pure manufacturing domain model."""
 
 from stationapp.domain.allocation import AllocationDocument
-from stationapp.domain.batch import Batch, BatchState
+from stationapp.domain.batch import Batch, BatchState, ProgrammingMode, SlotDisposition
 from stationapp.domain.errors import (
     AllocationExhausted,
     AllocationExpired,
@@ -63,6 +63,8 @@ __all__ = [
     "Batch",
     "BatchOnHold",
     "BatchState",
+    "ProgrammingMode",
+    "SlotDisposition",
     "DeviceState",
     "DomainError",
     "DuplicateMacAddress",

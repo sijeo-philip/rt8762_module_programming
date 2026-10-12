@@ -1,6 +1,8 @@
 """High-level typed interface around Realtek MPCLI."""
 
 from __future__ import annotations
+import time
+from collections.abc import Callable
 from pathlib import Path
 from stationapp.concurrency.cancellation import (CancellationToken)
 from stationapp.domain.mac import MacAddress
@@ -42,7 +44,7 @@ class MpCliDriver:
     def _require_image(image_packet: Path) -> None:
 
         if not image_packet.is_file():
-            raise MpCliInvalidCommand("MPCLI image packet does not exist: {image_packet}")
+            raise MpCliInvalidCommand(f"MPCLI image packet does not exist: {image_packet}")
 
 
     def program(self, *, com_port: str, mac: MacAddress, profile: MpCliProgrammingProfile, timeout_seconds: float, cancellation_token: CancellationToken | None = None) -> ProgrammingResult:
@@ -67,3 +69,37 @@ class MpCliDriver:
 
         args = build_set_mac_command(com_port=com_port, mac=mac, profile=profile, reboot=True)
         return self._runner.run(args, timeout_seconds=timeout_seconds, cancellation_token=cancellation_token)
+
+    def program_sequenced(self, *, com_port: str, mac: MacAddress, profile: MpCliProgrammingProfile, timeout_seconds: float, cancellation_token: CancellationToken | None = None, on_phase: Callable[[str], None] | None = None, settle_seconds: float = 2.0) -> ProgrammingResult:
+        """Validated two-step sequence: flash firmware, settle, write MAC.
+
+        Mirrors scripts/program_one_real_dut.py, the sequence proven on
+        real DUTs. A flash failure is returned before any MAC is written;
+        the caller still treats the reserved MAC conservatively.
+        """
+        if on_phase is not None:
+            on_phase(PHASE_FLASHING)
+
+        flash = self.program_firmware_only(com_port=com_port, profile=profile, timeout_seconds=timeout_seconds, cancellation_token=cancellation_token)
+        if not flash.succeeded:
+            return flash
+
+        deadline = time.monotonic() + settle_seconds
+        while time.monotonic() < deadline:
+            if cancellation_token is not None and cancellation_token.is_cancelled:
+                break
+            time.sleep(0.05)
+
+        if on_phase is not None:
+            on_phase(PHASE_WRITING_MAC)
+
+        raw = self.set_mac(com_port=com_port, mac=mac, profile=profile, cancellation_token=cancellation_token)
+        return parse_programming_result(raw)
+
+    def program_firmware_only(self, *, com_port: str, profile: MpCliProgrammingProfile, timeout_seconds: float, cancellation_token: CancellationToken | None = None) -> ProgrammingResult:
+        raw = self.flash(com_port=com_port, profile=profile, timeout_seconds=timeout_seconds, cancellation_token=cancellation_token)
+        return parse_programming_result(raw)
+
+
+PHASE_FLASHING = "FLASHING"
+PHASE_WRITING_MAC = "WRITING_MAC"

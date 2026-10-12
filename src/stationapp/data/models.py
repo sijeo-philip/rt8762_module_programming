@@ -150,6 +150,9 @@ class BatchModel(Base):
     slot_count: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(String(64), nullable=False, default="CREATED", index=True)
     hold_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    programming_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="STOCK_AND_PRICOL", server_default="STOCK_AND_PRICOL")
+    batch_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    operator_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -159,6 +162,10 @@ class BatchModel(Base):
         CheckConstraint(
             "slot_count IN (4, 8)",
             name="ck_batches_slot_count", 
+        ),
+        CheckConstraint(
+            "programming_mode IN ('STOCK_ONLY', 'STOCK_AND_PRICOL')",
+            name="ck_batches_programming_mode",
         ),
         Index(
             "ix_batches_station_created",

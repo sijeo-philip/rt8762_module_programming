@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 from stationapp.domain.batch import Batch
@@ -46,6 +46,35 @@ class JigView:
     rf_pass_count: int
 
 
+# Per-slot progress through the workflow, in percent. Progress describes
+# how far this slot has travelled, never the batch as a whole.
+_FULL_PROGRESS = {
+    DeviceState.PORT_BOUND: 0,
+    DeviceState.STOCK_MAC_RESERVED: 5,
+    DeviceState.STOCK_PROGRAMMING: 15,
+    DeviceState.STOCK_PROGRAMMED: 28,
+    DeviceState.STOCK_READBACK_VERIFIED: 38,
+    DeviceState.STOCK_RF_CONFIRMED: 50,
+    DeviceState.PRICOL_MAC_RESERVED: 55,
+    DeviceState.PRICOL_PROGRAMMING: 65,
+    DeviceState.PRICOL_PROGRAMMED: 75,
+    DeviceState.PRICOL_MAC_CONFIRMED: 85,
+    DeviceState.FUNCTIONAL_TEST_PASSED: 95,
+    DeviceState.FUNCTIONAL_TEST_FAILED: 95,
+    DeviceState.QR_BOUND: 100,
+}
+
+_STOCK_ONLY_PROGRESS = {
+    DeviceState.PORT_BOUND: 0,
+    DeviceState.STOCK_MAC_RESERVED: 10,
+    DeviceState.STOCK_PROGRAMMING: 30,
+    DeviceState.STOCK_PROGRAMMED: 55,
+    DeviceState.STOCK_READBACK_VERIFIED: 70,
+    DeviceState.STOCK_RF_CONFIRMED: 90,
+    DeviceState.QR_BOUND: 100,
+}
+
+
 class JigStatusProjection:
     """Convert actual DUT states into graphical status records."""
 
@@ -57,7 +86,7 @@ class JigStatusProjection:
         return str(mac) if mac is not None else ""
 
     @classmethod
-    def _project_slot(cls, slot: JigSlot) -> SlotView:
+    def _project_slot(cls, slot: JigSlot, requires_pricol: bool = True) -> SlotView:
         state = slot.state
 
         if state is DeviceState.EMPTY:
@@ -101,11 +130,15 @@ class JigStatusProjection:
             )
 
         if state is DeviceState.QR_BOUND:
-            if slot.functional.passed:
+            if slot.functional.passed or not requires_pricol:
                 return SlotView(
                     number=slot.number,
                     status=SlotVisualStatus.QR_BOUND,
-                    stage="Identity bound / Functional PASS",
+                    stage=(
+                        "Identity bound / Functional PASS"
+                        if requires_pricol
+                        else "Identity bound / Stock RF PASS"
+                    ),
                     mac=cls._mac(slot),
                     detail=f"QR: {slot.module_qr or '—'}",
                 )
@@ -146,6 +179,7 @@ class JigStatusProjection:
 
     def project(self, batch: Batch) -> JigView:
         occupied = set(batch.occupied_slot_numbers)
+        progress = _FULL_PROGRESS if batch.requires_pricol else _STOCK_ONLY_PROGRESS
 
         views = []
 
@@ -160,7 +194,10 @@ class JigStatusProjection:
                     )
                 )
             else:
-                views.append(self._project_slot(slot))
+                view = self._project_slot(slot, batch.requires_pricol)
+                if view.progress is None and slot.state in progress:
+                    view = replace(view, progress=progress[slot.state])
+                views.append(view)
 
         return JigView(
             batch_id=batch.batch_id,

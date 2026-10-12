@@ -64,7 +64,10 @@ def build_flash_command( *, com_port: str, profile: MpCliProgrammingProfile) -> 
         """
     port = normalize_com_port(com_port)
     image = _path_text(profile.image_packet)
-    return ("-P", image, "-c", port, "-b", str(profile.baud), "-r" if profile.reboot_after_programming else "")
+    command = ["-P", image, "-c", port, "-b", str(profile.baud)]
+    if profile.reboot_after_programming:
+        command.append("-r")
+    return tuple(command)
 
 def build_set_mac_command( *, com_port: str, mac: MacAddress, profile: MpCliProgrammingProfile, reboot: bool = True) -> tuple[str, ...]:
     """Build standalone MAC programming command."""

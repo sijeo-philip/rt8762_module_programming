@@ -10,6 +10,7 @@ batch orchestrator / Unit of Work layer.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -93,9 +94,12 @@ class ProgrammingService:
     """
 
     def __init__(self, *, driver: MpCliDriver, stock_profile: MpCliProgrammingProfile,
-        pricol_profile: MpCliProgrammingProfile,
+        pricol_profile: MpCliProgrammingProfile | None,
         programming_timeout_seconds: float = 60.0,
-        readback_timeout_seconds: float = 10.0) -> None:
+        readback_timeout_seconds: float = 10.0,
+        two_step: bool = False) -> None:
+        """two_step=True uses the validated flash -> settle -> write-MAC
+        sequence instead of MPCLI's combined flash-with-MAC command."""
 
         if programming_timeout_seconds <= 0:
             raise ValueError(
@@ -112,23 +116,16 @@ class ProgrammingService:
         self._pricol_profile = pricol_profile
         self._programming_timeout_seconds = (programming_timeout_seconds)
         self._readback_timeout_seconds = (readback_timeout_seconds)
+        self._two_step = two_step
 
-    def program_stock(self, target: ProgrammingTarget, *, cancellation_token: CancellationToken | None = None) -> SlotProgrammingResult:
+    def program_stock(self, target: ProgrammingTarget, *, cancellation_token: CancellationToken | None = None, on_phase: Callable[[str], None] | None = None) -> SlotProgrammingResult:
         """Flash stock firmware and temporary RF-test MAC."""
 
         self._require_purpose(
             target,
             MacPurpose.STOCK_RF_TEST,
         )
-        result = self._driver.program(
-            com_port=target.com_port,
-            mac=target.mac,
-            profile=self._stock_profile,
-            timeout_seconds=(
-                self._programming_timeout_seconds
-            ),
-            cancellation_token=cancellation_token,
-        )
+        result = self._program(target, self._stock_profile, cancellation_token, on_phase)
 
         return SlotProgrammingResult(
             target=target,
@@ -136,7 +133,7 @@ class ProgrammingService:
             programming=result,
         )
 
-    def program_pricol( self, target: ProgrammingTarget, *, cancellation_token: CancellationToken | None = None) -> SlotProgrammingResult:
+    def program_pricol(self, target: ProgrammingTarget, *, cancellation_token: CancellationToken | None = None, on_phase: Callable[[str], None] | None = None) -> SlotProgrammingResult:
         """Flash Pricol firmware and permanent production MAC."""
 
         self._require_purpose(
@@ -144,15 +141,7 @@ class ProgrammingService:
             MacPurpose.PRICOL_PRODUCTION,
         )
 
-        result = self._driver.program(
-            com_port=target.com_port,
-            mac=target.mac,
-            profile=self._pricol_profile,
-            timeout_seconds=(
-                self._programming_timeout_seconds
-            ),
-            cancellation_token=cancellation_token,
-        )
+        result = self._program(target, self._require_pricol_profile(), cancellation_token, on_phase)
 
         return SlotProgrammingResult(
             target=target,
@@ -190,7 +179,7 @@ class ProgrammingService:
 
         return self._driver.read_mac_structured(
             com_port=target.com_port,
-            baud=self._pricol_profile.baud,
+            baud=self._require_pricol_profile().baud,
             timeout_seconds=(
                 self._readback_timeout_seconds
             ),
@@ -215,6 +204,30 @@ class ProgrammingService:
             readback=readback,
             verification=verification,
         )
+
+    def _program(self, target: ProgrammingTarget, profile: MpCliProgrammingProfile, cancellation_token: CancellationToken | None, on_phase: Callable[[str], None] | None) -> ProgrammingResult:
+        if self._two_step:
+            return self._driver.program_sequenced(
+                com_port=target.com_port,
+                mac=target.mac,
+                profile=profile,
+                timeout_seconds=self._programming_timeout_seconds,
+                cancellation_token=cancellation_token,
+                on_phase=on_phase,
+            )
+
+        return self._driver.program(
+            com_port=target.com_port,
+            mac=target.mac,
+            profile=profile,
+            timeout_seconds=self._programming_timeout_seconds,
+            cancellation_token=cancellation_token,
+        )
+
+    def _require_pricol_profile(self) -> MpCliProgrammingProfile:
+        if self._pricol_profile is None:
+            raise ValueError("No Pricol firmware profile configured for this batch")
+        return self._pricol_profile
 
     @staticmethod
     def _require_purpose(target: ProgrammingTarget, required: MacPurpose) -> None:

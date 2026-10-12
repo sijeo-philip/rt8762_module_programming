@@ -165,7 +165,7 @@ def test_main_window_contains_jig_grid(window):
 
     assert len(window._jig_slot_grid.cards) == expected
     assert window._slot_table is not None
-    assert window._start_demo_button is not None
+    assert window._tabs.tabText(0) == "Production"
 
 @pytest.mark.unit
 def test_main_window_displays_real_batch_snapshot(window):

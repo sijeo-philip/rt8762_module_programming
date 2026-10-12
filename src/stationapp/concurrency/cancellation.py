@@ -21,6 +21,11 @@ class CancellationToken:
     def is_cancelled(self) -> bool:
         return self._event.is_set()
         
+    @property
+    def event(self) -> Event:
+        """Underlying event, for APIs that accept a threading.Event."""
+        return self._event
+
     def cancel(self) -> None:
         self._event.set()
         

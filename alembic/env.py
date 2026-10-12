@@ -28,7 +28,11 @@ settings = get_settings()
 
 #if(not configured_url or configured_url == "driver://user:pass@localhost/dbname"):
 #    config.set_main_option("sqlalchemy.url", settings.database_url)
-database_url = os.getenv("STATIONAPP_MIGRATION_DATABASE_URL", settings.database_url)
+# Precedence: URL passed programmatically by the running application
+# (stationapp.data.schema), then the test override, then settings.
+database_url = config.attributes.get("database_url") or os.getenv(
+    "STATIONAPP_MIGRATION_DATABASE_URL", settings.database_url
+)
 config.set_main_option("sqlalchemy.url", database_url)
 
 target_metadata = Base.metadata

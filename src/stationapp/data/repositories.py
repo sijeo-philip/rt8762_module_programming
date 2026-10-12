@@ -155,6 +155,9 @@ class BatchRepository:
                     slot_count=batch.slot_count,
                     state=batch.state.value,
                     hold_reason=batch.hold_reason,
+                    programming_mode=batch.programming_mode.value,
+                    batch_label=batch.batch_label,
+                    operator_id=batch.operator_id,
                     created_at=batch.created_at,
                 )
 
@@ -192,8 +195,12 @@ class BatchRepository:
 
         return slots
 
-    def reserve_macs(self, *, batch_id: str, purpose: MacPurpose) -> tuple[AllocatedMac, ...]:
-        """Reserve one complete jig load atomically.
+    def reserve_macs(self, *, batch_id: str, purpose: MacPurpose, slot_numbers: tuple[int, ...] | None = None) -> tuple[AllocatedMac, ...]:
+        """Reserve one MAC per requested physical slot atomically.
+
+        slot_numbers defaults to every physical slot of the batch. A
+        partially populated jig passes only its occupied slots; Pricol
+        reservation passes only the RF-confirmed slots.
 
         SQLite BEGIN IMMEDIATE obtains the write reservation before availability
         is inspected.  Another writer therefore cannot select the same set of
@@ -224,10 +231,24 @@ class BatchRepository:
                     f"Batch {batch_id} does not exist"
                 )
 
-            slot_numbers = self._validate_persisted_slots(
+            persisted = self._validate_persisted_slots(
                 session,
                 batch,
             )
+
+            if slot_numbers is None:
+                slot_numbers = persisted
+            else:
+                slot_numbers = tuple(sorted(slot_numbers))
+                if (
+                    not slot_numbers
+                    or len(set(slot_numbers)) != len(slot_numbers)
+                    or not set(slot_numbers).issubset(persisted)
+                ):
+                    raise InvalidPersistedBatch(
+                        f"Cannot reserve MACs for slots {slot_numbers} "
+                        f"of batch {batch_id}"
+                    )
 
             required_count = len(slot_numbers)
 

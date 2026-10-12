@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_file = ".env",
-        env_file_encodings = "utf-8",
+        env_file_encoding = "utf-8",
         extra = "ignore",
     )
 
@@ -42,6 +42,33 @@ class Settings(BaseSettings):
     # ----External Tools ---
     mpcli_path: Path = Path(r"D:\BLE_Projects\StationApp\MPCliTool_v1.0.4.25_Windows\mpcli_v1.0.4.25_Windows\mpcli.exe")
     pricol_app_path: Path | None = None
+    mpcli_product_id: str | None = None
+    mpcli_secret_key: SecretStr | None = None
+    # Validated flash -> settle -> write-MAC sequence (see
+    # scripts/program_one_real_dut.py) instead of the combined command.
+    mpcli_two_step: bool = True
+    mpcli_programming_timeout_seconds: float = Field(90.0, gt=0)
+
+    # --- Firmware (defaults offered in batch setup) ---
+    stock_firmware_path: Path | None = None
+    pricol_firmware_path: Path | None = None
+
+    # --- Authorized MAC cache ---
+    # Below this many AVAILABLE MACs per purpose, the station requests
+    # another block from the LAN server.
+    mac_cache_threshold: int = Field(64, ge=8)
+    mac_request_size: int = Field(200, ge=8)
+
+    # --- Production ---
+    # Accepted module QR content. Tighten once the label format is fixed.
+    qr_pattern: str = r"^[!-~]{4,128}$"
+
+    # --- Simulation (development / training only) ---
+    # Replaces MPCLI, the Golden Rig, functional tests, serial ports and
+    # MAC allocation with simulators. Never enable on a production station.
+    simulation_mode: bool = False
+    simulation_failures: str = ""
+    simulation_delay_seconds: float = Field(1.0, ge=0)
 
     # --- Stage 2 ---
     lan_server_url: str | None = None

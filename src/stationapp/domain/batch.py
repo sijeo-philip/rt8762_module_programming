@@ -30,7 +30,22 @@ from stationapp.services.golden_rig_service import (
     INFRASTRUCTURE_ERROR_CODES,
 )
 
-from stationapp.domain.golden_rig import GoldenRigOutcome
+class ProgrammingMode(str, Enum):
+    """Operator-selected programming scope for one batch."""
+
+    STOCK_ONLY = "STOCK_ONLY"
+    STOCK_AND_PRICOL = "STOCK_AND_PRICOL"
+
+
+class SlotDisposition(str, Enum):
+    """Final production outcome recorded for one physical slot."""
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    HOLD = "HOLD"
+    EMPTY = "EMPTY"
+    INCOMPLETE = "INCOMPLETE"
+
 
 class BatchState(str, Enum):
     CREATED = "CREATED"
@@ -87,6 +102,12 @@ class Batch:
     slots: dict[int, JigSlot] = field(init=False)
     hold_reason: str | None = None
     occupied_slot_numbers: tuple[int, ...] | None = None
+    programming_mode: ProgrammingMode = ProgrammingMode.STOCK_AND_PRICOL
+
+    # Operator-entered batch identification and the logged-in operator.
+    # Traceability metadata only; no workflow rule depends on them.
+    batch_label: str | None = None
+    operator_id: str | None = None
     
     def __post_init__(self) -> None:
         if self.slot_count not in (4, 8):
@@ -101,6 +122,9 @@ class Batch:
         if not self.batch_id.strip():
             raise ValueError("batch_id cannot be empty")
             
+        if not isinstance(self.programming_mode, ProgrammingMode):
+            raise ValueError("programming_mode must be a ProgrammingMode")
+
         self.slots = { number: JigSlot(number) for number in range(1, self.slot_count + 1) }
         if self.occupied_slot_numbers is None:
             self.occupied_slot_numbers = tuple(range(1, self.slot_count + 1))
@@ -138,18 +162,7 @@ class Batch:
         if not candidates:
             return False
 
-        if any(
-            slot.state is not DeviceState.QR_BOUND
-            or not slot.module_qr
-            or not slot.functional.complete
-            or slot.stock_mac_record is None
-            or slot.pricol_mac_record is None
-            or slot.stock_mac_record.status is not MacStatus.CONFIRMED
-            or slot.pricol_mac_record.status is not MacStatus.CONFIRMED
-            or slot.stock_mac_record.module_qr != slot.module_qr
-            or slot.pricol_mac_record.module_qr != slot.module_qr
-            for slot in candidates
-        ):
+        if any(not self._identity_complete(slot) for slot in candidates):
             return False
 
         # Every occupied position must be either:
@@ -171,6 +184,33 @@ class Batch:
             for slot in self.occupied_slots
         )
 
+
+    @property
+    def requires_pricol(self) -> bool:
+        return self.programming_mode is ProgrammingMode.STOCK_AND_PRICOL
+
+    def _identity_complete(self, slot: JigSlot) -> bool:
+        """QR-bound slot carries every identity record its mode requires."""
+        stock = slot.stock_mac_record
+        if (
+            slot.state is not DeviceState.QR_BOUND
+            or not slot.module_qr
+            or stock is None
+            or stock.status is not MacStatus.CONFIRMED
+            or stock.module_qr != slot.module_qr
+        ):
+            return False
+
+        if not self.requires_pricol:
+            return True
+
+        pricol = slot.pricol_mac_record
+        return (
+            slot.functional.complete
+            and pricol is not None
+            and pricol.status is MacStatus.CONFIRMED
+            and pricol.module_qr == slot.module_qr
+        )
 
     # ---------------------------------------------------------------------------
     # Loading and identity binding
@@ -347,6 +387,8 @@ class Batch:
         """Reserve Pricol MACs only for RF-confirmed DUT slots."""
 
         self._require_state(BatchState.STOCK_RF_CONFIRMED)
+        if not self.requires_pricol:
+            raise InvalidBatchTransition("Stock-only batches do not reserve Pricol MACs")
         eligible = self.pricol_eligible_slots
         expected_slots = {slot.number for slot in eligible}
         if not expected_slots:
@@ -608,8 +650,15 @@ class Batch:
            
             
     def begin_qr_scanning(self) -> None:
+        """Start QR binding once the mode's final test stage completes.
+
+        Stock + Pricol: after functional testing.
+        Stock only:     directly after Stock RF confirmation.
+        """
         self._require_state(
             BatchState.FUNCTIONAL_TEST_COMPLETE
+            if self.requires_pricol
+            else BatchState.STOCK_RF_CONFIRMED
         )
         if not self.qr_candidates:
             raise InvalidBatchTransition(
@@ -658,7 +707,7 @@ class Batch:
 
         # Existing JigSlot method validates completed
         # functional testing and MAC genealogy.
-        slot.bind_module(qr)
+        slot.bind_module(qr, require_pricol=self.requires_pricol)
 
         if self.next_qr_slot is None:
             self.state = BatchState.QR_BOUND
@@ -921,7 +970,25 @@ class Batch:
 
     @property
     def qr_candidates(self) -> tuple[JigSlot, ...]:
-        """Completed functional DUTs requiring post-test identity."""
+        """Completed DUTs requiring post-test identity.
+
+        Stock + Pricol: functional testing complete.
+        Stock only:     Stock RF confirmed.
+        """
+        if not self.requires_pricol:
+            return tuple(
+                slot
+                for slot in self.occupied_slots
+                if (
+                    slot.stock_mac_record is not None
+                    and slot.stock_mac_record.status is MacStatus.CONFIRMED
+                    and slot.state in {
+                        DeviceState.STOCK_RF_CONFIRMED,
+                        DeviceState.QR_BOUND,
+                    }
+                )
+            )
+
         return tuple(
             slot
             for slot in self.occupied_slots
@@ -957,21 +1024,41 @@ class Batch:
 
     @property
     def releasable_slot_numbers(self) -> tuple[int, ...]:
-        """Functionally passed DUTs with both MACs QR-bound."""
+        """QR-bound DUTs that passed every stage their mode requires."""
         return tuple(
             slot.number
             for slot in self.occupied_slots
             if (
-                slot.state is DeviceState.QR_BOUND
-                and slot.functional.passed
-                and slot.module_qr is not None
-                and slot.stock_mac_record is not None
-                and slot.pricol_mac_record is not None
-                and slot.stock_mac_record.status is MacStatus.CONFIRMED
-                and slot.pricol_mac_record.status is MacStatus.CONFIRMED
-                and slot.stock_mac_record.module_qr == slot.module_qr
-                and slot.pricol_mac_record.module_qr == slot.module_qr
+                self._identity_complete(slot)
+                and (slot.functional.passed or not self.requires_pricol)
             )
         )
+
+    def disposition_for(self, slot_number: int) -> SlotDisposition:
+        """Final PASS / FAIL / HOLD / EMPTY outcome for one slot.
+
+        No slot is PASS unless every mandatory identity and test record
+        exists. INCOMPLETE means the slot is still moving through the
+        workflow.
+        """
+        slot = self._get_slot(slot_number)
+
+        if slot_number not in self.occupied_slot_numbers:
+            return SlotDisposition.EMPTY
+
+        if slot.state is DeviceState.HOLD:
+            return SlotDisposition.HOLD
+
+        if slot_number in self.releasable_slot_numbers:
+            return SlotDisposition.PASS
+
+        if slot.functional.complete and not slot.functional.passed:
+            return SlotDisposition.FAIL
+
+        return SlotDisposition.INCOMPLETE
+
+    @property
+    def dispositions(self) -> dict[int, SlotDisposition]:
+        return {number: self.disposition_for(number) for number in sorted(self.slots)}
 
 

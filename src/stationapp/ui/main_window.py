@@ -1,9 +1,11 @@
 """ The station application's main window
 
-Lesson 2 scope: Display environment health and prove Qt wiring works.
-No business logic lives here -- the window asks a service for health
-records and renders them. Every later lesson adds panels to this window,
-never logic.
+Two tabs:
+    Production      -- the guided operator workflow (ProductionPanel)
+    Station status  -- environment health and jig serial topology
+
+No business logic lives here -- the window asks services for state and
+renders it. Workflow rules live in ProductionController and the domain.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -26,14 +29,11 @@ from stationapp.bootstrap import AppContext
 from stationapp.services.health import HealthCheck, Severity, run_all_checks, summarise
 
 import logging
-from PyQt6.QtWidgets import QProgressBar
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import QMessageBox
 
 
-from stationapp.concurrency.events import( OperationFailure, OperationResult, ProgressEvent)
-from stationapp.concurrency.manager import OperationHandle, OperationManager
-from stationapp.services.demo_operation import make_demo_rf_test
+from stationapp.concurrency.manager import OperationManager
 from stationapp.services.serial_topology import (StationSerialTopologyService, SlotTopologyStatus, SerialTopology)
 
 from stationapp.services.slot_eligibility import (JigEligibility, SlotEligibilityStatus)
@@ -41,6 +41,7 @@ from stationapp.domain.batch import Batch
 
 from stationapp.services.jig_status_projection import (JigStatusProjection, JigView)
 from stationapp.ui.widgets.jig_slot_grid import (JigSlotGrid)
+from stationapp.ui.widgets.production_panel import ProductionPanel
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ class MainWindow(QMainWindow):
     def __init__(self, context: AppContext) -> None:
         super().__init__()
         self._operation_manager = OperationManager(self)
-        self._active_demo_id: str | None = None
+        self._production_panel: ProductionPanel | None = None
         self._closing = False
         self._context = context
         self._last_topology: SerialTopology | None = None
@@ -89,6 +90,9 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self.refresh_health()
         self.refresh_serial_topology()
+        if self._production_panel is not None:
+            # Initial READY evaluation, topping up the MAC cache if needed.
+            self._production_panel.check_station(top_up=True)
         #Periodic re-check: Mpcli can be closed, a USB cable pulled. The
         # station's condition is not a startup time fact
         self._timer = QTimer(self)
@@ -101,14 +105,22 @@ class MainWindow(QMainWindow):
 
         #-----------------UI CONSTRUCTION -------------------------------
     def _build_ui(self) -> None:
+        tabs = QTabWidget()
+        self.setCentralWidget(tabs)
+        self._tabs = tabs
+
+        self._jig_slot_grid = JigSlotGrid(self._context.settings.jig_positions, self)
+        tabs.addTab(self._build_production_tab(), "Production")
+
         central = QWidget()
-        self.setCentralWidget(central)
+        tabs.addTab(central, "Station status")
         layout = QVBoxLayout(central)
 
         title = QLabel(f"Station {self._context.station_label}")
         title_font = QFont()
         title_font.setPointSize(14)
         title_font.setBold(True)
+        title.setFont(title_font)
         layout.addWidget(title)
 
         self._summary_label = QLabel("Checking...")
@@ -124,13 +136,6 @@ class MainWindow(QMainWindow):
         self._checks_table.setEditTriggers(
             QTableWidget.EditTrigger.NoEditTriggers
         )
-
-        production_title = QLabel("Jig Production Status")
-        production_title.setStyleSheet("font-size: 15px; font-weight: bold;")
-        layout.addWidget(production_title)
-
-        self._jig_slot_grid = JigSlotGrid(self._context.settings.jig_positions, self)
-        layout.addWidget(self._jig_slot_grid)
 
         slot_title = QLabel("Jig Serial Topology")
         slot_title_font = QFont()
@@ -173,7 +178,7 @@ class MainWindow(QMainWindow):
             "Stage 1 - Local operation"
             if not self._context.settings.is_stage_two
             else (
-                    f"LAN server: {self._context_settings.lan_server_url}"
+                    f"LAN server: {self._context.settings.lan_server_url}"
                 )
             )
         )
@@ -189,33 +194,36 @@ class MainWindow(QMainWindow):
         footer.addWidget(self._refresh_topology_button)
 
         layout.addLayout(footer)
-        worker_title = QLabel("Concurrency Demonstration")
-        worker_title_font = QFont()
-        worker_title_font.setBold(True)
-        worker_title.setFont(worker_title_font)
-        layout.addWidget(worker_title)
-        
-        self._operation_label = QLabel("No Operation Running")
-        layout.addWidget(self._operation_label)
-        
-        self._operation_progress = QProgressBar()
-        self._operation_progress.setRange(0, 8)
-        self._operation_progress.setValue(0)
-        layout.addWidget(self._operation_progress)
-        
-        worker_buttons = QHBoxLayout()
-        
-        self._start_demo_button = QPushButton("Start Simulated RF  Test")
-        self._start_demo_button.clicked.connect(self.start_demo_rf_test)
-        worker_buttons.addWidget(self._start_demo_button)
-        
-        self._cancel_demo_button = QPushButton("Cancel")
-        self._cancel_demo_button.setEnabled(False)
-        self._cancel_demo_button.clicked.connect(self.cancel_demo_rf_test)
-        worker_buttons.addWidget(self._cancel_demo_button)
-        
-        worker_buttons.addStretch()
-        layout.addLayout(worker_buttons)
+
+    def _build_production_tab(self) -> QWidget:
+        context = self._context
+        if context.production is None or context.readiness is None:
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            layout.addWidget(QLabel("Production services are not available in this session."))
+            layout.addWidget(self._jig_slot_grid, 1)
+            return container
+
+        self._production_panel = ProductionPanel(
+            controller=context.production,
+            readiness=context.readiness,
+            operations=self._operation_manager,
+            jig_grid=self._jig_slot_grid,
+            station_id=context.settings.station_id,
+            default_stock_firmware=context.settings.stock_firmware_path,
+            default_pricol_firmware=context.settings.pricol_firmware_path,
+            simulation=context.simulation,
+            parent=self,
+        )
+        if context.recovered_macs:
+            QMessageBox.warning(
+                self,
+                "Startup recovery",
+                f"{context.recovered_macs} MAC address(es) were left in PROGRAMMING when "
+                "the application last stopped. They have been placed on HOLD and will not "
+                "be reused. Inform the Supervisor.",
+            )
+        return self._production_panel
 
     def refresh_health(self) -> None:
         """ Run the health checks and render the result.
@@ -244,68 +252,6 @@ class MainWindow(QMainWindow):
                 self._checks_table.setItem(row, col, item)
                 
                 
-    def start_demo_rf_test(self) -> None:
-        if self._active_demo_id is not None:
-            return
-
-        if self._last_eligibility is None:
-            QMessageBox.warning(
-                self,
-                "Jig state unavailable",
-                "Refresh the jig before starting."
-            )
-            return
-
-        if self._last_eligibility.none_eligible:
-            QMessageBox.warning(
-                self,
-                "No Eligible Slots",
-                (
-                    "No Jig position is currently "
-                    "eligible for operation."
-                ),
-            )
-            return
-
-        eligible_slots = (self._last_eligibility.eligible_slot_numbers)
-        
-            
-        mac_addresses = [
-            f"AA:BB:CC:DD:EE:{suffix:02x}"
-            for suffix in range(1, 9)
-        ]
-        
-        operation_id = "demo-rf-test"
-        
-        def configure(worker) -> None:
-            worker.started.connect(self._on_operation_started)
-            worker.progress.connect(self._on_operation_progress)
-            worker.succeeded.connect(self._on_operation_succeeded)
-            worker.failed.connect(self._on_operation_failed)
-            worker.cancelled.connect(self._on_operation_cancelled)
-            worker.finished.connect(self._on_operation_finished)
-            
-        try:
-            handle = self._operation_manager.start(make_demo_rf_test(mac_addresses), operation_id=operation_id, configure=configure)
-        except Exception as exc:
-            logger.exception("Could not start demonstration operation")
-            self._operation_label.setText(f"Could not start: {exc}")
-            return
-            
-        self._active_demo_id = handle.operation_id
-        self._start_demo_button.setEnabled(False)
-        self._cancel_demo_button.setEnabled(True)
-        self._operation_progress.setValue(0)
-        
-        
-    def cancel_demo_rf_test(self) -> None:
-        if self._active_demo_id is None:
-            return
-            
-        self._operation_label.setText("Cancellation Requested ...")
-        self._cancel_demo_button.setEnabled(False)
-        self._operation_manager.cancel(self._active_demo_id)
-
     def refresh_serial_topology(self) -> None:
         """Refresh and render current jig serial topology."""
 
@@ -429,52 +375,6 @@ class MainWindow(QMainWindow):
             self._slot_summary_label.setText(f"No slots available; {blocked}/{total} blocked")
             self._slot_summary_label.setStyleSheet("color: #b3261e;")
         
-    def _on_operation_started(self, operation_id: str) -> None:
-        if operation_id != self._active_demo_id:
-            return 
-        self._operation_label.setText("RF test started")
-        
-    def _on_operation_progress(self, event: ProgressEvent) -> None:
-        if event.operation_id != self._active_demo_id:
-            return 
-        
-        self._operation_label.setText(event.message)
-        
-        if event.completed is not None:
-            self._operation_progress.setValue(event.completed)
-            
-    def _on_operation_succeeded(self, result: OperationResult) -> None:
-        if result.operation_id != self._active_demo_id:
-            return 
-            
-        passed = sum(1 for item in result.value if item.connected and item.disconnected)
-        self._operation_label.setText(f"RF test completed: {passed}/{len(result.value)} passed."
-                                      f"in {result.elapsed_seconds:.2f}s")
-                                      
-    def _on_operation_failed(self, failure: OperationFailure) -> None:
-        if failure.operation_id != self._active_demo_id:
-            return 
-            
-        self._operation_label.setText(f"Failed: {failure.user_message}")
-        logger.error("Operation failure detail | operation_id=%s type=%s detail=%s",failure.operation_id, failure.error_type, failure.technical_message)
-        
-        
-    def _on_operation_cancelled(self, operation_id:str) -> None:
-        if operation_id != self._active_demo_id:
-            return 
-            
-        self._operation_label.setText("RF Test Cancelled")
-        
-    def _on_operation_finished(self, operation_id: str) -> None:
-        if operation_id != self._active_demo_id:
-            return 
-        self._active_demo_id= None
-        
-        if not self._closing:
-            self._start_demo_button.setEnabled(True)
-            self._cancel_demo_button.setEnabled(False)
-            
-            
     def closeEvent(self, event: QCloseEvent) -> None:
         """ Request cooperative shutdown of all active oeprations """
         
@@ -485,6 +385,8 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(self, "Operations are still running",
                 (
                     "A station operation is still active.\n\n"
+                    "Closing now cancels it. Any module being programmed will be "
+                    "placed on HOLD and its MAC address quarantined.\n\n"
                     "Cancel the operation and close the application?"
                 ),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -500,16 +402,17 @@ class MainWindow(QMainWindow):
         self._topology_timer.stop()
         self._operation_manager.cancel_all()
         
-        # The demo operation observed cancellation every 50ms. Real drivers
-        # receive their own shutdown budgets in Lesson 7-10
+        # MPCLI observes cancellation through its process runner and is
+        # terminated within its grace period.
+
         
-        if not self._operation_manager.wait_for_all(timeout_ms=5_000):
+        if not self._operation_manager.wait_for_all(timeout_ms=15_000):
             self._closing = False
             self._timer.start()
             self._topology_timer.start()
             QMessageBox.critical(self, "Unable to close safely", 
                                  (
-                                    "An operation did not stop safely within 5 seconds. \n"
+                                    "An operation did not stop safely within 15 seconds. \n"
                                     "The application will remain open."
                                  ),
                             )

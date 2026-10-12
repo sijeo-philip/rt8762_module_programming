@@ -48,6 +48,8 @@ class OperatorAction(str, Enum):
 
     SCAN_QR = "SCAN_QR"
 
+    COMPLETE_BATCH = "COMPLETE_BATCH"
+
     REMOVE_COMPLETED_BATCH = ("REMOVE_COMPLETED_BATCH")
 
     CALL_SUPERVISOR = "CALL_SUPERVISOR"
@@ -74,6 +76,7 @@ class OperatorWorkflow:
     automatic_operation: bool = False
     completed: bool = False
     requires_supervisor: bool = False
+    button_label: str = "CONTINUE"
 
 class WorkflowService:
     """Translate domain batch state into operator-facing workflow."""
@@ -93,6 +96,7 @@ class WorkflowService:
                     "into the jig."
                 ),
                 allow_start_button=True,
+                button_label="START",
             )
 
         if state is BatchState.PORT_BINDING:
@@ -205,6 +209,15 @@ class WorkflowService:
                 ),
             )
 
+        if state is BatchState.STOCK_RF_CONFIRMED and not batch.requires_pricol:
+            return self._automatic(
+                batch,
+                headline="RF TEST COMPLETE",
+                instruction=(
+                    "Stock-only batch: preparing QR scanning."
+                ),
+            )
+
         if state is BatchState.STOCK_RF_CONFIRMED:
             return self._automatic(
                 batch,
@@ -303,6 +316,7 @@ class WorkflowService:
                     "the application test."
                 ),
                 allow_start_button=True,
+                button_label="RESET DONE - RUN APP TEST",
             )
 
         if state is BatchState.PRICOLAPP_TESTING:
@@ -325,6 +339,7 @@ class WorkflowService:
                     "the DFU test."
                 ),
                 allow_start_button=True,
+                button_label="RESET DONE - RUN DFU TEST",
             )
 
         if state is BatchState.PRICOLDFU_TESTING:
@@ -375,16 +390,22 @@ class WorkflowService:
                 ),
                 expected_slot=slot_number,
                 scanner_enabled=True,
+                button_label="SCANNING...",
             )
 
         if state is BatchState.QR_BOUND:
-            return self._automatic(
-                batch,
-                headline="FINAL CHECK",
+            return OperatorWorkflow(
+                batch_id=batch.batch_id,
+                batch_state=state,
+                action=OperatorAction.COMPLETE_BATCH,
+                headline="FINAL VALIDATION",
                 instruction=(
-                    "All QRs scanned. "
-                    "Completing final validation."
+                    "All eligible modules are scanned. Review the "
+                    "slot results, then press COMPLETE BATCH to "
+                    "commit the records and queue them for upload."
                 ),
+                allow_start_button=True,
+                button_label="COMPLETE BATCH",
             )
 
         if state in {
@@ -404,6 +425,7 @@ class WorkflowService:
                     "load the next batch."
                 ),
                 completed=True,
+                button_label="PREPARE NEXT BATCH",
             )
 
         if state in {

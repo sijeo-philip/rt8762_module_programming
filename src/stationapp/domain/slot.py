@@ -108,18 +108,23 @@ class JigSlot:
     def is_held(self) -> bool:
         return self.state is DeviceState.HOLD
         
-    def bind_module(self, module_qr: str) -> None:
+    def bind_module(self, module_qr: str, *, require_pricol: bool = True) -> None:
         """Bind the scanned Module QR after all tests have completed.
 
         The operator scans modules physically in slot order. This method binds
-        the QR to the slot and to both MAC genealogy records.
+        the QR to the slot and to every MAC genealogy record.
+
+        require_pricol=False is the Stock-only workflow: the QR is bound
+        after Stock RF confirmation and only the Stock MAC exists.
         """
-        if self.state not in {
-            DeviceState.FUNCTIONAL_TEST_PASSED,
-            DeviceState.FUNCTIONAL_TEST_FAILED,
-        }:
+        allowed = (
+            {DeviceState.FUNCTIONAL_TEST_PASSED, DeviceState.FUNCTIONAL_TEST_FAILED}
+            if require_pricol
+            else {DeviceState.STOCK_RF_CONFIRMED}
+        )
+        if self.state not in allowed:
             raise InvalidDeviceTransition(
-                f"Module QR can be scanned only after functional testing; "
+                f"Module QR can be scanned only after the final test stage; "
                 f"slot {self.number} is {self.state.value}"
             )
 
@@ -139,25 +144,28 @@ class JigSlot:
                 f"Slot {self.number} has no stock MAC genealogy"
             )
 
-        if self.pricol_mac_record is None:
-            raise InvalidDeviceTransition(
-                f"Slot {self.number} has no Pricol MAC genealogy"
-            )
-
         if self.stock_mac_record.status is not MacStatus.CONFIRMED:
             raise InvalidDeviceTransition(
                 f"Slot {self.number} stock MAC is not confirmed"
             )
 
-        if self.pricol_mac_record.status is not MacStatus.CONFIRMED:
-            raise InvalidDeviceTransition(
-                f"Slot {self.number} Pricol MAC is not confirmed"
-            )
+        if require_pricol:
+            if self.pricol_mac_record is None:
+                raise InvalidDeviceTransition(
+                    f"Slot {self.number} has no Pricol MAC genealogy"
+                )
 
-        # Bind both before changing the slot state. The repository will later
-        # provide database transaction atomicity for this operation.
+            if self.pricol_mac_record.status is not MacStatus.CONFIRMED:
+                raise InvalidDeviceTransition(
+                    f"Slot {self.number} Pricol MAC is not confirmed"
+                )
+
+        # Bind every record before changing the slot state. The repository
+        # provides database transaction atomicity for this operation.
         self.stock_mac_record.bind_module_qr(qr)
-        self.pricol_mac_record.bind_module_qr(qr)
+        if require_pricol:
+            assert self.pricol_mac_record is not None
+            self.pricol_mac_record.bind_module_qr(qr)
 
         self.module_qr = qr
         self.state = DeviceState.QR_BOUND

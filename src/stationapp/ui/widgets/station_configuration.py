@@ -434,7 +434,7 @@ class GoldenRigPage(_Page):
         entry.addWidget(QLabel("Port"))
         self.port_input = QSpinBox()
         self.port_input.setRange(1, 65535)
-        self.port_input.setValue(7443)
+        self.port_input.setValue(8762)
         entry.addWidget(self.port_input)
         self.identity_button = QPushButton("Request identity")
         self.identity_button.clicked.connect(self._request_identity)

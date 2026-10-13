@@ -9,3 +9,5 @@ build/
 dist/
 *.spec
 .pytest_cache/
+*.db-wal
+*.db-shm

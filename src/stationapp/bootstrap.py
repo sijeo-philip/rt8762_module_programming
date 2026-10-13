@@ -32,6 +32,9 @@ from stationapp.services.health import HealthCheck, Severity
 from stationapp.services.mac_cache import MacCacheService
 from stationapp.services.production import ProductionController
 from stationapp.services.readiness import StationReadinessService, approved_golden_rig_check
+from stationapp.services.access import StationAccessService, UserAdministrationService
+from stationapp.services.golden_rig_configuration import GoldenRigConfigurationService
+from stationapp.services.jig_configuration import JigConfigurationService
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,12 @@ class AppContext:
     readiness: StationReadinessService | None = None
     mac_cache: MacCacheService | None = None
     recovered_macs: int = 0
+
+    # Access control and station configuration. None in UI tests.
+    access: StationAccessService | None = None
+    users: UserAdministrationService | None = None
+    jig_configuration: JigConfigurationService | None = None
+    golden_rig_configuration: GoldenRigConfigurationService | None = None
 
 
     @property
@@ -102,9 +111,13 @@ def bootstrap() -> AppContext:
     serial_topology_service = (StationSerialTopologyService(binding_service=binding_service))
 
     session_factory, recovered = _prepare_database(settings)
-    production, readiness, mac_cache = _build_production(
-        settings, session_factory, serial_topology_service, slot_eligibility_service
+    access, users, jig_configuration, golden_rig_configuration = _build_access(
+        settings, session_factory, binding_service
     )
+    production, readiness, mac_cache = _build_production(
+        settings, session_factory, serial_topology_service, slot_eligibility_service, access
+    )
+    access.set_batch_activity_probe(lambda: production.has_active_batch)
 
     context = AppContext(
             settings=settings,
@@ -115,6 +128,10 @@ def bootstrap() -> AppContext:
             readiness=readiness,
             mac_cache=mac_cache,
             recovered_macs=recovered,
+            access=access,
+            users=users,
+            jig_configuration=jig_configuration,
+            golden_rig_configuration=golden_rig_configuration,
         )
     logger.debug("Bootstrap Complete")
     return context
@@ -138,7 +155,101 @@ def _prepare_database(settings: Settings):
     return session_factory, recovered
 
 
-def _build_production(settings: Settings, session_factory, topology_service, eligibility_service):
+def _build_access(settings: Settings, session_factory, binding_service: SlotBindingService):
+    """Authentication, sessions, and Supervisor station configuration."""
+    from datetime import timedelta
+
+    from stationapp.domain.session import StationConfiguration
+    from stationapp.infrastructure.golden_rig.sqlite_binding_store import SqliteGoldenRigBindingStore
+    from stationapp.services.access import AuthenticationService, SecretHasher
+    from stationapp.services.golden_rig_configuration import (
+        GoldenRigIdentityProbe,
+        live_rig_configuration,
+        parse_endpoints,
+    )
+    from stationapp.services.golden_rig_secure_binding import SecureGoldenRigBindingService
+
+    station_id = settings.station_id
+    rig_store = SqliteGoldenRigBindingStore(settings.database_url)
+
+    if settings.simulation_mode:
+        from stationapp.services.simulation import SIMULATED_RIG_ID
+
+        def configuration() -> StationConfiguration:
+            return StationConfiguration(
+                jig_id=settings.jig_id,
+                jig_positions=settings.jig_positions,
+                slot_bindings=tuple(
+                    (number, f"SIM:{settings.jig_id}:SLOT{number}")
+                    for number in range(1, settings.jig_positions + 1)
+                ),
+                golden_rig_id=SIMULATED_RIG_ID,
+                golden_rig_fingerprint="SIMULATED",
+            )
+    else:
+        def configuration() -> StationConfiguration:
+            bindings = binding_service.load()
+            rig_id, fingerprint = live_rig_configuration(rig_store, station_id)
+            return StationConfiguration(
+                jig_id=settings.jig_id,
+                jig_positions=settings.jig_positions,
+                slot_bindings=tuple((item.slot_number, item.stable_key) for item in bindings.bindings),
+                golden_rig_id=rig_id,
+                golden_rig_fingerprint=fingerprint,
+            )
+
+    hasher = SecretHasher()
+    authentication = AuthenticationService(
+        session_factory=session_factory,
+        station_id=station_id,
+        hasher=hasher,
+        max_failures=settings.auth_max_failures,
+        lockout=timedelta(minutes=settings.auth_lockout_minutes),
+    )
+
+    golden_rig_holder: list[GoldenRigConfigurationService] = []
+
+    def verify_rig(confirmed: StationConfiguration) -> tuple[str, ...]:
+        # README 1A step 8: the live rig must present the approved identity.
+        return golden_rig_holder[0].verify_bound_rig(confirmed)
+
+    access = StationAccessService(
+        session_factory=session_factory,
+        station_id=station_id,
+        authentication=authentication,
+        configuration_provider=configuration,
+        rig_verifier=None if settings.simulation_mode else verify_rig,
+        supervisor_timeout=timedelta(minutes=settings.supervisor_timeout_minutes),
+    )
+
+    golden_rig = GoldenRigConfigurationService(
+        station_id=station_id,
+        store=rig_store,
+        binding_service=SecureGoldenRigBindingService(station_id, rig_store),
+        probe=GoldenRigIdentityProbe(
+            ca_certificate=settings.golden_rig_ca_certificate,
+            inventory=settings.golden_rig_inventory.split(","),
+        ),
+        access=access,
+        candidates=parse_endpoints(settings.golden_rig_candidates),
+    )
+    golden_rig_holder.append(golden_rig)
+
+    users = UserAdministrationService(session_factory=session_factory, station_id=station_id, hasher=hasher)
+    jig = JigConfigurationService(
+        station_id=station_id,
+        binding_service=binding_service,
+        access=access,
+        session_factory=session_factory,
+    )
+
+    if access.session is not None:
+        logger.info("Production session %s restored; operator must log in again", access.session.session_id)
+
+    return access, users, jig, golden_rig
+
+
+def _build_production(settings: Settings, session_factory, topology_service, eligibility_service, access: StationAccessService):
     from stationapp.data.production_repository import SqlProductionStore
 
     simulation = settings.simulation_mode
@@ -200,6 +311,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         mac_cache=mac_cache,
         golden_rig_check=golden_rig_check,
         simulation=simulation,
+        session_check=access.session_health,
     )
 
     production = ProductionController(
@@ -213,6 +325,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         readiness_gate=readiness.gate,
         qr_pattern=settings.qr_pattern,
         require_firmware=not simulation,
+        access=access,
     )
 
     return production, readiness, mac_cache

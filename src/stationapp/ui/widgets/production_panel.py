@@ -40,6 +40,8 @@ from stationapp.domain.batch import BatchState, ProgrammingMode
 from stationapp.services.health import Severity
 from stationapp.services.production import ProductionController, ProductionError, ProductionSnapshot
 from stationapp.services.readiness import ReadinessReport, StationReadinessService
+from stationapp.services.access import StationAccessService
+from stationapp.ui.dialogs.access_dialogs import SupervisorAuthorizationDialog
 from stationapp.ui.widgets.jig_slot_grid import JigSlotGrid
 
 logger = logging.getLogger(__name__)
@@ -151,8 +153,9 @@ class ProductionPanel(QWidget):
     """Operator-facing production workflow."""
 
     _controller_changed = pyqtSignal()
+    _access_changed = pyqtSignal()
 
-    def __init__(self, *, controller: ProductionController, readiness: StationReadinessService, operations: OperationManager, jig_grid: JigSlotGrid, station_id: str, default_stock_firmware: Path | None = None, default_pricol_firmware: Path | None = None, simulation: bool = False, parent: QWidget | None = None) -> None:
+    def __init__(self, *, controller: ProductionController, readiness: StationReadinessService, operations: OperationManager, jig_grid: JigSlotGrid, station_id: str, default_stock_firmware: Path | None = None, default_pricol_firmware: Path | None = None, simulation: bool = False, access: StationAccessService | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._controller = controller
         self._readiness = readiness
@@ -172,6 +175,14 @@ class ProductionPanel(QWidget):
         # brings the update onto the GUI thread.
         self._controller_changed.connect(self._schedule_render, Qt.ConnectionType.QueuedConnection)
         controller.add_listener(self._controller_changed.emit)
+
+        # A login, logout or session change alters READY: re-check it.
+        self._access = access
+        if access is not None:
+            access.add_listener(self._access_changed.emit)
+            self._access_changed.connect(self._on_access_changed, Qt.ConnectionType.QueuedConnection)
+            self.operator_input.setReadOnly(True)
+            self.operator_input.setPlaceholderText("Log in as Operator (top bar)")
         # The advance worker is only gone once its thread is cleaned up.
         operations.operation_removed.connect(lambda _operation_id: self._schedule_render())
 
@@ -511,10 +522,23 @@ class ProductionPanel(QWidget):
         logger.info("QR bound | slot=%s", slot)
         self.render()
 
+    def _on_access_changed(self) -> None:
+        if self._snapshot is None or not self._snapshot.has_batch:
+            self._readiness_timer.start()
+        self.render()
+
     def _on_abort(self) -> None:
-        supervisor, ok = QInputDialog.getText(self, "Supervisor authorization", "Supervisor ID:")
-        if not ok or not supervisor.strip():
-            return
+        authorizer = None
+        if self._access is not None:
+            dialog = SupervisorAuthorizationDialog(self._access, "abort this batch", self)
+            if not dialog.exec() or dialog.result_user is None:
+                return
+            authorizer = dialog.result_user
+            supervisor = authorizer.user_id
+        else:
+            supervisor, ok = QInputDialog.getText(self, "Supervisor authorization", "Supervisor ID:")
+            if not ok or not supervisor.strip():
+                return
         reason, ok = QInputDialog.getText(self, "Abort batch", "Reason for aborting this batch:")
         if not ok or not reason.strip():
             return
@@ -527,7 +551,7 @@ class ProductionPanel(QWidget):
         if answer is not QMessageBox.StandardButton.Yes:
             return
         try:
-            self._controller.abort_batch(reason=reason, actor_id=supervisor.strip())
+            self._controller.abort_batch(reason=reason, actor_id=supervisor.strip(), supervisor=authorizer)
         except ProductionError as exc:
             self._show_error(str(exc))
             return
@@ -605,6 +629,9 @@ class ProductionPanel(QWidget):
             self._jig_grid.update_view(snapshot.jig)
 
     def _render_setup(self, snapshot: ProductionSnapshot) -> None:
+        if self._access is not None:
+            operator = self._access.operator
+            self.operator_input.setText(operator.label if operator else "")
         self.step_rail.set_step("LOAD & READY", stock_only=self.selected_mode is ProgrammingMode.STOCK_ONLY, blocked=False)
         self.setup_box.show()
         self.setup_box.setEnabled(True)

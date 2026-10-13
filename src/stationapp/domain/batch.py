@@ -108,6 +108,7 @@ class Batch:
     # Traceability metadata only; no workflow rule depends on them.
     batch_label: str | None = None
     operator_id: str | None = None
+    session_id: str | None = None
     
     def __post_init__(self) -> None:
         if self.slot_count not in (4, 8):

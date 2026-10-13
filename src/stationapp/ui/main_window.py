@@ -42,6 +42,8 @@ from stationapp.domain.batch import Batch
 from stationapp.services.jig_status_projection import (JigStatusProjection, JigView)
 from stationapp.ui.widgets.jig_slot_grid import (JigSlotGrid)
 from stationapp.ui.widgets.production_panel import ProductionPanel
+from stationapp.ui.widgets.session_bar import SessionBar
+from stationapp.ui.widgets.station_configuration import StationConfigurationWidget
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +107,38 @@ class MainWindow(QMainWindow):
 
         #-----------------UI CONSTRUCTION -------------------------------
     def _build_ui(self) -> None:
+        root = QWidget()
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(4, 4, 4, 4)
+        self.setCentralWidget(root)
+
+        self._session_bar: SessionBar | None = None
+        if self._context.access is not None:
+            self._session_bar = SessionBar(self._context.access, self)
+            root_layout.addWidget(self._session_bar)
+
         tabs = QTabWidget()
-        self.setCentralWidget(tabs)
+        root_layout.addWidget(tabs, 1)
         self._tabs = tabs
 
         self._jig_slot_grid = JigSlotGrid(self._context.settings.jig_positions, self)
         tabs.addTab(self._build_production_tab(), "Production")
+
+        self._station_configuration: StationConfigurationWidget | None = None
+        context = self._context
+        if context.access is not None and context.users is not None and context.jig_configuration is not None and context.golden_rig_configuration is not None:
+            self._station_configuration = StationConfigurationWidget(
+                access=context.access,
+                users=context.users,
+                jig_configuration=context.jig_configuration,
+                golden_rig=context.golden_rig_configuration,
+                operations=self._operation_manager,
+                jig_positions=context.settings.jig_positions,
+                topology_service=context.serial_topology_service,
+                simulation=context.simulation,
+                parent=self,
+            )
+            tabs.addTab(self._station_configuration, "Station configuration")
 
         central = QWidget()
         tabs.addTab(central, "Station status")
@@ -213,6 +241,7 @@ class MainWindow(QMainWindow):
             default_stock_firmware=context.settings.stock_firmware_path,
             default_pricol_firmware=context.settings.pricol_firmware_path,
             simulation=context.simulation,
+            access=context.access,
             parent=self,
         )
         if context.recovered_macs:

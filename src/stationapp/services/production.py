@@ -42,6 +42,7 @@ from stationapp.domain.events import EventType, ManufacturingEvent
 from stationapp.domain.golden_rig import GoldenRigTarget
 from stationapp.domain.mac import AllocatedMac, MacPurpose
 from stationapp.domain.slot import DeviceState
+from stationapp.domain.users import AccessError, AuthenticatedUser
 from stationapp.drivers.mpcli.driver import PHASE_FLASHING, PHASE_WRITING_MAC
 from stationapp.drivers.mpcli.types import IdentityOutcome
 from stationapp.services.golden_rig_eligibility import GoldenRigEligibilityService
@@ -100,6 +101,14 @@ class FunctionalTester(Protocol):
     def run_app_test(self, *, slot_number: int, com_port: str, cancellation_token: CancellationToken | None = None) -> bool | None: ...
 
     def run_dfu_test(self, *, slot_number: int, com_port: str, cancellation_token: CancellationToken | None = None) -> bool | None: ...
+
+
+class ProductionAccess(Protocol):
+    """StationAccessService: who may run production right now."""
+
+    def require_production_access(self) -> tuple[str, str]:
+        """(session_id, operator_id), or raise AccessError."""
+        ...
 
 
 class ProductionStore(Protocol):
@@ -180,7 +189,7 @@ _FINISHED_STATES = frozenset({
 class ProductionController:
     """Owns the active batch and executes the production workflow."""
 
-    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True) -> None:
+    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None) -> None:
         """programmer_factory builds a programmer for the firmware images
         chosen at batch setup; programmer is a fixed alternative."""
         if slot_count not in (4, 8):
@@ -195,6 +204,7 @@ class ProductionController:
         self._programmer = programmer
         self._programmer_factory = programmer_factory
         self._require_firmware = require_firmware
+        self._access = access
         self._rf_tester = rf_tester
         self._functional = functional_tester
         self._readiness_gate = readiness_gate
@@ -224,6 +234,12 @@ class ProductionController:
     @property
     def batch(self) -> Batch | None:
         return self._batch
+
+    @property
+    def has_active_batch(self) -> bool:
+        """A batch exists and is not yet committed or aborted."""
+        with self._lock:
+            return self._batch is not None and self._batch.state not in _FINISHED_STATES
 
     @property
     def slot_count(self) -> int:
@@ -278,6 +294,11 @@ class ProductionController:
             if self._batch is not None and self._batch.state not in _FINISHED_STATES:
                 raise ProductionError("The current batch has not been completed")
 
+            session_id = None
+            if self._access is not None:
+                # The authenticated Operator, never a typed-in name, owns the batch.
+                session_id, operator_id = self._require_access()
+
             occupied = tuple(sorted(occupied))
             if not occupied:
                 raise ProductionError("Select at least one loaded slot")
@@ -319,10 +340,11 @@ class ProductionController:
                 programming_mode=mode,
                 batch_label=(batch_label or "").strip() or None,
                 operator_id=(operator_id or "").strip() or None,
+                session_id=session_id,
             )
             batch.configure_occupied_slots(occupied)
 
-            self._store.create(batch, [self._event(batch, EventType.BATCH_CREATED, mode=mode.value, occupied=list(occupied), batch_label=batch.batch_label, operator_id=batch.operator_id, **firmware)])
+            self._store.create(batch, [self._event(batch, EventType.BATCH_CREATED, mode=mode.value, occupied=list(occupied), batch_label=batch.batch_label, operator_id=batch.operator_id, session_id=session_id, **firmware)])
 
             self._batch = batch
             self._ports = {number: ports[number] for number in occupied}
@@ -367,6 +389,13 @@ class ProductionController:
             batch = self._require_batch()
             if self._running:
                 raise ProductionError("A production step is already running")
+            if self._access is not None:
+                try:
+                    self._require_access()
+                except ProductionError as exc:
+                    self._last_error = str(exc)
+                    self._notify()
+                    raise
             self._running = True
             self._last_error = None
 
@@ -406,6 +435,9 @@ class ProductionController:
             if batch.state is not BatchState.QR_SCANNING:
                 raise ProductionError("QR scanning is not active")
 
+            if self._access is not None:
+                self._require_access()
+
             qr = raw.strip()
             if not self._qr_pattern.fullmatch(qr):
                 raise ProductionError(f"Invalid QR data: {qr!r}")
@@ -425,8 +457,17 @@ class ProductionController:
         self._notify()
         return slot_number
 
-    def abort_batch(self, *, reason: str, actor_id: str | None = None) -> None:
-        """Supervisor disposition of a batch that cannot continue."""
+    def abort_batch(self, *, reason: str, actor_id: str | None = None, supervisor: AuthenticatedUser | None = None) -> None:
+        """Supervisor disposition of a batch that cannot continue.
+
+        With access control, supervisor must be an authenticated Supervisor.
+        """
+        if self._access is not None:
+            if supervisor is None or not supervisor.is_supervisor:
+                raise ProductionError("Supervisor authorization is required to abort a batch")
+        if supervisor is not None:
+            actor_id = supervisor.user_id
+
         with self._lock:
             batch = self._require_batch()
             if self._running:
@@ -852,6 +893,13 @@ class ProductionController:
             self._last_error = message
         logger.warning("Production step refused/failed: %s", message)
 
+    def _require_access(self) -> tuple[str, str]:
+        assert self._access is not None
+        try:
+            return self._access.require_production_access()
+        except AccessError as exc:
+            raise ProductionError(str(exc)) from exc
+
     def _require_batch(self) -> Batch:
         if self._batch is None:
             raise ProductionError("No active batch")
@@ -923,6 +971,7 @@ def build_batch_record(batch: Batch) -> dict[str, Any]:
         "station_id": batch.station_id,
         "jig_id": batch.jig_id,
         "operator_id": batch.operator_id,
+        "session_id": batch.session_id,
         "programming_mode": batch.programming_mode.value,
         "state": batch.state.value,
         "created_at": batch.created_at.isoformat(),

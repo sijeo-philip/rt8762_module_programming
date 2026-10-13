@@ -63,6 +63,19 @@ class Settings(BaseSettings):
     # Accepted module QR content. Tighten once the label format is fixed.
     qr_pattern: str = r"^[!-~]{4,128}$"
 
+    # --- Access control ---
+    # Supervisor elevation lapses after this much inactivity.
+    supervisor_timeout_minutes: int = Field(15, ge=1)
+    auth_max_failures: int = Field(5, ge=1)
+    auth_lockout_minutes: int = Field(5, ge=1)
+
+    # --- Golden Rig binding ---
+    # Approved rig IDs (certificate common names). Empty = any rig whose
+    # certificate is signed by GOLDEN_RIG_CA_CERTIFICATE.
+    golden_rig_inventory: str = ""
+    # Rigs offered by "Discover": host:port,host:port
+    golden_rig_candidates: str = ""
+
     # --- Simulation (development / training only) ---
     # Replaces MPCLI, the Golden Rig, functional tests, serial ports and
     # MAC allocation with simulators. Never enable on a production station.

@@ -153,6 +153,7 @@ class BatchModel(Base):
     programming_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="STOCK_AND_PRICOL", server_default="STOCK_AND_PRICOL")
     batch_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
     operator_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -454,3 +455,52 @@ class OutboxModel(Base):
         ),
     )
 
+
+
+# =============================================================================
+# Users and production sessions
+# =============================================================================
+
+
+class UserModel(Base):
+    """Station user. Secrets are stored only as Argon2 hashes."""
+
+    __tablename__ = "users"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    secret_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    badge_id: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("role IN ('OPERATOR', 'SUPERVISOR')", name="ck_users_role"),
+        CheckConstraint("failed_attempts >= 0", name="ck_users_failed_attempts"),
+    )
+
+
+class ProductionSessionModel(Base):
+    """Supervisor-started production session and its confirmed configuration."""
+
+    __tablename__ = "production_sessions"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    station_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    supervisor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    configuration: Mapped[dict] = mapped_column(JSON, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('OPEN', 'CLOSED')", name="ck_production_sessions_status"),
+        Index("ix_production_sessions_station_status", "station_id", "status"),
+    )

@@ -36,6 +36,14 @@ def main() -> int:
     # and we want a clean terminal error if bootstrap fails first
     from stationapp.ui.main_window import MainWindow
 
+    # Initial station setup: the first Supervisor account.
+    if context.users is not None and not context.users.has_users():
+        from stationapp.ui.dialogs.access_dialogs import FirstSupervisorDialog
+
+        if not FirstSupervisorDialog(context.users).exec():
+            print("Station setup cancelled: a Supervisor account is required.", file=sys.stderr)
+            return 3
+
     window = MainWindow(context)
     window.show()
     logger.info("UI Started")

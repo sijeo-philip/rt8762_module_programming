@@ -54,7 +54,7 @@ class ReadinessReport:
 class StationReadinessService:
     """Evaluate whether the station may start a batch."""
 
-    def __init__(self, *, settings: Settings, topology_service, eligibility_service: SlotEligibilityService, mac_cache: MacCacheService | None, golden_rig_check: GoldenRigCheck, simulation: bool = False, functional_test_available: bool = False) -> None:
+    def __init__(self, *, settings: Settings, topology_service, eligibility_service: SlotEligibilityService, mac_cache: MacCacheService | None, golden_rig_check: GoldenRigCheck, simulation: bool = False, functional_test_available: bool = False, session_check: Callable[[], HealthCheck] | None = None) -> None:
         self._settings = settings
         self._topology = topology_service
         self._eligibility = eligibility_service
@@ -62,9 +62,13 @@ class StationReadinessService:
         self._golden_rig_check = golden_rig_check
         self._simulation = simulation
         self._functional_test_available = functional_test_available or simulation
+        self._session_check = session_check
 
     def evaluate(self, mode: ProgrammingMode, occupied: tuple[int, ...] | None = None, *, top_up_macs: bool = False) -> ReadinessReport:
         checks: list[HealthCheck] = []
+
+        if self._session_check is not None:
+            checks.append(self._session_check())
 
         ports, eligibility, jig_checks = self._jig(occupied)
         checks.extend(jig_checks)

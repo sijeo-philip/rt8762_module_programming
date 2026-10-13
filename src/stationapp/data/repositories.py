@@ -158,6 +158,7 @@ class BatchRepository:
                     programming_mode=batch.programming_mode.value,
                     batch_label=batch.batch_label,
                     operator_id=batch.operator_id,
+                    session_id=batch.session_id,
                     created_at=batch.created_at,
                 )
 

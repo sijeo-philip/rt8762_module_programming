@@ -35,6 +35,7 @@ from stationapp.services.readiness import StationReadinessService, approved_gold
 from stationapp.services.access import StationAccessService, UserAdministrationService
 from stationapp.services.golden_rig_configuration import GoldenRigConfigurationService
 from stationapp.services.jig_configuration import JigConfigurationService
+from stationapp.services.server_sync import SyncScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ class AppContext:
     users: UserAdministrationService | None = None
     jig_configuration: JigConfigurationService | None = None
     golden_rig_configuration: GoldenRigConfigurationService | None = None
+    sync_scheduler: SyncScheduler | None = None
 
 
     @property
@@ -114,10 +116,15 @@ def bootstrap() -> AppContext:
     access, users, jig_configuration, golden_rig_configuration = _build_access(
         settings, session_factory, binding_service
     )
+    lan_client, qr_claims, sync_scheduler = _build_lan(settings, session_factory)
     production, readiness, mac_cache = _build_production(
-        settings, session_factory, serial_topology_service, slot_eligibility_service, access
+        settings, session_factory, serial_topology_service, slot_eligibility_service, access, qr_claims, sync_scheduler
     )
     access.set_batch_activity_probe(lambda: production.has_active_batch)
+    production.add_commit_listener(sync_scheduler.on_batch_committed)
+    if sync_scheduler.service.configured and sync_scheduler.service.threshold_reached():
+        # A backlog from an earlier run is uploaded straight away.
+        sync_scheduler.request("STARTUP")
 
     context = AppContext(
             settings=settings,
@@ -132,6 +139,7 @@ def bootstrap() -> AppContext:
             users=users,
             jig_configuration=jig_configuration,
             golden_rig_configuration=golden_rig_configuration,
+            sync_scheduler=sync_scheduler,
         )
     logger.debug("Bootstrap Complete")
     return context
@@ -249,7 +257,64 @@ def _build_access(settings: Settings, session_factory, binding_service: SlotBind
     return access, users, jig, golden_rig
 
 
-def _build_production(settings: Settings, session_factory, topology_service, eligibility_service, access: StationAccessService):
+def _build_lan(settings: Settings, session_factory):
+    """LAN server client, line-wide QR claims and threshold-driven sync."""
+    from stationapp.drivers.lan.client import LanServerClient
+    from stationapp.services.qr_registry import ModuleQrClaimService
+    from stationapp.services.server_sync import ServerSyncService
+
+    client = None
+    if settings.lan_server_url:
+        client = LanServerClient(
+            base_url=settings.lan_server_url,
+            api_key=settings.lan_server_api_key,
+            station_id=settings.station_id,
+            timeout_seconds=settings.lan_server_timeout_seconds,
+        )
+    elif settings.simulation_mode:
+        from stationapp.services.simulation import InMemoryLanServer
+
+        simulated = InMemoryLanServer()
+        client = LanServerClient(
+            base_url="http://simulated-lan-server",
+            api_key=None,
+            station_id=settings.station_id,
+            transport=simulated.transport(),
+        )
+        logger.warning("SIMULATION: using an in-memory LAN server")
+
+    claims = ModuleQrClaimService(
+        client=client,
+        jig_id=settings.jig_id,
+        claim_timeout_seconds=settings.qr_claim_timeout_seconds,
+        enabled=settings.qr_online_claim,
+    )
+    service = ServerSyncService(
+        session_factory=session_factory,
+        station_id=settings.station_id,
+        jig_id=settings.jig_id,
+        client=client,
+        threshold_modules=settings.sync_module_threshold,
+    )
+    scheduler = SyncScheduler(service, retry_seconds=settings.sync_retry_minutes * 60)
+    return client, claims, scheduler
+
+
+def _sync_health(scheduler: SyncScheduler) -> HealthCheck:
+    status = scheduler.service.status()
+    if not status.configured:
+        return HealthCheck("Server sync", Severity.WARN, f"No LAN server; {status.pending_modules} modules waiting to upload")
+    if status.qr_conflicts:
+        return HealthCheck("Server sync", Severity.WARN, f"{status.qr_conflicts} duplicate QR conflict(s) reported by the LAN server - Supervisor review required")
+    if status.threshold_reached:
+        detail = f"{status.pending_modules} modules waiting (threshold {status.threshold})"
+        if status.last_error:
+            detail += f"; last sync failed: {status.last_error}"
+        return HealthCheck("Server sync", Severity.WARN, detail)
+    return HealthCheck("Server sync", Severity.OK, f"{status.pending_modules}/{status.threshold} modules until next sync")
+
+
+def _build_production(settings: Settings, session_factory, topology_service, eligibility_service, access: StationAccessService, qr_claims, sync_scheduler: SyncScheduler):
     from stationapp.data.production_repository import SqlProductionStore
 
     simulation = settings.simulation_mode
@@ -318,6 +383,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         simulation=simulation,
         functional_test_available=True,
         session_check=access.session_health,
+        sync_check=lambda: _sync_health(sync_scheduler),
     )
 
     production = ProductionController(
@@ -332,6 +398,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         qr_pattern=settings.qr_pattern,
         require_firmware=not simulation,
         access=access,
+        qr_claims=qr_claims,
     )
 
     return production, readiness, mac_cache

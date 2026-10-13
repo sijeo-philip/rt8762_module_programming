@@ -91,6 +91,17 @@ class Settings(BaseSettings):
     lan_server_url: str | None = None
     lan_server_api_key: str | None = None
 
+    # --- LAN server synchronization ---
+    # Completed modules waiting for upload that trigger an automatic sync.
+    sync_module_threshold: int = Field(1000, ge=1)
+    sync_retry_minutes: float = Field(5.0, gt=0)
+    lan_server_timeout_seconds: float = Field(10.0, gt=0)
+
+    # --- Duplicate QR prevention ---
+    # Claim each scanned QR on the LAN server before binding it.
+    qr_online_claim: bool = True
+    qr_claim_timeout_seconds: float = Field(2.0, gt=0)
+
     # --- Runtime ---
     log_level: str = "INFO"
 

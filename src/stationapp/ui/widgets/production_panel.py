@@ -168,6 +168,10 @@ class ProductionPanel(QWidget):
         self._readiness_rerun = False
         self._render_pending = False
         self._snapshot: ProductionSnapshot | None = None
+        # Refusal of an operator action (e.g. a duplicate QR) stays visible
+        # until the next successful action or workflow step.
+        self._local_error: str | None = None
+        self._error_state: object = None
 
         self._build(default_stock_firmware, default_pricol_firmware)
 
@@ -464,7 +468,7 @@ class ProductionPanel(QWidget):
 
     def _start_batch(self) -> None:
         if self._report is None:
-            self._show_error("Check the station before starting")
+            self._action_error("Check the station before starting")
             return
 
         stock = self.stock_fw_input.text().strip()
@@ -480,7 +484,7 @@ class ProductionPanel(QWidget):
                 pricol_firmware=Path(pricol) if pricol else None,
             )
         except ProductionError as exc:
-            self._show_error(str(exc))
+            self._action_error(str(exc))
             return
         self.render()
 
@@ -488,7 +492,7 @@ class ProductionPanel(QWidget):
         try:
             self._controller.release_batch()
         except ProductionError as exc:
-            self._show_error(str(exc))
+            self._action_error(str(exc))
             return
         self.batch_label_input.clear()
         self.render()
@@ -504,7 +508,7 @@ class ProductionPanel(QWidget):
             self._operations.start(operation, operation_id=ADVANCE_OPERATION)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Could not start production step")
-            self._show_error(f"Could not start: {exc}")
+            self._action_error(f"Could not start: {exc}")
             return
         self.primary_button.setEnabled(False)
 
@@ -516,10 +520,11 @@ class ProductionPanel(QWidget):
         try:
             slot = self._controller.scan_qr(text)
         except ProductionError as exc:
-            self._show_error(str(exc))
+            self._action_error(str(exc))
             QApplication.beep()
             return
         logger.info("QR bound | slot=%s", slot)
+        self._local_error = None
         self.render()
 
     def _on_access_changed(self) -> None:
@@ -553,7 +558,7 @@ class ProductionPanel(QWidget):
         try:
             self._controller.abort_batch(reason=reason, actor_id=supervisor.strip(), supervisor=authorizer)
         except ProductionError as exc:
-            self._show_error(str(exc))
+            self._action_error(str(exc))
             return
         self.render()
 
@@ -623,7 +628,7 @@ class ProductionPanel(QWidget):
         if scanning:
             self.qr_input.setFocus()
 
-        self._show_error(snapshot.last_error)
+        self._show_error(self._current_error(snapshot))
 
         if snapshot.jig is not None and snapshot.jig.station_id == self._station_id:
             self._jig_grid.update_view(snapshot.jig)
@@ -653,7 +658,7 @@ class ProductionPanel(QWidget):
 
         self.primary_button.setText("START")
         self.primary_button.setEnabled(ready)
-        self._show_error(snapshot.last_error)
+        self._show_error(self._current_error(snapshot))
 
     def _set_banner(self, headline: str, instruction: str, colour: str) -> None:
         self.headline_label.setText(headline)
@@ -664,6 +669,18 @@ class ProductionPanel(QWidget):
         )
         self.headline_label.setStyleSheet(f"font-size: 22px; font-weight: 800; color: {colour};")
         self.instruction_label.setStyleSheet("font-size: 15px;")
+
+    def _action_error(self, message: str) -> None:
+        snapshot = self._controller.snapshot()
+        self._local_error = message
+        self._error_state = snapshot.workflow.batch_state if snapshot.workflow else None
+        self._show_error(message)
+
+    def _current_error(self, snapshot: ProductionSnapshot) -> str | None:
+        state = snapshot.workflow.batch_state if snapshot.workflow else None
+        if self._local_error is not None and state != self._error_state:
+            self._local_error = None
+        return snapshot.last_error or self._local_error
 
     def _show_error(self, message: str | None) -> None:
         if message:

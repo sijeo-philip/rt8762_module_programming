@@ -168,3 +168,12 @@ def test_scanner_rejects_duplicate_qr_with_message(panel, qtbot):
 
     assert "Invalid QR" in widget.error_label.text()
     assert controller.batch.state is BatchState.QR_SCANNING
+
+    # The refusal must survive background re-renders...
+    widget.render()
+    assert "Invalid QR" in widget.error_label.text()
+
+    # ...and clear after the next good scan.
+    qtbot.keyClicks(widget.qr_input, "QR-GOOD-1")
+    qtbot.keyClick(widget.qr_input, "\r")
+    assert widget.error_label.text() == ""

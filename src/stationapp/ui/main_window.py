@@ -114,7 +114,7 @@ class MainWindow(QMainWindow):
 
         self._session_bar: SessionBar | None = None
         if self._context.access is not None:
-            self._session_bar = SessionBar(self._context.access, self)
+            self._session_bar = SessionBar(self._context.access, self, sync_scheduler=self._context.sync_scheduler)
             root_layout.addWidget(self._session_bar)
 
         tabs = QTabWidget()
@@ -136,6 +136,7 @@ class MainWindow(QMainWindow):
                 jig_positions=context.settings.jig_positions,
                 topology_service=context.serial_topology_service,
                 simulation=context.simulation,
+                sync_scheduler=context.sync_scheduler,
                 parent=self,
             )
             tabs.addTab(self._station_configuration, "Station configuration")

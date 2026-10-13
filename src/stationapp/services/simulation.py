@@ -242,3 +242,97 @@ class SimulatedMacAllocationGateway:
             expires_at=now + timedelta(days=30),
             addresses=tuple(MacAddress(start + offset) for offset in range(minimum_count)),
         )
+
+
+class InMemoryLanServer:
+    """LAN server implementing docs/lan_server_api.md in memory.
+
+    Used by simulation mode and tests through httpx.MockTransport, so the
+    real LanServerClient code path is exercised end to end. Set
+    ``available = False`` to simulate an outage.
+    """
+
+    def __init__(self, *, api_key: str | None = None) -> None:
+        import threading as _threading
+
+        self.api_key = api_key
+        self.available = True
+        self.claims: dict[str, dict] = {}
+        self.claim_order: list[str] = []
+        self.batches: dict[str, dict] = {}
+        self.events: dict[str, dict] = {}
+        self.audits: dict[str, dict] = {}
+        self.macs: dict[str, dict] = {}
+        self.packages: list[dict] = []
+        self._lock = _threading.Lock()
+
+    def transport(self):
+        import httpx
+
+        return httpx.MockTransport(self.handle)
+
+    def register_foreign_qr(self, module_qr: str, *, station_id: str, batch_id: str = "OTHER-BATCH", slot_number: int = 1) -> None:
+        """A QR bound by another station on the line."""
+        with self._lock:
+            self._claim(module_qr, {"station_id": station_id, "batch_id": batch_id, "slot_number": slot_number, "bound_at": datetime.now(timezone.utc).isoformat()})
+
+    def handle(self, request):
+        import json
+
+        import httpx
+
+        if not self.available:
+            raise httpx.ConnectError("simulated LAN server outage", request=request)
+        if self.api_key and request.headers.get("Authorization") != f"Bearer {self.api_key}":
+            return httpx.Response(401, json={"error": "unauthorized"})
+
+        path = request.url.path
+        with self._lock:
+            if request.method == "POST" and path == "/api/v1/module-qr/claims":
+                body = json.loads(request.content)
+                owner = {key: body.get(key) for key in ("station_id", "batch_id", "slot_number")}
+                owner["bound_at"] = datetime.now(timezone.utc).isoformat()
+                existing = self.claims.get(body["module_qr"])
+                if existing is not None and not self._same_owner(existing, owner):
+                    return httpx.Response(409, json={"status": "DUPLICATE", "owner": existing})
+                if existing is None:
+                    self._claim(body["module_qr"], owner)
+                return httpx.Response(201, json={"status": "CLAIMED"})
+
+            if request.method == "GET" and path == "/api/v1/module-qr":
+                since = int(request.url.params.get("since") or 0)
+                limit = int(request.url.params.get("limit") or 5000)
+                selected = self.claim_order[since:since + limit]
+                codes = [{"module_qr": qr, **self.claims[qr]} for qr in selected]
+                return httpx.Response(200, json={"codes": codes, "next_cursor": str(since + len(selected))})
+
+            if request.method == "POST" and path.startswith("/api/v1/stations/") and path.endswith("/sync"):
+                package = json.loads(request.content)
+                self.packages.append(package)
+                for batch in package.get("batches", []):
+                    self.batches[batch["batch_id"]] = batch
+                for event in package.get("events", []):
+                    self.events[event["event_id"]] = event
+                for audit in package.get("audits", []):
+                    self.audits[audit["audit_id"]] = audit
+                for mac in package.get("macs", []):
+                    self.macs[mac["address"]] = mac
+                conflicts = []
+                for item in package.get("module_qr", []):
+                    owner = {"station_id": package["station_id"], "batch_id": item.get("batch_id"), "slot_number": item.get("slot_number"), "bound_at": item.get("bound_at")}
+                    existing = self.claims.get(item["module_qr"])
+                    if existing is None:
+                        self._claim(item["module_qr"], owner)
+                    elif not self._same_owner(existing, owner):
+                        conflicts.append({"module_qr": item["module_qr"], "owner": existing})
+                return httpx.Response(200, json={"status": "ACCEPTED", "qr_conflicts": conflicts})
+
+        return httpx.Response(404, json={"error": f"no route {request.method} {path}"})
+
+    def _claim(self, module_qr: str, owner: dict) -> None:
+        self.claims[module_qr] = owner
+        self.claim_order.append(module_qr)
+
+    @staticmethod
+    def _same_owner(a: dict, b: dict) -> bool:
+        return (a.get("station_id"), a.get("batch_id"), a.get("slot_number")) == (b.get("station_id"), b.get("batch_id"), b.get("slot_number"))

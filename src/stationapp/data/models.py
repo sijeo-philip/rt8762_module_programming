@@ -504,3 +504,64 @@ class ProductionSessionModel(Base):
         CheckConstraint("status IN ('OPEN', 'CLOSED')", name="ck_production_sessions_status"),
         Index("ix_production_sessions_station_status", "station_id", "status"),
     )
+
+
+# =============================================================================
+# Module QR registry and LAN server synchronization
+# =============================================================================
+
+
+class ModuleQrRegistryModel(Base):
+    """Every module QR known to this station: bound here or reported by
+    the LAN server from another station. The primary key makes a second
+    binding of the same QR impossible."""
+
+    __tablename__ = "module_qr_registry"
+
+    module_qr: Mapped[str] = mapped_column(String(256), primary_key=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    station_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    slot_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    server_status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    conflict_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("source IN ('LOCAL', 'SERVER')", name="ck_module_qr_registry_source"),
+        CheckConstraint(
+            "server_status IN ('UNCONFIRMED', 'CLAIMED', 'SYNCED', 'CONFLICT')",
+            name="ck_module_qr_registry_server_status",
+        ),
+    )
+
+
+class SyncStateModel(Base):
+    """Key/value sync cursors (last event/audit id sent, QR pull cursor)."""
+
+    __tablename__ = "sync_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class SyncRunModel(Base):
+    """One attempt to synchronize with the LAN server."""
+
+    __tablename__ = "sync_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    modules: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    batches: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    audits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    qr_conflicts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status IN ('RUNNING', 'SUCCESS', 'FAILED')", name="ck_sync_runs_status"),
+    )

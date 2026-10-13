@@ -54,7 +54,7 @@ class ReadinessReport:
 class StationReadinessService:
     """Evaluate whether the station may start a batch."""
 
-    def __init__(self, *, settings: Settings, topology_service, eligibility_service: SlotEligibilityService, mac_cache: MacCacheService | None, golden_rig_check: GoldenRigCheck, simulation: bool = False, functional_test_available: bool = False, session_check: Callable[[], HealthCheck] | None = None) -> None:
+    def __init__(self, *, settings: Settings, topology_service, eligibility_service: SlotEligibilityService, mac_cache: MacCacheService | None, golden_rig_check: GoldenRigCheck, simulation: bool = False, functional_test_available: bool = False, session_check: Callable[[], HealthCheck] | None = None, sync_check: Callable[[], HealthCheck] | None = None) -> None:
         self._settings = settings
         self._topology = topology_service
         self._eligibility = eligibility_service
@@ -63,6 +63,7 @@ class StationReadinessService:
         self._simulation = simulation
         self._functional_test_available = functional_test_available or simulation
         self._session_check = session_check
+        self._sync_check = sync_check
 
     def evaluate(self, mode: ProgrammingMode, occupied: tuple[int, ...] | None = None, *, top_up_macs: bool = False) -> ReadinessReport:
         checks: list[HealthCheck] = []
@@ -76,6 +77,12 @@ class StationReadinessService:
         checks.extend(self._mac_checks(mode, occupied, top_up_macs))
         checks.append(self._golden_rig())
         checks.append(self._lan())
+        if self._sync_check is not None:
+            try:
+                checks.append(self._sync_check())
+            except Exception as exc:  # noqa: BLE001 - sync never blocks production
+                logger.exception("Sync status check failed")
+                checks.append(HealthCheck("Server sync", Severity.WARN, f"Sync status unavailable: {exc}"))
 
         return ReadinessReport(checks=tuple(checks), ports=ports, eligibility=eligibility)
 

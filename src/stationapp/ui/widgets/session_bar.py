@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton, QWidget
 
 from stationapp.services.access import StationAccessService
+from stationapp.services.server_sync import SyncScheduler
 from stationapp.ui.dialogs.access_dialogs import OperatorLoginDialog, SupervisorLoginDialog
 
 GREEN = "#166534"
@@ -17,7 +18,7 @@ GREY = "#64748b"
 class SessionBar(QFrame):
     _changed = pyqtSignal()
 
-    def __init__(self, access: StationAccessService, parent: QWidget | None = None) -> None:
+    def __init__(self, access: StationAccessService, parent: QWidget | None = None, *, sync_scheduler: SyncScheduler | None = None) -> None:
         super().__init__(parent)
         self._access = access
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -32,6 +33,20 @@ class SessionBar(QFrame):
             layout.addWidget(label)
             layout.addSpacing(18)
         layout.addStretch()
+
+        self._sync = sync_scheduler
+        self.sync_label = QLabel()
+        self.sync_label.setTextFormat(Qt.TextFormat.RichText)
+        self.sync_button = QPushButton("Sync now")
+        self.sync_button.clicked.connect(self._sync_now)
+        if sync_scheduler is not None:
+            layout.addWidget(self.sync_label)
+            layout.addWidget(self.sync_button)
+            layout.addSpacing(18)
+            sync_scheduler.add_listener(self._changed.emit)
+        else:
+            self.sync_label.hide()
+            self.sync_button.hide()
 
         self.operator_button = QPushButton()
         self.operator_button.clicked.connect(self._toggle_operator)
@@ -75,6 +90,35 @@ class SessionBar(QFrame):
         self.operator_button.setText("Operator logout" if operator else "Operator login")
         self.operator_button.setEnabled(operator is not None or session is not None)
         self.supervisor_button.setText("Supervisor logout" if supervisor else "Supervisor login")
+        self._render_sync()
+
+    def _render_sync(self) -> None:
+        if self._sync is None:
+            return
+        try:
+            status = self._sync.service.status()
+        except Exception:  # noqa: BLE001 - indicator only
+            self.sync_label.setText("<b>Server:</b> status unavailable")
+            return
+        if status.running:
+            text, colour = "syncing...", GREY
+        elif not status.configured:
+            text, colour = f"not configured ({status.pending_modules} modules queued)", AMBER
+        elif status.qr_conflicts:
+            text, colour = f"{status.qr_conflicts} QR conflict(s)!", RED
+        elif status.last_error and status.pending_modules:
+            text, colour = f"offline - {status.pending_modules}/{status.threshold} pending, retrying", AMBER
+        else:
+            text, colour = f"{status.pending_modules}/{status.threshold} modules pending", GREEN
+        if status.last_success_at is not None:
+            text += f" &middot; last sync {status.last_success_at.astimezone():%H:%M}"
+        self.sync_label.setText(f"<b>Server:</b> <span style='color:{colour}'>{text}</span>")
+        self.sync_button.setEnabled(status.configured and not status.running)
+
+    def _sync_now(self) -> None:
+        if self._sync is not None:
+            self._sync.request("MANUAL")
+            self.render()
 
     def _toggle_operator(self) -> None:
         if self._access.operator is not None:

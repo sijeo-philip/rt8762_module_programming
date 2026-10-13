@@ -46,6 +46,7 @@ from stationapp.domain.users import AccessError, AuthenticatedUser
 from stationapp.drivers.mpcli.driver import PHASE_FLASHING, PHASE_WRITING_MAC
 from stationapp.drivers.mpcli.types import IdentityOutcome
 from stationapp.drivers.pricol.functional import FunctionalTestOutcome
+from stationapp.services.qr_registry import DuplicateQrError, ModuleQrClaimService
 from stationapp.services.golden_rig_eligibility import GoldenRigEligibilityService
 from stationapp.services.golden_rig_result_processor import GoldenRigResultProcessor
 from stationapp.services.golden_rig_service import GoldenRigTestReport
@@ -191,7 +192,7 @@ _FINISHED_STATES = frozenset({
 class ProductionController:
     """Owns the active batch and executes the production workflow."""
 
-    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None) -> None:
+    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, qr_claims: ModuleQrClaimService | None = None) -> None:
         """programmer_factory builds a programmer for the firmware images
         chosen at batch setup; programmer is a fixed alternative."""
         if slot_count not in (4, 8):
@@ -207,6 +208,8 @@ class ProductionController:
         self._programmer_factory = programmer_factory
         self._require_firmware = require_firmware
         self._access = access
+        self._qr_claims = qr_claims
+        self._commit_listeners: list[Callable[[Batch], None]] = []
         self._rf_tester = rf_tester
         self._functional = functional_tester
         self._readiness_gate = readiness_gate
@@ -444,20 +447,49 @@ class ProductionController:
             if not self._qr_pattern.fullmatch(qr):
                 raise ProductionError(f"Invalid QR data: {qr!r}")
 
-            if self._store.module_qr_in_use(qr):
-                raise ProductionError(f"Duplicate QR: {qr} is already bound to another module")
+            owner = self._qr_owner(qr)
+            if owner is not None:
+                raise ProductionError(f"Duplicate QR: {qr} is already bound at {owner}")
+
+            expected_slot = batch.next_qr_slot
+            if expected_slot is None:
+                raise ProductionError("All eligible module QRs have been scanned")
+
+            # Claim the QR line-wide before binding it. Offline, the
+            # binding proceeds UNCONFIRMED and is checked at the next sync.
+            server_status, claim_detail = "UNCONFIRMED", "no LAN claim service"
+            if self._qr_claims is not None:
+                try:
+                    decision = self._qr_claims.claim(qr, batch_id=batch.batch_id, slot_number=expected_slot)
+                except DuplicateQrError as exc:
+                    raise ProductionError(str(exc)) from exc
+                server_status, claim_detail = decision.server_status, decision.detail
 
             try:
                 slot_number = batch.scan_module_qr(qr)
             except (DuplicateModuleQr, DomainError) as exc:
                 raise ProductionError(str(exc)) from exc
 
-            events = [self._event(batch, EventType.MODULE_QR_BOUND, slot=slot_number, module_qr=qr)]
-            self._store.save(batch, events)
+            events = [self._event(batch, EventType.MODULE_QR_BOUND, slot=slot_number, module_qr=qr, server_status=server_status, claim_detail=claim_detail)]
+            bind = getattr(self._store, "bind_module_qr", None)
+            if bind is not None:
+                bind(batch, events, module_qr=qr, slot_number=slot_number, server_status=server_status)
+            else:
+                self._store.save(batch, events)
             self._last_error = None
 
         self._notify()
         return slot_number
+
+    def _qr_owner(self, qr: str) -> str | None:
+        lookup = getattr(self._store, "module_qr_owner", None)
+        if lookup is not None:
+            return lookup(qr)
+        return "another module" if self._store.module_qr_in_use(qr) else None
+
+    def add_commit_listener(self, callback: Callable[[Batch], None]) -> None:
+        """callback(batch) after a batch is committed and queued for upload."""
+        self._commit_listeners.append(callback)
 
     def abort_batch(self, *, reason: str, actor_id: str | None = None, supervisor: AuthenticatedUser | None = None) -> None:
         """Supervisor disposition of a batch that cannot continue.
@@ -865,6 +897,11 @@ class ProductionController:
         events.append(self._event(batch, EventType.UPLOAD_QUEUED))
         self._store.save_and_enqueue(batch, events, build_batch_record(batch))
         logger.info("Batch committed and queued | batch_id=%s", batch.batch_id)
+        for callback in tuple(self._commit_listeners):
+            try:
+                callback(batch)
+            except Exception:  # noqa: BLE001 - upload problems never fail production
+                logger.exception("Commit listener failed")
 
     # ------------------------------------------------------------------
     # Helpers

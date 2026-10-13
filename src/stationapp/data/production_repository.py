@@ -207,8 +207,37 @@ class SqlProductionStore:
             return transaction_id
 
     def module_qr_in_use(self, module_qr: str) -> bool:
+        return self.module_qr_owner(module_qr) is not None
+
+    def module_qr_owner(self, module_qr: str) -> str | None:
+        """Where the QR is already used: this station's history, or
+        another station as reported by the LAN server."""
+        from stationapp.data.sync_repository import module_qr_owner
+
         with self._session_factory() as session:
-            return ProductionStateRepository(session).module_qr_in_use(module_qr)
+            return module_qr_owner(session, module_qr.strip())
+
+    def bind_module_qr(self, batch: Batch, events: Iterable[ManufacturingEvent], *, module_qr: str, slot_number: int, server_status: str) -> None:
+        """Persist a QR binding and its registry entry in one transaction.
+
+        The registry primary key makes a second binding of the same QR
+        fail the whole transaction.
+        """
+        from stationapp.data.sync_repository import QrRegistryRepository
+
+        with UnitOfWork(self._session_factory) as uow:
+            QrRegistryRepository(uow.session).add(
+                module_qr=module_qr,
+                source="LOCAL",
+                station_id=batch.station_id,
+                batch_id=batch.batch_id,
+                slot_number=slot_number,
+                server_status=server_status,
+            )
+            ProductionStateRepository(uow.session).sync_batch(batch)
+            for event in events:
+                uow.events.append(event)
+            uow.commit()
 
     def available_count(self, purpose: MacPurpose) -> int:
         with self._session_factory() as session:

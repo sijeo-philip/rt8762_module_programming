@@ -45,6 +45,7 @@ from stationapp.domain.slot import DeviceState
 from stationapp.domain.users import AccessError, AuthenticatedUser
 from stationapp.drivers.mpcli.driver import PHASE_FLASHING, PHASE_WRITING_MAC
 from stationapp.drivers.mpcli.types import IdentityOutcome
+from stationapp.drivers.pricol.functional import FunctionalTestOutcome
 from stationapp.services.golden_rig_eligibility import GoldenRigEligibilityService
 from stationapp.services.golden_rig_result_processor import GoldenRigResultProcessor
 from stationapp.services.golden_rig_service import GoldenRigTestReport
@@ -92,15 +93,16 @@ class RfTester(Protocol):
 
 
 class FunctionalTester(Protocol):
-    """Pricol AT-command functional test.
+    """Pricol UART functional test (PRICOLAPP / PRICOLDFU after reset).
 
     Returns True (pass), False (fail) or None when the outcome could not
-    be established; None quarantines the slot on HOLD.
+    be established, or a FunctionalTestOutcome carrying that verdict plus
+    the command/response evidence. None quarantines the slot on HOLD.
     """
 
-    def run_app_test(self, *, slot_number: int, com_port: str, cancellation_token: CancellationToken | None = None) -> bool | None: ...
+    def run_app_test(self, *, slot_number: int, com_port: str, cancellation_token: CancellationToken | None = None) -> bool | None | FunctionalTestOutcome: ...
 
-    def run_dfu_test(self, *, slot_number: int, com_port: str, cancellation_token: CancellationToken | None = None) -> bool | None: ...
+    def run_dfu_test(self, *, slot_number: int, com_port: str, cancellation_token: CancellationToken | None = None) -> bool | None | FunctionalTestOutcome: ...
 
 
 class ProductionAccess(Protocol):
@@ -800,10 +802,23 @@ class ProductionController:
 
         def run(number: int) -> None:
             self._set_activity(number, label, None)
+            evidence: dict[str, Any] = {}
             try:
                 test = self._functional.run_dfu_test if dfu else self._functional.run_app_test
-                passed = test(slot_number=number, com_port=ports[number], cancellation_token=token)
-                reason = None if passed is not None else "no trustworthy test result"
+                result = test(slot_number=number, com_port=ports[number], cancellation_token=token)
+                if isinstance(result, FunctionalTestOutcome):
+                    passed = result.passed
+                    reason = None if passed else result.detail
+                    evidence = {
+                        "command": result.command,
+                        "expected": result.expected,
+                        "response": result.response,
+                        "detail": result.detail,
+                        "duration_seconds": result.duration_seconds,
+                    }
+                else:
+                    passed = result
+                    reason = None if passed is not None else "no trustworthy test result"
             except Exception as exc:  # noqa: BLE001 - per-slot isolation
                 logger.exception("Functional test raised | slot=%s", number)
                 passed = None
@@ -826,6 +841,8 @@ class ProductionController:
                     slot=number,
                     passed=passed,
                     reason=reason,
+                    com_port=ports[number],
+                    **evidence,
                 )])
                 self._activity.pop(number, None)
 

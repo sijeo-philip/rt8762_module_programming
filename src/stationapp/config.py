@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     mpcli_two_step: bool = True
     mpcli_programming_timeout_seconds: float = Field(90.0, gt=0)
 
+    # --- Pricol functional test (PRICOLAPP / PRICOLDFU over the DUT UART) ---
+    pricol_uart_baudrate: int = Field(115200, gt=0)
+    pricol_response_timeout_seconds: float = Field(3.0, gt=0)
+
     # --- Firmware (defaults offered in batch setup) ---
     stock_firmware_path: Path | None = None
     pricol_firmware_path: Path | None = None

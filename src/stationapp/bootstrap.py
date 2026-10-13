@@ -290,7 +290,12 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         rf_tester = GoldenRigService(
             GoldenRigAuthorizationService(rig_bindings, settings.golden_rig_ca_certificate)
         )
-        functional = _UnavailableFunctionalTester()
+        from stationapp.drivers.pricol.functional import PricolFunctionalTester
+
+        functional = PricolFunctionalTester(
+            baudrate=settings.pricol_uart_baudrate,
+            response_timeout_seconds=settings.pricol_response_timeout_seconds,
+        )
         programmer_factory = _mpcli_programmer_factory(settings)
         golden_rig_check = approved_golden_rig_check(rig_bindings, settings.golden_rig_ca_certificate)
 
@@ -311,6 +316,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         mac_cache=mac_cache,
         golden_rig_check=golden_rig_check,
         simulation=simulation,
+        functional_test_available=True,
         session_check=access.session_health,
     )
 
@@ -360,21 +366,6 @@ def _mpcli_programmer_factory(settings: Settings):
         )
 
     return factory
-
-
-class _UnavailableFunctionalTester:
-    """Placeholder until the Pricol AT-command test is integrated.
-
-    Readiness blocks Stock + Pricol batches on real hardware, so this is
-    only reached if that gate is bypassed; it then holds every slot
-    rather than inventing a result.
-    """
-
-    def run_app_test(self, **_kwargs) -> bool | None:
-        return None
-
-    def run_dfu_test(self, **_kwargs) -> bool | None:
-        return None
 
 
 def _app_version() -> str:

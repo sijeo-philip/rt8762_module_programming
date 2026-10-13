@@ -142,7 +142,7 @@ class StationReadinessService:
                 checks.append(HealthCheck(
                     "Functional test",
                     Severity.FAIL,
-                    "Pricol AT-command functional test is not integrated yet; use Stock only",
+                    "No Pricol functional tester configured; use Stock only",
                 ))
 
         if not settings.mpcli_product_id or settings.mpcli_secret_key is None:

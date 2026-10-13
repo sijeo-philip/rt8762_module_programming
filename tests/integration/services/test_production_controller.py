@@ -313,3 +313,59 @@ def test_held_batch_requires_supervisor_abort(session_factory):
     controller.abort_batch(reason="All DUTs failed programming", actor_id="SUP-1")
     assert controller.batch.state is BatchState.ABORTED
     controller.release_batch()
+
+
+@pytest.mark.integration
+def test_pricol_functional_test_over_uart_records_evidence(session_factory):
+    from stationapp.data.event_repository import ManufacturingEventRepository
+    from stationapp.domain.events import EventType
+    from stationapp.drivers.pricol.functional import PricolFunctionalTester
+    from stationapp.drivers.serial.session import SerialSession
+    from tests.unit.drivers.test_pricol_functional import APP_OK, FakeDut
+
+    duts = {
+        "COM11": FakeDut({b"PRICOLAPP\r\n": APP_OK, b"PRICOLDFU\r\n": [b"PRICOLDFU\r\n"]}),
+        "COM12": FakeDut({b"PRICOLAPP\r\n": [b"BOOTLOADER ERROR\r\n"], b"PRICOLDFU\r\n": [b"PRICOLDFU\r\n"]}),
+        "COM13": FakeDut(fail_open=True),
+    }
+    functional = PricolFunctionalTester(
+        response_timeout_seconds=0.2,
+        session_factory=lambda config: SerialSession(config=config, backend=duts[config.port]),
+        poll_seconds=0.001,
+    )
+    none = frozenset()
+    controller = ProductionController(
+        station_id=STATION,
+        jig_id=JIG,
+        slot_count=8,
+        store=SqlProductionStore(session_factory),
+        programmer=SimulatedProgrammer(delay_seconds=0, failures=none),
+        rf_tester=SimulatedGoldenRig(delay_seconds=0, failures=none),
+        functional_tester=functional,
+    )
+    controller.start_batch(occupied=(1, 2, 3), ports=ports(1, 2, 3), mode=ProgrammingMode.STOCK_AND_PRICOL)
+
+    run_until(controller, BatchState.QR_SCANNING)
+
+    batch = controller.batch
+    # Each module received exactly the commands it was eligible for.
+    assert duts["COM11"].written == [b"PRICOLAPP\r\n", b"PRICOLDFU\r\n"]
+    assert duts["COM12"].written == [b"PRICOLAPP\r\n", b"PRICOLDFU\r\n"]
+    assert batch.slots[1].state is DeviceState.FUNCTIONAL_TEST_PASSED
+    assert batch.slots[2].state is DeviceState.FUNCTIONAL_TEST_FAILED
+    assert batch.slots[3].state is DeviceState.HOLD
+    assert "serial communication failed" in batch.slots[3].hold_reason
+
+    controller.scan_qr("QR-P1")
+    controller.scan_qr("QR-P2")
+    controller.advance()
+    assert batch.dispositions[1] is SlotDisposition.PASS
+    assert batch.dispositions[2] is SlotDisposition.FAIL
+    assert batch.dispositions[3] is SlotDisposition.HOLD
+
+    with session_factory() as session:
+        events = ManufacturingEventRepository(session).list_for_batch(batch.batch_id)
+    app = {event.slot_number: event.payload for event in events if event.event_type is EventType.PRICOLAPP_RESULT}
+    assert app[1]["passed"] is True and "Uart demo" in app[1]["response"]
+    assert app[2]["passed"] is False and app[2]["response"].startswith("BOOTLOADER ERROR")
+    assert app[3]["passed"] is None and app[3]["com_port"] == "COM13"

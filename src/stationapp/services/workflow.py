@@ -312,8 +312,9 @@ class WorkflowService:
                 action=OperatorAction.RESET_FOR_PRICOL_APP,
                 headline="RESET MODULES",
                 instruction=(
-                    "Reset the jig as indicated for "
-                    "the application test."
+                    "Reset all modules in the jig, then press the "
+                    "button. The station sends PRICOLAPP to each "
+                    "module and checks it starts the application."
                 ),
                 allow_start_button=True,
                 button_label="RESET DONE - RUN APP TEST",
@@ -335,8 +336,9 @@ class WorkflowService:
                 action=OperatorAction.RESET_FOR_PRICOL_DFU,
                 headline="RESET MODULES",
                 instruction=(
-                    "Reset the jig as indicated for "
-                    "the DFU test."
+                    "Reset all modules in the jig again, then press "
+                    "the button. The station sends PRICOLDFU to each "
+                    "module and checks it enters DFU mode."
                 ),
                 allow_start_button=True,
                 button_label="RESET DONE - RUN DFU TEST",

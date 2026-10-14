@@ -178,7 +178,7 @@ class WorkflowService:
                 ),
                 headline="PREPARE FOR RF TEST",
                 instruction=(
-                    "Stock MAC readback verification passed."
+                    "Stock MAC readback verification passed. "
                     "Set the jig for Golden Module Rig "
                     "RF verification."
                 ),

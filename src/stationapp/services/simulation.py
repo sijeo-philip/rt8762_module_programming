@@ -265,6 +265,9 @@ class InMemoryLanServer:
         self.macs: dict[str, dict] = {}
         self.packages: list[dict] = []
         self._lock = _threading.Lock()
+        from stationapp.services.test_users import TestAuthServer
+
+        self.auth = TestAuthServer()
 
     def transport(self):
         import httpx
@@ -287,6 +290,8 @@ class InMemoryLanServer:
             return httpx.Response(401, json={"error": "unauthorized"})
 
         path = request.url.path
+        if self.auth.handles(path):
+            return self.auth.handle(request)
         with self._lock:
             if request.method == "POST" and path == "/api/v1/module-qr/claims":
                 body = json.loads(request.content)

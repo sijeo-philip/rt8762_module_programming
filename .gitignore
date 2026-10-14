@@ -11,3 +11,5 @@ dist/
 .pytest_cache/
 *.db-wal
 *.db-shm
+# Bench tool runtime state (test MAC usage)
+data/bench_mac_state.json

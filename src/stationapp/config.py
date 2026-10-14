@@ -97,6 +97,11 @@ class Settings(BaseSettings):
     sync_retry_minutes: float = Field(5.0, gt=0)
     lan_server_timeout_seconds: float = Field(10.0, gt=0)
 
+    # --- Login ---
+    # server: every login is verified by the LAN server (production).
+    # test:   hardcoded test users (services/test_users.py) - TESTING ONLY.
+    auth_mode: Literal["server", "test"] = "server"
+
     # --- Duplicate QR prevention ---
     # Claim each scanned QR on the LAN server before binding it.
     qr_online_claim: bool = True

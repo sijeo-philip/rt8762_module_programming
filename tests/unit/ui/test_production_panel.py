@@ -73,6 +73,7 @@ def panel(qtbot, tmp_path: Path):
     )
     qtbot.addWidget(widget)
     yield widget, controller, operations
+    widget.shutdown()
     operations.cancel_all()
     operations.wait_for_all(5_000)
     engine.dispose()
@@ -97,7 +98,7 @@ def test_start_is_disabled_until_station_is_ready(panel, qtbot):
     assert not widget.qr_input.isEnabled()
 
     widget.check_station(top_up=True)
-    qtbot.waitUntil(lambda: widget.headline_label.text() == "READY - PRESS START", timeout=5_000)
+    qtbot.waitUntil(lambda: widget.headline_label.text() == "JIG READY - PRESS START", timeout=5_000)
 
     assert widget.selected_slots == (1, 2, 3, 4)
     assert widget.primary_button.isEnabled()

@@ -37,7 +37,7 @@ def main() -> int:
     from stationapp.ui.main_window import MainWindow
 
     # Initial station setup: the first Supervisor account.
-    if context.users is not None and not context.users.has_users():
+    if getattr(context, "users", None) is not None and not context.users.has_users():
         from stationapp.ui.dialogs.access_dialogs import FirstSupervisorDialog
 
         if not FirstSupervisorDialog(context.users).exec():

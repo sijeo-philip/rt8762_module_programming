@@ -66,6 +66,8 @@ class AppContext:
     jig_configuration: JigConfigurationService | None = None
     golden_rig_configuration: GoldenRigConfigurationService | None = None
     sync_scheduler: SyncScheduler | None = None
+    production_settings: object | None = None       # ProductionSettingsService
+    authentication: object | None = None            # ServerAuthenticationService
 
 
     @property
@@ -117,8 +119,9 @@ def bootstrap() -> AppContext:
         settings, session_factory, binding_service
     )
     lan_client, qr_claims, sync_scheduler = _build_lan(settings, session_factory)
+    production_settings = _build_production_settings(settings, session_factory, access)
     production, readiness, mac_cache = _build_production(
-        settings, session_factory, serial_topology_service, slot_eligibility_service, access, qr_claims, sync_scheduler
+        settings, session_factory, serial_topology_service, slot_eligibility_service, access, qr_claims, sync_scheduler, production_settings
     )
     access.set_batch_activity_probe(lambda: production.has_active_batch)
     production.add_commit_listener(sync_scheduler.on_batch_committed)
@@ -140,6 +143,8 @@ def bootstrap() -> AppContext:
             jig_configuration=jig_configuration,
             golden_rig_configuration=golden_rig_configuration,
             sync_scheduler=sync_scheduler,
+            production_settings=production_settings,
+            authentication=access.authentication,
         )
     logger.debug("Bootstrap Complete")
     return context
@@ -169,7 +174,8 @@ def _build_access(settings: Settings, session_factory, binding_service: SlotBind
 
     from stationapp.domain.session import StationConfiguration
     from stationapp.infrastructure.golden_rig.sqlite_binding_store import SqliteGoldenRigBindingStore
-    from stationapp.services.access import AuthenticationService, SecretHasher
+    from stationapp.drivers.lan.client import LanServerClient
+    from stationapp.services.remote_auth import ServerAuthenticationService
     from stationapp.services.golden_rig_configuration import (
         GoldenRigIdentityProbe,
         live_rig_configuration,
@@ -206,13 +212,34 @@ def _build_access(settings: Settings, session_factory, binding_service: SlotBind
                 golden_rig_fingerprint=fingerprint,
             )
 
-    hasher = SecretHasher()
-    authentication = AuthenticationService(
+    # Logins are verified by the LAN server; users are enrolled there.
+    if settings.auth_mode == "test" or (settings.simulation_mode and not settings.lan_server_url):
+        from stationapp.services.test_users import TestAuthServer
+
+        auth_client = LanServerClient(base_url="http://test-auth.local", api_key=None, station_id=station_id, transport=TestAuthServer().transport())
+        auth_description = "TEST USERS (hardcoded) - not for production"
+        test_users = True
+        logger.warning("AUTH: hardcoded test users are active - never use on a production station")
+    elif settings.lan_server_url:
+        auth_client = LanServerClient(
+            base_url=settings.lan_server_url,
+            api_key=settings.lan_server_api_key,
+            station_id=station_id,
+            timeout_seconds=settings.lan_server_timeout_seconds,
+        )
+        auth_description = f"Verified by LAN server {settings.lan_server_url}"
+        test_users = False
+    else:
+        auth_client = None
+        auth_description = "LAN server not configured - nobody can log in"
+        test_users = False
+    authentication = ServerAuthenticationService(
+        client=auth_client,
         session_factory=session_factory,
         station_id=station_id,
-        hasher=hasher,
-        max_failures=settings.auth_max_failures,
-        lockout=timedelta(minutes=settings.auth_lockout_minutes),
+        jig_id=settings.jig_id,
+        mode_description=auth_description,
+        test_users=test_users,
     )
 
     golden_rig_holder: list[GoldenRigConfigurationService] = []
@@ -243,7 +270,8 @@ def _build_access(settings: Settings, session_factory, binding_service: SlotBind
     )
     golden_rig_holder.append(golden_rig)
 
-    users = UserAdministrationService(session_factory=session_factory, station_id=station_id, hasher=hasher)
+    # Enrolment happens on the LAN server; no local user administration.
+    users = None
     jig = JigConfigurationService(
         station_id=station_id,
         binding_service=binding_service,
@@ -314,7 +342,26 @@ def _sync_health(scheduler: SyncScheduler) -> HealthCheck:
     return HealthCheck("Server sync", Severity.OK, f"{status.pending_modules}/{status.threshold} modules until next sync")
 
 
-def _build_production(settings: Settings, session_factory, topology_service, eligibility_service, access: StationAccessService, qr_claims, sync_scheduler: SyncScheduler):
+def _build_production_settings(settings: Settings, session_factory, access: StationAccessService):
+    from stationapp.domain.batch import ProgrammingMode
+    from stationapp.services.production_settings import ProductionSettings, ProductionSettingsService
+
+    defaults = ProductionSettings(
+        mode=ProgrammingMode.STOCK_AND_PRICOL,
+        stock_firmware=settings.stock_firmware_path,
+        pricol_firmware=settings.pricol_firmware_path,
+        enabled_slots=tuple(range(1, settings.jig_positions + 1)),
+    )
+    return ProductionSettingsService(
+        session_factory=session_factory,
+        station_id=settings.station_id,
+        jig_positions=settings.jig_positions,
+        defaults=defaults,
+        access=access,
+    )
+
+
+def _build_production(settings: Settings, session_factory, topology_service, eligibility_service, access: StationAccessService, qr_claims, sync_scheduler: SyncScheduler, production_settings):
     from stationapp.data.production_repository import SqlProductionStore
 
     simulation = settings.simulation_mode
@@ -384,6 +431,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         functional_test_available=True,
         session_check=access.session_health,
         sync_check=lambda: _sync_health(sync_scheduler),
+        firmware_provider=lambda: (production_settings.current().stock_firmware, production_settings.current().pricol_firmware),
     )
 
     production = ProductionController(
@@ -399,6 +447,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         require_firmware=not simulation,
         access=access,
         qr_claims=qr_claims,
+        enabled_slots=lambda: production_settings.current().enabled_slots,
     )
 
     return production, readiness, mac_cache

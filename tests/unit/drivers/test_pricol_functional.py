@@ -65,7 +65,7 @@ def make_tester(dut: FakeDut, timeout: float = 0.3) -> PricolFunctionalTester:
     )
 
 
-APP_OK = [b"PRICOLAPP### Uart demo", b" interrupt read uart data ### \r\n"]
+APP_OK = [b"PRICOL", b"APP\r\n"]
 
 
 @pytest.mark.unit
@@ -76,17 +76,16 @@ def test_app_passes_on_expected_response_split_across_reads():
 
     assert dut.written == [b"PRICOLAPP\r\n"]
     assert outcome.passed is True
-    assert "Uart demo" in outcome.response
+    assert outcome.response.strip() == "PRICOLAPP"
 
 
 @pytest.mark.unit
 def test_boot_noise_before_command_is_discarded():
-    dut = FakeDut({b"PRICOLAPP\r\n": APP_OK}, boot_noise=b"PRICOLAPP### Uart demo interrupt read uart data ###\r\n")
-    dut.replies = {b"PRICOLAPP\r\n": [b"garbage\r\n"]}
+    dut = FakeDut({b"PRICOLAPP\r\n": [b"garbage\r\n"]}, boot_noise=b"PRICOLAPP\r\n")
 
     outcome = make_tester(dut).run_app_test(slot_number=1, com_port="COM9")
 
-    # The stale banner from before the command must not count.
+    # A stale "PRICOLAPP" from before the command must not count.
     assert outcome.passed is False
     assert outcome.detail == "unexpected response"
 
@@ -103,12 +102,30 @@ def test_dfu_passes_without_trailing_newline():
 
 @pytest.mark.unit
 def test_wrong_response_fails():
-    dut = FakeDut({b"PRICOLDFU\r\n": [b"PRICOLAPP### Uart demo interrupt read uart data ###\r\n"]})
+    dut = FakeDut({b"PRICOLDFU\r\n": [b"PRICOLAPP\r\n"]})
 
     outcome = make_tester(dut).run_dfu_test(slot_number=2, com_port="COM9")
 
     assert outcome.passed is False
     assert "PRICOLAPP" in outcome.response
+
+
+@pytest.mark.unit
+def test_app_test_rejects_dfu_response():
+    dut = FakeDut({b"PRICOLAPP\r\n": [b"PRICOLDFU\r\n"]})
+
+    outcome = make_tester(dut).run_app_test(slot_number=1, com_port="COM9")
+
+    assert outcome.passed is False
+
+
+@pytest.mark.unit
+def test_response_must_be_a_whole_line():
+    dut = FakeDut({b"PRICOLAPP\r\n": [b"XPRICOLAPP-ERR\r\n"]})
+
+    outcome = make_tester(dut).run_app_test(slot_number=1, com_port="COM9")
+
+    assert outcome.passed is False
 
 
 @pytest.mark.unit
@@ -138,4 +155,4 @@ def test_cancellation_propagates():
 
 @pytest.mark.unit
 def test_expected_line_matching_ignores_trailing_space():
-    assert APP_RESPONSE in response_lines(b"PRICOLAPP### Uart demo interrupt read uart data ### \r\n")
+    assert APP_RESPONSE in response_lines(b"  PRICOLAPP \r\n")

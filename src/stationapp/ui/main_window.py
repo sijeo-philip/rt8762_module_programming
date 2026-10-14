@@ -10,7 +10,7 @@ renders it. Workflow rules live in ProductionController and the domain.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QStackedWidget,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -43,6 +44,8 @@ from stationapp.services.jig_status_projection import (JigStatusProjection, JigV
 from stationapp.ui.widgets.jig_slot_grid import (JigSlotGrid)
 from stationapp.ui.widgets.production_panel import ProductionPanel
 from stationapp.ui.widgets.session_bar import SessionBar
+from stationapp.ui.widgets.login_page import LoginPage
+from stationapp.ui.widgets.production_settings_page import ProductionSettingsPage
 from stationapp.ui.widgets.station_configuration import StationConfigurationWidget
 
 logger = logging.getLogger(__name__)
@@ -74,6 +77,7 @@ _HEALTH_REFRESH_MS = 30_000
 _SERIAL_TOPOLOGY_REFRESH_MS = 5_000
 
 class MainWindow(QMainWindow):
+    _access_changed = pyqtSignal()
     def __init__(self, context: AppContext) -> None:
         super().__init__()
         self._operation_manager = OperationManager(self)
@@ -95,6 +99,17 @@ class MainWindow(QMainWindow):
         if self._production_panel is not None:
             # Initial READY evaluation, topping up the MAC cache if needed.
             self._production_panel.check_station(top_up=True)
+
+        # The screen follows who is logged in. Supervisor elevation also
+        # lapses with inactivity, so re-evaluate periodically.
+        if self._context.access is not None:
+            self._access_changed.connect(self._update_view, Qt.ConnectionType.QueuedConnection)
+            self._context.access.add_listener(self._access_changed.emit)
+            self._view_timer = QTimer(self)
+            self._view_timer.setInterval(15_000)
+            self._view_timer.timeout.connect(self._update_view)
+            self._view_timer.start()
+        self._update_view()
         #Periodic re-check: Mpcli can be closed, a USB cable pulled. The
         # station's condition is not a startup time fact
         self._timer = QTimer(self)
@@ -107,10 +122,20 @@ class MainWindow(QMainWindow):
 
         #-----------------UI CONSTRUCTION -------------------------------
     def _build_ui(self) -> None:
+        # Login page when nobody is logged in; otherwise the work area,
+        # whose content depends on the logged-in role.
+        self._stack = QStackedWidget()
+        self.setCentralWidget(self._stack)
+        self._login_page: LoginPage | None = None
+        if self._context.access is not None:
+            self._login_page = LoginPage(self._context.access, station_label=self._context.station_label)
+            self._stack.addWidget(self._login_page)
+
         root = QWidget()
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(4, 4, 4, 4)
-        self.setCentralWidget(root)
+        self._stack.addWidget(root)
+        self._work_page = root
 
         self._session_bar: SessionBar | None = None
         if self._context.access is not None:
@@ -124,9 +149,18 @@ class MainWindow(QMainWindow):
         self._jig_slot_grid = JigSlotGrid(self._context.settings.jig_positions, self)
         tabs.addTab(self._build_production_tab(), "Production")
 
+        self._settings_page: ProductionSettingsPage | None = None
+        if self._context.production_settings is not None:
+            self._settings_page = ProductionSettingsPage(
+                self._context.production_settings,
+                jig_configuration=self._context.jig_configuration,
+                simulation=self._context.simulation,
+            )
+            tabs.addTab(self._settings_page, "Production settings")
+
         self._station_configuration: StationConfigurationWidget | None = None
         context = self._context
-        if context.access is not None and context.users is not None and context.jig_configuration is not None and context.golden_rig_configuration is not None:
+        if context.access is not None and context.jig_configuration is not None and context.golden_rig_configuration is not None:
             self._station_configuration = StationConfigurationWidget(
                 access=context.access,
                 users=context.users,
@@ -243,6 +277,7 @@ class MainWindow(QMainWindow):
             default_pricol_firmware=context.settings.pricol_firmware_path,
             simulation=context.simulation,
             access=context.access,
+            settings_service=context.production_settings,
             parent=self,
         )
         if context.recovered_macs:
@@ -408,7 +443,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """ Request cooperative shutdown of all active oeprations """
         
-        if self._operation_manager.active_count == 0:
+        # Only a running production step needs the operator's decision;
+        # background checks (readiness, rig identity) are simply stopped.
+        from stationapp.ui.widgets.production_panel import ADVANCE_OPERATION
+
+        if self._operation_manager.get(ADVANCE_OPERATION) is None:
+            self.shutdown()
             event.accept()
             return 
             
@@ -430,6 +470,8 @@ class MainWindow(QMainWindow):
         self._closing = True
         self._timer.stop()
         self._topology_timer.stop()
+        if self._production_panel is not None:
+            self._production_panel.shutdown()
         self._operation_manager.cancel_all()
         
         # MPCLI observes cancellation through its process runner and is
@@ -452,6 +494,49 @@ class MainWindow(QMainWindow):
         event.accept()
 
     
+    def shutdown(self, timeout_ms: int = 10_000) -> None:
+        """Stop timers and background work (application exit, tests)."""
+        self._closing = True
+        for timer in (self._timer, self._topology_timer, getattr(self, "_view_timer", None)):
+            if timer is not None:
+                timer.stop()
+        if self._production_panel is not None:
+            self._production_panel.shutdown()
+        self._operation_manager.cancel_all()
+        self._operation_manager.wait_for_all(timeout_ms=timeout_ms)
+
+    def _update_view(self) -> None:
+        """Login page, Operator view or Supervisor view."""
+        access = self._context.access
+        if access is None:
+            role = "SUPERVISOR"          # no access control (tests / tooling)
+        elif access.supervisor is not None:
+            role = "SUPERVISOR"
+        elif access.operator is not None:
+            role = "OPERATOR"
+        else:
+            role = None
+
+        if role is None:
+            if self._login_page is not None:
+                if self._stack.currentWidget() is not self._login_page:
+                    self._login_page.reset()
+                self._stack.setCurrentWidget(self._login_page)
+            return
+
+        self._stack.setCurrentWidget(self._work_page)
+        supervisor = role == "SUPERVISOR"
+        for index in range(1, self._tabs.count()):
+            self._tabs.setTabVisible(index, supervisor)
+        self._tabs.tabBar().setVisible(supervisor)
+        if not supervisor:
+            self._tabs.setCurrentIndex(0)
+        if self._production_panel is not None and self._production_panel.supervisor_view != supervisor:
+            self._production_panel.set_supervisor_view(supervisor)
+        if self._session_bar is not None:
+            self._session_bar.set_compact(not supervisor)
+        self.current_role = role
+
     def show_batch_snapshot(self, view: JigView) -> None:
         """Render an already-projected manufacturing snapshot.
 

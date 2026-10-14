@@ -20,6 +20,17 @@ Environment variables:
 
         e.g. AABBCCDDEE01
 
+    STUB_MPCLI_STATE_DIR
+
+        Optional. When set, a MAC written to a port is remembered and
+        returned by the next read-back on that port (unless
+        STUB_MPCLI_READBACK_MAC is set explicitly).
+
+    STUB_MPCLI_FAIL_PORTS
+
+        Optional comma-separated ports (e.g. COM12) whose programming
+        commands fail.
+
 The stub intentionally behaves as an external process.
 """
 
@@ -44,7 +55,18 @@ def main() -> int:
 
     args = sys.argv[1:]
     mode = os.getenv("STUB_MPCLI_MODE", "success").strip().lower()
-    readback_mac = os.getenv("STUB_MPCLI_READBACK_MAC", "AABBCCDDEE01").strip().upper()
+    explicit_readback = os.getenv("STUB_MPCLI_READBACK_MAC")
+    readback_mac = (explicit_readback or "AABBCCDDEE01").strip().upper()
+    state_dir = os.getenv("STUB_MPCLI_STATE_DIR")
+    port_arg = value_after(args, "-c")
+    fail_ports = {item.strip().upper() for item in os.getenv("STUB_MPCLI_FAIL_PORTS", "").split(",") if item.strip()}
+    state_file = None
+    if state_dir and port_arg:
+        state_file = os.path.join(state_dir, f"{port_arg.upper()}.mac")
+
+    if port_arg and port_arg.upper() in fail_ports and "-I" not in args:
+        print(f"ERROR: programming failed on {port_arg}", file=sys.stderr)
+        return 3
 
     # ----------------------------------------------------------
     # Version
@@ -90,6 +112,9 @@ def main() -> int:
             print("MAC: AABBCCDDEE01")
             print("BT MAC: AABBCCDDEE02")
             return 0
+        if explicit_readback is None and state_file and os.path.exists(state_file):
+            with open(state_file, encoding="ascii") as handle:
+                readback_mac = handle.read().strip()
         print(f"BT Address: {readback_mac}")
         return 0
 
@@ -111,14 +136,29 @@ def main() -> int:
             return 6
 
         if mac is None:
-            print("ERROR: MAC missing", file=sys.stderr)
-            return 7
+            # Flash-only (first step of the two-step sequence).
+            print(f"Open {port}")
+            print(f"Programming image: {image}")
+            print("Programming completed")
+            return 0
 
         print(f"Open {port}" )
         print(f"Programming image: {image}")
         print(f"MAC: {mac}")
         print("Programming completed")
 
+        return 0
+
+    # ----------------------------------------------------------
+    # Standalone MAC write (second step of the two-step sequence)
+    # ----------------------------------------------------------
+
+    if "-x" in args:
+        mac = value_after(args, "-x")
+        if state_file and mac:
+            with open(state_file, "w", encoding="ascii") as handle:
+                handle.write(mac.replace(":", "").upper())
+        print(f"MAC written: {mac}")
         return 0
 
     # ----------------------------------------------------------

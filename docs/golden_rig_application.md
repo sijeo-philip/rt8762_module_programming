@@ -20,11 +20,10 @@ Where this document and the station code disagree, the station code wins. Report
 
 The rig performs **README step 13, Stock RF Test**. After Stock programming and MAC readback, a station sends the rig the list of slots that passed, each with its expected Stock MAC. For every target, the rig must:
 
-1. Find the DUT advertising with the expected MAC address.
-2. Connect to it over Bluetooth LE.
-3. Confirm the connection was established with **that** device.
-4. Disconnect cleanly.
-5. Report, for each slot, what it actually observed.
+1. Connect to it over Bluetooth LE.
+2. Confirm the connection was established with **that** device.
+3. Disconnect cleanly.
+4. Report, for each slot, what it actually observed.
 
 The rig reports **observations**, not verdicts. The station decides PASS, FAIL or HOLD from them (section 6). The rig never sees the Pricol MAC; the Pricol stages are verified by MAC readback and the UART functional test on the station.
 

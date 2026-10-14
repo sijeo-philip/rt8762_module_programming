@@ -565,3 +565,14 @@ class SyncRunModel(Base):
     __table_args__ = (
         CheckConstraint("status IN ('RUNNING', 'SUCCESS', 'FAILED')", name="ck_sync_runs_status"),
     )
+
+
+class StationSettingModel(Base):
+    """Supervisor-controlled station setting (JSON value, audited on change)."""
+
+    __tablename__ = "station_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)

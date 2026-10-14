@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButto
 
 from stationapp.services.access import StationAccessService
 from stationapp.services.server_sync import SyncScheduler
-from stationapp.ui.dialogs.access_dialogs import OperatorLoginDialog, SupervisorLoginDialog
+from stationapp.ui.dialogs.access_dialogs import SupervisorLoginDialog
 
 GREEN = "#166534"
 RED = "#991b1b"
@@ -21,6 +21,7 @@ class SessionBar(QFrame):
     def __init__(self, access: StationAccessService, parent: QWidget | None = None, *, sync_scheduler: SyncScheduler | None = None) -> None:
         super().__init__(parent)
         self._access = access
+        self._compact = False
         self.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
@@ -87,10 +88,25 @@ class SessionBar(QFrame):
             f"<b>Supervisor:</b> {supervisor.label}" if supervisor else f"<b>Supervisor:</b> <span style='color:{GREY}'>-</span>"
         )
 
-        self.operator_button.setText("Operator logout" if operator else "Operator login")
-        self.operator_button.setEnabled(operator is not None or session is not None)
-        self.supervisor_button.setText("Supervisor logout" if supervisor else "Supervisor login")
+        # Logins happen on the login screen; the bar offers only
+        # Supervisor elevation (Operator view) and Log out.
+        self.operator_button.setText("Log out" + (" Supervisor" if supervisor and operator else ""))
+        self.operator_button.setEnabled(operator is not None or supervisor is not None)
+        self.supervisor_button.setText("Supervisor")
+        self.supervisor_button.setVisible(supervisor is None and operator is not None)
+
+        compact = self._compact
+        self.session_label.setVisible(not compact)
+        self.supervisor_label.setVisible(not compact)
+        if self._sync is not None:
+            self.sync_label.setVisible(not compact)
+            self.sync_button.setVisible(not compact)
         self._render_sync()
+
+    def set_compact(self, compact: bool) -> None:
+        """Operator view: name and buttons only."""
+        self._compact = compact
+        self.render()
 
     def _render_sync(self) -> None:
         if self._sync is None:
@@ -121,14 +137,10 @@ class SessionBar(QFrame):
             self.render()
 
     def _toggle_operator(self) -> None:
-        if self._access.operator is not None:
-            self._access.logout_operator()
-            return
-        OperatorLoginDialog(self._access, self).exec()
+        self._access.logout_current()
 
     def _toggle_supervisor(self) -> None:
         if self._access.supervisor is not None:
-            self._access.logout_supervisor()
             return
         dialog = SupervisorLoginDialog(self._access, self)
         if dialog.exec() and self._access.session is None:

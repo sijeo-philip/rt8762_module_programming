@@ -366,6 +366,6 @@ def test_pricol_functional_test_over_uart_records_evidence(session_factory):
     with session_factory() as session:
         events = ManufacturingEventRepository(session).list_for_batch(batch.batch_id)
     app = {event.slot_number: event.payload for event in events if event.event_type is EventType.PRICOLAPP_RESULT}
-    assert app[1]["passed"] is True and "Uart demo" in app[1]["response"]
+    assert app[1]["passed"] is True and app[1]["response"].strip() == "PRICOLAPP"
     assert app[2]["passed"] is False and app[2]["response"].startswith("BOOTLOADER ERROR")
     assert app[3]["passed"] is None and app[3]["com_port"] == "COM13"

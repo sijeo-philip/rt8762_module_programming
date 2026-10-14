@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -33,6 +33,7 @@ COLOURS = {
     SlotVisualStatus.FUNCTIONAL_FAIL: ("#991b1b", "#fee2e2"),
     SlotVisualStatus.QR_BOUND: ("#166534", "#dcfce7"),
     SlotVisualStatus.HOLD: ("#92400e", "#fef3c7"),
+    SlotVisualStatus.UNAVAILABLE: ("#475569", "#cbd5e1"),
 }
 
 
@@ -83,6 +84,12 @@ class JigSlotCard(QFrame):
             "}"
         )
 
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        grid = self.parent()
+        if isinstance(grid, JigSlotGrid) and event.button() == Qt.MouseButton.LeftButton:
+            grid.slot_clicked.emit(self.number)
+        super().mousePressEvent(event)
+
     def render(self, view: SlotView) -> None:
         if view.number != self.number:
             raise ValueError("Slot identity mismatch")
@@ -122,6 +129,8 @@ class JigSlotCard(QFrame):
 class JigSlotGrid(QWidget):
     """Physical 4-up or 8-up graphical jig layout."""
 
+    slot_clicked = pyqtSignal(int)
+
     def __init__(self, slot_count: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         if slot_count not in (4, 8):
@@ -152,6 +161,12 @@ class JigSlotGrid(QWidget):
                     stage="No active batch",
                 )
             )
+
+    def show_slots(self, views: list[SlotView], summary: str) -> None:
+        """Render slot views outside a batch (e.g. loading the jig)."""
+        self.summary_label.setText(summary)
+        for slot in views:
+            self.cards[slot.number].render(slot)
 
     def update_view(self, view: JigView) -> None:
         expected = set(self.cards)

@@ -3,10 +3,14 @@
 After each physical reset the Pricol bootloader accepts one command:
 
     PRICOLAPP<CR><LF>   jump to the main application
-                        expected: "PRICOLAPP### Uart demo interrupt read uart data ### <CR><LF>"
+                        expected response: "PRICOLAPP"
 
     PRICOLDFU<CR><LF>   jump to Device Firmware Update mode
-                        expected: "PRICOLDFU"
+                        expected response: "PRICOLDFU"
+
+Responses confirmed on a real DUT with scripts/test_pricol_functional.py.
+A response passes only as a complete line (surrounding whitespace and
+CR/LF ignored), so e.g. "PRICOLAPP" never satisfies the DFU test.
 
 The operator performs the reset (the workflow prompts for it) and the
 station then sends the command on each eligible slot's COM port in
@@ -33,7 +37,7 @@ from stationapp.drivers.serial.session import SerialSession, SerialSessionConfig
 logger = logging.getLogger(__name__)
 
 APP_COMMAND = "PRICOLAPP"
-APP_RESPONSE = "PRICOLAPP### Uart demo interrupt read uart data ###"
+APP_RESPONSE = "PRICOLAPP"
 
 DFU_COMMAND = "PRICOLDFU"
 DFU_RESPONSE = "PRICOLDFU"

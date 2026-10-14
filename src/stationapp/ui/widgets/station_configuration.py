@@ -831,7 +831,7 @@ class SyncPage(_Page):
 class StationConfigurationWidget(QWidget):
     _changed = pyqtSignal()
 
-    def __init__(self, *, access: StationAccessService, users: UserAdministrationService, jig_configuration: JigConfigurationService, golden_rig: GoldenRigConfigurationService, operations: OperationManager, jig_positions: int, topology_service=None, simulation: bool = False, sync_scheduler: SyncScheduler | None = None, parent: QWidget | None = None) -> None:
+    def __init__(self, *, access: StationAccessService, users: UserAdministrationService | None, jig_configuration: JigConfigurationService, golden_rig: GoldenRigConfigurationService, operations: OperationManager, jig_positions: int, topology_service=None, simulation: bool = False, sync_scheduler: SyncScheduler | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._access = access
         layout = QVBoxLayout(self)
@@ -844,7 +844,17 @@ class StationConfigurationWidget(QWidget):
         self.session_page = SessionPage(access, None if simulation else topology_service, sync_scheduler=sync_scheduler)
         self.slot_page = SlotBindingPage(jig_configuration, jig_positions, simulation=simulation)
         self.rig_page = GoldenRigPage(golden_rig, operations, simulation=simulation)
-        self.users_page = UsersPage(users, access)
+        if users is not None:
+            self.users_page = UsersPage(users, access)
+        else:
+            self.users_page = QLabel(
+                "Operators and Supervisors are enrolled on the LAN server. "
+                "Every login on this station is verified there, so any enrolled user "
+                "can log in on any jig."
+            )
+            self.users_page.setWordWrap(True)
+            self.users_page.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            self.users_page.setContentsMargins(12, 12, 12, 12)
         self.tabs.addTab(self.session_page, "Session")
         self.tabs.addTab(self.slot_page, "Jig slot binding")
         self.tabs.addTab(self.rig_page, "Golden Rig binding")

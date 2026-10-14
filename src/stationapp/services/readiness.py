@@ -54,7 +54,9 @@ class ReadinessReport:
 class StationReadinessService:
     """Evaluate whether the station may start a batch."""
 
-    def __init__(self, *, settings: Settings, topology_service, eligibility_service: SlotEligibilityService, mac_cache: MacCacheService | None, golden_rig_check: GoldenRigCheck, simulation: bool = False, functional_test_available: bool = False, session_check: Callable[[], HealthCheck] | None = None, sync_check: Callable[[], HealthCheck] | None = None) -> None:
+    def __init__(self, *, settings: Settings, topology_service, eligibility_service: SlotEligibilityService, mac_cache: MacCacheService | None, golden_rig_check: GoldenRigCheck, simulation: bool = False, functional_test_available: bool = False, session_check: Callable[[], HealthCheck] | None = None, sync_check: Callable[[], HealthCheck] | None = None, firmware_provider: Callable[[], tuple[Path | None, Path | None]] | None = None) -> None:
+        """firmware_provider returns the (Stock, Pricol) images the
+        Supervisor configured; defaults to the .env paths."""
         self._settings = settings
         self._topology = topology_service
         self._eligibility = eligibility_service
@@ -64,6 +66,7 @@ class StationReadinessService:
         self._functional_test_available = functional_test_available or simulation
         self._session_check = session_check
         self._sync_check = sync_check
+        self._firmware_provider = firmware_provider or (lambda: (settings.stock_firmware_path, settings.pricol_firmware_path))
 
     def evaluate(self, mode: ProgrammingMode, occupied: tuple[int, ...] | None = None, *, top_up_macs: bool = False) -> ReadinessReport:
         checks: list[HealthCheck] = []
@@ -140,11 +143,11 @@ class StationReadinessService:
         settings = self._settings
         checks = [
             _file_check("MPCLI", settings.mpcli_path),
-            _file_check("Stock firmware", settings.stock_firmware_path),
+            _file_check("Stock firmware", self._firmware_provider()[0]),
         ]
 
         if mode is ProgrammingMode.STOCK_AND_PRICOL:
-            checks.append(_file_check("Pricol firmware", settings.pricol_firmware_path))
+            checks.append(_file_check("Pricol firmware", self._firmware_provider()[1]))
             if not self._functional_test_available:
                 checks.append(HealthCheck(
                     "Functional test",

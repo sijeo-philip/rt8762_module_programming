@@ -22,6 +22,7 @@ class SlotVisualStatus(str, Enum):
     FUNCTIONAL_FAIL = "FUNCTIONAL FAIL"
     QR_BOUND = "QR BOUND"
     HOLD = "HOLD"
+    UNAVAILABLE = "NOT AVAILABLE"
 
 
 @dataclass(frozen=True, slots=True)

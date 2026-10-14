@@ -192,7 +192,7 @@ _FINISHED_STATES = frozenset({
 class ProductionController:
     """Owns the active batch and executes the production workflow."""
 
-    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, qr_claims: ModuleQrClaimService | None = None) -> None:
+    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, qr_claims: ModuleQrClaimService | None = None, enabled_slots: Callable[[], tuple[int, ...]] | None = None) -> None:
         """programmer_factory builds a programmer for the firmware images
         chosen at batch setup; programmer is a fixed alternative."""
         if slot_count not in (4, 8):
@@ -209,6 +209,7 @@ class ProductionController:
         self._require_firmware = require_firmware
         self._access = access
         self._qr_claims = qr_claims
+        self._enabled_slots = enabled_slots
         self._commit_listeners: list[Callable[[Batch], None]] = []
         self._rf_tester = rf_tester
         self._functional = functional_tester
@@ -305,6 +306,12 @@ class ProductionController:
                 session_id, operator_id = self._require_access()
 
             occupied = tuple(sorted(occupied))
+            if self._enabled_slots is not None:
+                disabled = sorted(set(occupied) - set(self._enabled_slots()))
+                if disabled:
+                    raise ProductionError(
+                        "Slot(s) " + ", ".join(map(str, disabled)) + " are disabled by the Supervisor"
+                    )
             if not occupied:
                 raise ProductionError("Select at least one loaded slot")
 

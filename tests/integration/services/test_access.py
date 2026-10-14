@@ -273,6 +273,9 @@ def test_production_requires_logged_in_operator_and_records_it(env):
 
     access.login_supervisor("sup1", "supervisor-pw")
     session = access.start_session(config())
+    # A logged-in Supervisor may operate; production is attributed to them.
+    assert access.require_production_access() == (session.session_id, "SUP1")
+    access.logout_supervisor()
     with pytest.raises(ProductionError, match="Operator login required"):
         controller.start_batch(occupied=(1,), ports=ports, mode=ProgrammingMode.STOCK_ONLY)
 

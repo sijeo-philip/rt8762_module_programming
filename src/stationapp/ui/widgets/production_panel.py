@@ -42,6 +42,7 @@ from stationapp.services.production import ProductionController, ProductionError
 from stationapp.services.readiness import ReadinessReport, StationReadinessService
 from stationapp.services.access import StationAccessService
 from stationapp.ui.dialogs.access_dialogs import SupervisorAuthorizationDialog
+from stationapp.services.jig_status_projection import SlotView, SlotVisualStatus
 from stationapp.ui.widgets.jig_slot_grid import JigSlotGrid
 
 logger = logging.getLogger(__name__)
@@ -154,8 +155,9 @@ class ProductionPanel(QWidget):
 
     _controller_changed = pyqtSignal()
     _access_changed = pyqtSignal()
+    _settings_changed = pyqtSignal()
 
-    def __init__(self, *, controller: ProductionController, readiness: StationReadinessService, operations: OperationManager, jig_grid: JigSlotGrid, station_id: str, default_stock_firmware: Path | None = None, default_pricol_firmware: Path | None = None, simulation: bool = False, access: StationAccessService | None = None, parent: QWidget | None = None) -> None:
+    def __init__(self, *, controller: ProductionController, readiness: StationReadinessService, operations: OperationManager, jig_grid: JigSlotGrid, station_id: str, default_stock_firmware: Path | None = None, default_pricol_firmware: Path | None = None, simulation: bool = False, access: StationAccessService | None = None, settings_service=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._controller = controller
         self._readiness = readiness
@@ -172,6 +174,12 @@ class ProductionPanel(QWidget):
         # until the next successful action or workflow step.
         self._local_error: str | None = None
         self._error_state: object = None
+        # Supervisor view shows batch setup and the detailed READY checks;
+        # the Operator view shows only the jig, the instruction and START.
+        self._supervisor_view = True
+        self._shut_down = False
+        self._settings_service = settings_service
+        self._browse_buttons: list[QPushButton] = []
 
         self._build(default_stock_firmware, default_pricol_firmware)
 
@@ -187,6 +195,16 @@ class ProductionPanel(QWidget):
             self._access_changed.connect(self._on_access_changed, Qt.ConnectionType.QueuedConnection)
             self.operator_input.setReadOnly(True)
             self.operator_input.setPlaceholderText("Log in as Operator (top bar)")
+        # Mode, firmware, lot and enabled slots belong to the Supervisor.
+        if settings_service is not None:
+            self._lock_settings_controls()
+            self._apply_settings()
+            settings_service.add_listener(self._settings_changed.emit)
+            self._settings_changed.connect(self._on_settings_changed, Qt.ConnectionType.QueuedConnection)
+
+        # Operators mark loaded/empty slots by tapping the slot cards.
+        jig_grid.slot_clicked.connect(self._on_slot_clicked)
+
         # The advance worker is only gone once its thread is cleaned up.
         operations.operation_removed.connect(lambda _operation_id: self._schedule_render())
 
@@ -329,6 +347,7 @@ class ProductionPanel(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         edit = QLineEdit(str(default) if default else "")
         browse = QPushButton("Browse...")
+        self._browse_buttons.append(browse)
 
         def choose() -> None:
             path, _ = QFileDialog.getOpenFileName(self, "Select firmware image", edit.text(), "Firmware (*.bin);;All files (*)")
@@ -360,6 +379,8 @@ class ProductionPanel(QWidget):
 
     def check_station(self, *, top_up: bool = False) -> None:
         """Evaluate READY on a worker; contacts the LAN server if top_up."""
+        if self._shut_down:
+            return
         if self._readiness_pending:
             self._readiness_rerun = True
             return
@@ -371,8 +392,10 @@ class ProductionPanel(QWidget):
             return readiness.evaluate(mode, occupied, top_up_macs=top_up)
 
         def configure(worker) -> None:
-            worker.succeeded.connect(lambda result: self._on_readiness(result.value))
-            worker.failed.connect(lambda failure: self._on_readiness_failed(failure.user_message))
+            # Bound methods: Qt drops these connections if the panel is
+            # destroyed before the worker finishes.
+            worker.succeeded.connect(self._on_readiness_result)
+            worker.failed.connect(self._on_readiness_failure)
             worker.finished.connect(self._on_readiness_finished)
 
         try:
@@ -392,14 +415,18 @@ class ProductionPanel(QWidget):
         self._report = report
 
         for number, check in self.slot_checks.items():
-            available = number in report.ports
+            enabled = self._slot_enabled(number)
+            available = enabled and number in report.ports
             check.blockSignals(True)
             check.setEnabled(available)
             if first:
                 check.setChecked(available)
             elif not available:
                 check.setChecked(False)
-            check.setToolTip("Ready" if available else self._slot_reason(report, number))
+            if not enabled:
+                check.setToolTip("Disabled by the Supervisor in Production settings")
+            else:
+                check.setToolTip("Ready" if available else self._slot_reason(report, number))
             check.blockSignals(False)
 
         self.readiness_table.setRowCount(len(report.checks))
@@ -432,6 +459,19 @@ class ProductionPanel(QWidget):
             return report.eligibility.get(number).reason
         except ValueError:
             return "Unavailable"
+
+    def _on_readiness_result(self, result) -> None:
+        if not self._shut_down:
+            self._on_readiness(result.value)
+
+    def _on_readiness_failure(self, failure) -> None:
+        if not self._shut_down:
+            self._on_readiness_failed(failure.user_message)
+
+    def shutdown(self) -> None:
+        """Stop background checks before the panel goes away."""
+        self._shut_down = True
+        self._readiness_timer.stop()
 
     def _on_readiness_failed(self, message: str) -> None:
         self._report = None
@@ -638,27 +678,102 @@ class ProductionPanel(QWidget):
             operator = self._access.operator
             self.operator_input.setText(operator.label if operator else "")
         self.step_rail.set_step("LOAD & READY", stock_only=self.selected_mode is ProgrammingMode.STOCK_ONLY, blocked=False)
-        self.setup_box.show()
+        self.setup_box.setVisible(self._supervisor_view)
         self.setup_box.setEnabled(True)
         self.abort_button.hide()
         self.qr_input.setEnabled(False)
         self.qr_input.setPlaceholderText("Scanner disabled")
-        self._jig_grid.clear_batch()
+        self._render_load_grid()
 
         ready = self._report is not None and self._report.ready and bool(self.selected_slots) and not self._readiness_pending
+        operator = not self._supervisor_view
         if self._report is None:
-            self._set_banner("CHECK STATION", "Press 'Check station' to validate the jig, Golden Rig and MAC cache.", BLUE)
+            if operator:
+                self._set_banner("CHECKING JIG...", "Please wait while the station checks the jig.", GREY)
+            else:
+                self._set_banner("CHECK STATION", "Press 'Check station' to validate the jig, Golden Rig and MAC cache.", BLUE)
         elif not self._report.ready:
-            self._set_banner("STATION NOT READY", "Resolve the failed checks below, or call the Supervisor.", RED)
+            if operator:
+                problem = self._report.problems[0] if self._report.problems else "station check failed"
+                self._set_banner("JIG NOT READY", f"Call the Supervisor. ({problem})", RED)
+            else:
+                self._set_banner("STATION NOT READY", "Resolve the failed checks below, or call the Supervisor.", RED)
         elif not self.selected_slots:
-            self._set_banner("LOAD MODULES", "Load modules into the jig and tick each loaded slot.", BLUE)
+            self._set_banner("JIG READY - LOAD MODULES", "Load modules into the jig, then tap each slot that holds a module.", BLUE)
         else:
             slots = ", ".join(map(str, self.selected_slots))
-            self._set_banner("READY - PRESS START", f"Modules loaded in slot(s) {slots}. Press START to begin the batch.", GREEN)
+            self._set_banner("JIG READY - PRESS START", f"Modules loaded in slot(s) {slots}. Tap a slot to change, then press START.", GREEN)
 
         self.primary_button.setText("START")
         self.primary_button.setEnabled(ready)
         self._show_error(self._current_error(snapshot))
+
+    # ------------------------------------------------------------------
+    # Roles, settings and slot loading
+    # ------------------------------------------------------------------
+
+    def set_supervisor_view(self, supervisor: bool) -> None:
+        self._supervisor_view = supervisor
+        self.render()
+
+    @property
+    def supervisor_view(self) -> bool:
+        return self._supervisor_view
+
+    def _slot_enabled(self, number: int) -> bool:
+        return self._settings_service is None or number in self._settings_service.current().enabled_slots
+
+    def _lock_settings_controls(self) -> None:
+        self.setup_box.setTitle("Batch setup (from Production settings - Supervisor only)")
+        for button in (self.stock_only_radio, self.full_radio):
+            button.setEnabled(False)
+        for edit in (self.stock_fw_input, self.pricol_fw_input, self.batch_label_input):
+            edit.setReadOnly(True)
+        for button in self._browse_buttons:
+            button.hide()
+
+    def _apply_settings(self) -> None:
+        settings = self._settings_service.current()
+        self.stock_only_radio.blockSignals(True)
+        self.full_radio.blockSignals(True)
+        self.stock_only_radio.setChecked(settings.mode is ProgrammingMode.STOCK_ONLY)
+        self.full_radio.setChecked(settings.mode is ProgrammingMode.STOCK_AND_PRICOL)
+        self.stock_only_radio.blockSignals(False)
+        self.full_radio.blockSignals(False)
+        self.stock_fw_input.setText(str(settings.stock_firmware or ""))
+        self.pricol_fw_input.setText(str(settings.pricol_firmware or ""))
+        self.batch_label_input.setText(settings.lot or "")
+
+    def _on_settings_changed(self) -> None:
+        self._apply_settings()
+        if self._snapshot is None or not self._snapshot.has_batch:
+            self._readiness_timer.start()
+        self.render()
+
+    def _on_slot_clicked(self, number: int) -> None:
+        snapshot = self._controller.snapshot()
+        if snapshot.has_batch or snapshot.running:
+            return
+        check = self.slot_checks.get(number)
+        if check is not None and check.isEnabled():
+            check.toggle()
+
+    def _render_load_grid(self) -> None:
+        report = self._report
+        views = []
+        for number, check in self.slot_checks.items():
+            if report is None:
+                views.append(SlotView(number, SlotVisualStatus.EMPTY, "Checking...", detail=""))
+            elif not check.isEnabled():
+                reason = check.toolTip() or "Not available"
+                views.append(SlotView(number, SlotVisualStatus.UNAVAILABLE, "Not available", detail=reason))
+            elif check.isChecked():
+                views.append(SlotView(number, SlotVisualStatus.READY, "Module loaded", detail="Tap to mark empty"))
+            else:
+                views.append(SlotView(number, SlotVisualStatus.EMPTY, "Empty", detail="Tap to mark loaded"))
+        available = sum(1 for check in self.slot_checks.values() if check.isEnabled())
+        loaded = len(self.selected_slots)
+        self._jig_grid.show_slots(views, f"Loaded: {loaded} of {available} available slots - tap a slot to change")
 
     def _set_banner(self, headline: str, instruction: str, colour: str) -> None:
         self.headline_label.setText(headline)

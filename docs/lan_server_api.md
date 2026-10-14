@@ -13,6 +13,34 @@ This is the contract the Station Application uses to talk to the LAN Server: rej
   - Other `4xx`: the request is invalid. The station logs it and does not retry the same data.
   - `5xx` or a network error: the server is unavailable. The station keeps working offline and retries later.
 
+## 0. Login verification
+
+Operators and Supervisors are enrolled **on the LAN Server only**. Stations store no passwords. Every login on any jig is verified by the server, so an enrolled user can log in on any station. The server also owns lockout (repeated wrong passwords) and disabling accounts.
+
+`POST /api/v1/auth/login`
+
+```json
+{"user_id": "OPERATOR1", "password": "...", "station_id": "STN-01", "jig_id": "JIG-01"}
+```
+
+`POST /api/v1/auth/badge`
+
+```json
+{"badge_id": "OPBADGE001", "station_id": "STN-01", "jig_id": "JIG-01"}
+```
+
+| Result | Response |
+|---|---|
+| Accepted | `200 {"user_id": "OPERATOR1", "display_name": "Ravi Kumar", "role": "OPERATOR"}` (`role` is `OPERATOR` or `SUPERVISOR`) |
+| Wrong user ID, password or badge | `401 {"error": "INVALID_CREDENTIALS", "message": "Invalid user ID or password"}` |
+| Account disabled | `403 {"error": "ACCOUNT_DISABLED", "message": "..."}` |
+| Account locked | `423 {"error": "ACCOUNT_LOCKED", "message": "Account locked until 10:42"}` |
+
+- The station shows `message` to the user as-is, so it must be written for operators.
+- The station refuses badge-only logins for Supervisors even if the server accepts them.
+- If the server is unreachable, nobody can log in. A user who is already logged in stays logged in.
+- Until this API exists, stations can run with `AUTH_MODE=test`. That uses built-in test users answering these same endpoints (`src/stationapp/services/test_users.py`) and must never be enabled on a production station.
+
 ## 1. Claim a module QR
 
 `POST /api/v1/module-qr/claims`

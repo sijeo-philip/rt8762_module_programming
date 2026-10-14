@@ -386,6 +386,10 @@ class StationAccessService:
 
     # -- observation -----------------------------------------------------
 
+    @property
+    def authentication(self):
+        return self._auth
+
     def add_listener(self, callback: Callable[[], None]) -> None:
         self._listeners.append(callback)
 
@@ -446,6 +450,38 @@ class StationAccessService:
         if not user.is_supervisor:
             raise AuthorizationError(f"{user.user_id} is not a Supervisor")
         return user
+
+    def login(self, user_id: str, secret: str) -> AuthenticatedUser:
+        """Single login screen: the verified role decides what happens.
+
+        Supervisors become the station Supervisor; Operators need an open
+        production session.
+        """
+        user = self._auth.authenticate(user_id, secret, purpose="Station login")
+        return self._accept_login(user)
+
+    def login_with_badge(self, badge_id: str) -> AuthenticatedUser:
+        user = self._auth.authenticate_badge(badge_id, purpose="Station login")
+        return self._accept_login(user)
+
+    def _accept_login(self, user: AuthenticatedUser) -> AuthenticatedUser:
+        if user.is_supervisor:
+            with self._lock:
+                self._supervisor = user
+                self._supervisor_seen = self._clock()
+            self._notify()
+            return user
+        if self._session is None:
+            self._auth.record_logout(user, "Refused: no production session open")
+            raise AuthorizationError("No production session is open. A Supervisor must log in and start one first.")
+        return self._set_operator(user)
+
+    def logout_current(self) -> None:
+        """Log out whoever is on top: the Supervisor first, else the Operator."""
+        if self.supervisor is not None:
+            self.logout_supervisor()
+        else:
+            self.logout_operator()
 
     def login_operator(self, user_id: str, secret: str) -> AuthenticatedUser:
         self._require_open_session_for_login()
@@ -585,7 +621,7 @@ class StationAccessService:
         session = self._session
         if session is None:
             raise AuthorizationError("No production session is open")
-        operator = self._operator
+        operator = self._operator or self.supervisor
         if operator is None:
             raise AuthorizationError("Operator login required")
         problems = self.configuration_problems()
@@ -600,9 +636,10 @@ class StationAccessService:
         problems = self.configuration_problems()
         if problems:
             return HealthCheck("Session", Severity.FAIL, "; ".join(problems))
-        if self._operator is None:
+        user = self._operator or self.supervisor
+        if user is None:
             return HealthCheck("Session", Severity.FAIL, f"Session open (Supervisor {session.supervisor_id}); Operator login required")
-        return HealthCheck("Session", Severity.OK, f"Supervisor {session.supervisor_id}; Operator {self._operator.user_id}")
+        return HealthCheck("Session", Severity.OK, f"Session by {session.supervisor_id}; operating as {user.user_id}")
 
     # -- helpers ---------------------------------------------------------
 

@@ -37,6 +37,23 @@ class LanServerRejected(LanServerError):
     """Server refused the request as invalid (not retryable as-is)."""
 
 
+class LanAuthRejected(LanServerError):
+    """The server refused a login: wrong credentials, disabled or locked."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteUser:
+    """Identity and role as enrolled on the LAN server."""
+
+    user_id: str
+    display_name: str
+    role: str
+
+
 @dataclass(frozen=True, slots=True)
 class QrOwner:
     station_id: str
@@ -145,6 +162,25 @@ class LanServerClient:
         except (KeyError, TypeError) as exc:
             raise LanServerRejected(f"Malformed sync acknowledgement: {exc}") from exc
         return SyncAck(qr_conflicts=conflicts)
+
+    def login_password(self, user_id: str, password: str, *, jig_id: str) -> RemoteUser:
+        return self._login(f"{API}/auth/login", {"user_id": user_id, "password": password, "station_id": self._station_id, "jig_id": jig_id})
+
+    def login_badge(self, badge_id: str, *, jig_id: str) -> RemoteUser:
+        return self._login(f"{API}/auth/badge", {"badge_id": badge_id, "station_id": self._station_id, "jig_id": jig_id})
+
+    def _login(self, url: str, body: dict[str, Any]) -> RemoteUser:
+        response = self._request("POST", url, json=body, allowed={401, 403, 423})
+        data = self._json(response)
+        if response.status_code in {401, 403, 423}:
+            raise LanAuthRejected(str(data.get("error", response.status_code)), str(data.get("message") or "Login refused by the server"))
+        try:
+            role = str(data["role"]).upper()
+            if role not in {"OPERATOR", "SUPERVISOR"}:
+                raise ValueError(role)
+            return RemoteUser(user_id=str(data["user_id"]), display_name=str(data.get("display_name") or data["user_id"]), role=role)
+        except (KeyError, ValueError) as exc:
+            raise LanServerRejected(f"Malformed login response from server: {exc}") from exc
 
     # ------------------------------------------------------------------
 

@@ -35,7 +35,7 @@ def bench(tmp_path: Path, monkeypatch):
     def make_runner(rf=None):
         return StockBenchRunner(hardware_factory=hardware, mac_pool=pool, results_dir=tmp_path / "results", rf_tester=rf)
 
-    settings = BenchSettings(mpcli_path=Path(sys.executable), firmware=firmware, product_id="11223344", secret_key=KEY, settle_s=0)
+    settings = BenchSettings(mpcli_path=Path(sys.executable), firmware=firmware, settle_s=0)
     return {"make": make_runner, "settings": settings, "pool": pool, "tmp": tmp_path}
 
 
@@ -48,6 +48,7 @@ def test_three_slots_one_failing_port(bench, monkeypatch):
     assert run.slots[1].verdict == "PASS (no RF)"
     assert run.slots[1].readback == "MATCH" and run.slots[1].readback_mac == run.slots[1].mac
     assert run.slots[2].verdict == "FAIL" and run.slots[2].flash == "FAILED"
+    assert run.slots[2].message.startswith("MPCLI ERR 3 (Open file error)")
     assert run.slots[3].verdict == "PASS (no RF)"
     assert {u.stage for u in updates} >= {"Flashing firmware", "Writing MAC", "Reading back MAC", "Done"}
 

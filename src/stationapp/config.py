@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -42,8 +42,6 @@ class Settings(BaseSettings):
     # ----External Tools ---
     mpcli_path: Path = Path(r"D:\BLE_Projects\StationApp\MPCliTool_v1.0.4.25_Windows\mpcli_v1.0.4.25_Windows\mpcli.exe")
     pricol_app_path: Path | None = None
-    mpcli_product_id: str | None = None
-    mpcli_secret_key: SecretStr | None = None
     # Validated flash -> settle -> write-MAC sequence (see
     # scripts/program_one_real_dut.py) instead of the combined command.
     mpcli_two_step: bool = True
@@ -66,6 +64,14 @@ class Settings(BaseSettings):
     # --- Production ---
     # Accepted module QR content. Tighten once the label format is fixed.
     qr_pattern: str = r"^[!-~]{4,128}$"
+    # USB QR scanner (keyboard wedge), as in the legacy tools: keep only
+    # hex characters and the last QR_CODE_LENGTH of them. 0 = any length
+    # (the scan then ends with the scanner's Enter suffix).
+    qr_code_length: int = Field(8, ge=0, le=128)
+    qr_hex_only: bool = True
+    # A repeat read of the same code within this many milliseconds is
+    # discarded (scanner double-read / held trigger). 0 disables.
+    qr_debounce_ms: int = Field(2000, ge=0, le=60_000)
 
     # --- Access control ---
     # Supervisor elevation lapses after this much inactivity.

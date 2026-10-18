@@ -130,9 +130,11 @@ def test_operator_runs_stock_only_batch_end_to_end(panel, qtbot):
     assert "SLOT 1" in widget.qr_input.placeholderText()
     assert not widget.primary_button.isEnabled()
 
-    for qr in ("QR-1001", "QR-1003", "QR-1004"):
+    for qr in ("1A2B1001", "1A2B1001", "1A2B1003", "1A2B1004"):   # slot 1 read twice
         qtbot.keyClicks(widget.qr_input, qr)
         qtbot.keyClick(widget.qr_input, "\r")
+        # The double read is discarded silently: no "Duplicate QR" error.
+        assert widget.error_label.text() == ""
 
     assert batch.state is BatchState.QR_BOUND
     qtbot.waitUntil(lambda: widget.primary_button.text() == "COMPLETE BATCH", timeout=5_000)
@@ -164,7 +166,7 @@ def test_scanner_rejects_duplicate_qr_with_message(panel, qtbot):
     press_until(qtbot, widget, controller, BatchState.QR_SCANNING)
     qtbot.waitUntil(widget.qr_input.isEnabled, timeout=5_000)
 
-    qtbot.keyClicks(widget.qr_input, "x")
+    qtbot.keyClicks(widget.qr_input, "AB12")
     qtbot.keyClick(widget.qr_input, "\r")
 
     assert "Invalid QR" in widget.error_label.text()
@@ -175,6 +177,6 @@ def test_scanner_rejects_duplicate_qr_with_message(panel, qtbot):
     assert "Invalid QR" in widget.error_label.text()
 
     # ...and clear after the next good scan.
-    qtbot.keyClicks(widget.qr_input, "QR-GOOD-1")
+    qtbot.keyClicks(widget.qr_input, "C0FFEE01")
     qtbot.keyClick(widget.qr_input, "\r")
     assert widget.error_label.text() == ""

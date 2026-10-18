@@ -31,8 +31,6 @@ def window(qtbot, tmp_path: Path, monkeypatch):
         results_dir=tmp_path / "results",
         mpcli_path=tmp_path / "mpcli.exe",
         firmware=firmware,
-        product_id="11223344",
-        secret_key="00" * 32,
         port_lister=lambda: [(f"COM10{n}", "sim") for n in range(1, 5)],
         slot_ports={n: f"COM10{n}" for n in range(1, 5)},
         simulation=True,
@@ -71,3 +69,16 @@ def test_bench_run_shows_per_slot_results(window, qtbot):
     assert "2/3 passed" in window.status_label.text()
     assert window._run.csv_path.exists()
     assert window.start_button.isEnabled()
+
+
+@pytest.mark.unit
+def test_error_codes_dialog_lists_all_codes(qtbot):
+    from stationapp.ui.dialogs.error_codes_dialog import ErrorCodesDialog
+
+    dialog = ErrorCodesDialog(highlight=6)
+    qtbot.addWidget(dialog)
+
+    assert dialog.table.rowCount() == 19
+    assert dialog.table.item(6, 0).text() == "6"
+    assert dialog.table.item(6, 1).text() == "hci event error"
+    assert dialog.table.selectionModel().selectedRows()[0].row() == 6

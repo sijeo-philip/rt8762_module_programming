@@ -30,6 +30,14 @@ class AuthenticationFailed(AccessError):
     """Unknown user, wrong secret, inactive or locked account."""
 
 
+class PasswordRequired(AuthenticationFailed):
+    """A recognised badge belongs to a Supervisor: a password is needed."""
+
+    def __init__(self, user_id: str, message: str) -> None:
+        super().__init__(message)
+        self.user_id = user_id
+
+
 class AuthorizationError(AccessError):
     """The authenticated user may not perform this action."""
 

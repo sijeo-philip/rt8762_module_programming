@@ -22,6 +22,7 @@ from stationapp.domain.users import (
     AuthenticatedUser,
     AuthenticationFailed,
     AuthenticationMethod,
+    PasswordRequired,
     UserRole,
     normalise_user_id,
 )
@@ -76,7 +77,7 @@ class ServerAuthenticationService:
         if user.role is not UserRole.OPERATOR:
             # A lost badge must not open Supervisor functions.
             self._audit(user.user_id, "LOGIN_REFUSED", f"{purpose}: badge login not allowed for Supervisors")
-            raise AuthenticationFailed("Supervisors must log in with a password")
+            raise PasswordRequired(user.user_id, "Supervisor badge recognised - enter your password to log in")
         return user
 
     def record_logout(self, user: AuthenticatedUser, reason: str) -> None:

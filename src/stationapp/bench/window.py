@@ -52,8 +52,6 @@ class BenchContext:
     results_dir: Path
     mpcli_path: Path | None = None
     firmware: Path | None = None
-    product_id: str = ""
-    secret_key: str = ""
     golden_rig_status: str = "No approved Golden Rig"
     port_lister: object = None          # () -> list[(device, description)]
     slot_ports: dict[int, str] | None = None
@@ -134,11 +132,6 @@ class BenchWindow(QMainWindow):
         form = QFormLayout(config)
         self.mpcli_input = self._path_row(form, "MPCLI", "mpcli.exe (*.exe);;All files (*)")
         self.firmware_input = self._path_row(form, "Stock firmware", "Firmware (*.bin);;All files (*)")
-        self.product_input = QLineEdit()
-        form.addRow("Product ID", self.product_input)
-        self.secret_input = QLineEdit()
-        self.secret_input.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Secret key", self.secret_input)
         sequence = QHBoxLayout()
         self.two_step_radio = QRadioButton("Flash, then write MAC (validated)")
         self.combined_radio = QRadioButton("Combined command")
@@ -230,6 +223,10 @@ class BenchWindow(QMainWindow):
         self.status_label = QLabel("Ready")
         self.status_label.setWordWrap(True)
         buttons.addWidget(self.status_label, 1)
+        error_codes = QPushButton("Error codes")
+        error_codes.setToolTip("What each MPCLI error number means and what to do")
+        error_codes.clicked.connect(self._show_error_codes)
+        buttons.addWidget(error_codes)
         open_results = QPushButton("Open results folder")
         open_results.clicked.connect(self._open_results)
         buttons.addWidget(open_results)
@@ -257,8 +254,6 @@ class BenchWindow(QMainWindow):
         ctx, prefs = self._ctx, self._settings
         self.mpcli_input.setText(prefs.value("mpcli", str(ctx.mpcli_path or "")))
         self.firmware_input.setText(prefs.value("firmware", str(ctx.firmware or "")))
-        self.product_input.setText(prefs.value("product_id", ctx.product_id))
-        self.secret_input.setText(ctx.secret_key)          # never persisted
         self.combined_radio.setChecked(prefs.value("combined", "false") == "true")
         if ctx.mac_pool.start is not None:
             self.mac_start_input.setText(str(ctx.mac_pool.start))
@@ -270,7 +265,6 @@ class BenchWindow(QMainWindow):
         prefs = self._settings
         prefs.setValue("mpcli", self.mpcli_input.text())
         prefs.setValue("firmware", self.firmware_input.text())
-        prefs.setValue("product_id", self.product_input.text())
         prefs.setValue("combined", "true" if self.combined_radio.isChecked() else "false")
         for number, check in self.use_checks.items():
             prefs.setValue(f"use/{number}", "true" if check.isChecked() else "false")
@@ -340,8 +334,6 @@ class BenchWindow(QMainWindow):
         settings = BenchSettings(
             mpcli_path=Path(self.mpcli_input.text().strip()),
             firmware=Path(self.firmware_input.text().strip()),
-            product_id=self.product_input.text().strip(),
-            secret_key=self.secret_input.text().strip(),
             two_step=self.two_step_radio.isChecked(),
         )
         mode = self._rf_mode()
@@ -444,6 +436,23 @@ class BenchWindow(QMainWindow):
         path = run.log_dir / f"slot{slot.slot_number}_{slot.com_port}.log"
         if path.exists():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _show_error_codes(self) -> None:
+        from stationapp.ui.dialogs.error_codes_dialog import ErrorCodesDialog
+
+        ErrorCodesDialog(self, highlight=self._last_error_code()).exec()
+
+    def _last_error_code(self) -> int | None:
+        """First MPCLI error number in the current run, to highlight it."""
+        import re
+
+        if self._run is None:
+            return None
+        for slot in self._run.slots.values():
+            match = re.search(r"MPCLI ERR (\d+)", slot.message or "")
+            if match:
+                return int(match.group(1))
+        return None
 
     def _open_results(self) -> None:
         self._ctx.results_dir.mkdir(parents=True, exist_ok=True)

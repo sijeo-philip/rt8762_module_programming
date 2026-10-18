@@ -18,7 +18,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from stationapp.domain.users import AccessError
+from stationapp.domain.users import AccessError, PasswordRequired
+from stationapp.drivers.qr_scanner import BADGE_FORMAT
+from stationapp.ui.widgets.scanner_input import ScannerLineEdit
 from stationapp.services.access import StationAccessService
 
 RED = "#991b1b"
@@ -59,11 +61,13 @@ class LoginPage(QWidget):
             self.mode_label.setStyleSheet(f"color: {GREY};")
         layout.addWidget(self.mode_label)
 
-        self.badge_input = QLineEdit()
+        # USB badge scanner (keyboard wedge): completes on its Enter
+        # suffix or when the scan burst ends.
+        self.badge_input = ScannerLineEdit(BADGE_FORMAT, settle_ms=150, idle_complete=True)
         self.badge_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.badge_input.setPlaceholderText("Scan your badge (Operators)")
+        self.badge_input.setPlaceholderText("Scan your badge")
         self.badge_input.setMinimumHeight(40)
-        self.badge_input.returnPressed.connect(self._badge_login)
+        self.badge_input.scanned.connect(self._badge_login)
         layout.addWidget(self.badge_input)
 
         divider = QLabel("or log in with your user ID")
@@ -74,6 +78,8 @@ class LoginPage(QWidget):
         form = QFormLayout()
         self.user_input = QLineEdit()
         self.user_input.setMinimumHeight(34)
+        # A scanner with an Enter suffix moves straight on to the password.
+        self.user_input.returnPressed.connect(self.password_input_focus)
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_input.setMinimumHeight(34)
@@ -111,11 +117,28 @@ class LoginPage(QWidget):
         self.password_input.clear()
         self._attempt(lambda: self._access.login(user_id, password))
 
-    def _badge_login(self) -> None:
-        badge = self.badge_input.text()
-        self.badge_input.clear()
-        if badge.strip():
-            self._attempt(lambda: self._access.login_with_badge(badge))
+    def password_input_focus(self) -> None:
+        self.password_input.setFocus()
+
+    def _badge_login(self, badge: str) -> None:
+        if not badge.strip():
+            return
+        try:
+            self._access.login_with_badge(badge)
+        except PasswordRequired as exc:
+            self.badge_input.forget_last_scan()
+            # Supervisor badge: identify by badge, confirm with password.
+            self.user_input.setText(exc.user_id)
+            self.password_input.clear()
+            self.password_input.setFocus()
+            self.error_label.setText(str(exc))
+            return
+        except (AccessError, ValueError) as exc:
+            # Let the same badge be scanned again straight away.
+            self.badge_input.forget_last_scan()
+            self.error_label.setText(str(exc))
+            return
+        self.reset()
 
     def _attempt(self, action) -> None:
         self.error_label.clear()

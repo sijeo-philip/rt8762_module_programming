@@ -230,12 +230,12 @@ class JigSlot:
         self.stock_mac_record.begin_programming()
         self.state = DeviceState.STOCK_PROGRAMMING
         
-    def complete_stock_programming(self, succeeded: bool) -> None:
+    def complete_stock_programming(self, succeeded: bool, reason: str | None = None) -> None:
         self._require_state(DeviceState.STOCK_PROGRAMMING)
         assert self.stock_mac_record is not None
         
         if not succeeded:
-            self.place_on_hold("Stock programming failed or its MAC outcome is uncertain")
+            self.place_on_hold("Stock programming failed or its MAC outcome is uncertain" + (f": {reason}" if reason else ""))
             return 
             
         self.stock_mac_record.mark_issued()
@@ -368,12 +368,12 @@ class JigSlot:
         self.pricol_mac_record.begin_programming()
         self.state = DeviceState.PRICOL_PROGRAMMING
         
-    def complete_pricol_programming(self, succeeded: bool) -> None:
+    def complete_pricol_programming(self, succeeded: bool, reason: str | None = None) -> None:
         self._require_state(DeviceState.PRICOL_PROGRAMMING)
         assert self.pricol_mac_record is not None
         
         if not succeeded:
-            self.place_on_hold("Pricol programming failed or its MAC outcome is uncertain")
+            self.place_on_hold("Pricol programming failed or its MAC outcome is uncertain" + (f": {reason}" if reason else ""))
             return 
             
         self.pricol_mac_record.mark_issued()

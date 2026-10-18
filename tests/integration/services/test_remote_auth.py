@@ -15,7 +15,7 @@ from stationapp.data.production_repository import SqlProductionStore
 from stationapp.domain.batch import ProgrammingMode
 from stationapp.domain.mac import MacPurpose
 from stationapp.domain.session import StationConfiguration
-from stationapp.domain.users import AuthenticationFailed, AuthorizationError, UserRole
+from stationapp.domain.users import AuthenticationFailed, AuthorizationError, PasswordRequired, UserRole
 from stationapp.drivers.lan.client import LanServerClient
 from stationapp.services.access import StationAccessService
 from stationapp.services.mac_cache import MacCacheService
@@ -84,8 +84,9 @@ def test_wrong_password_and_server_lockout(env):
 def test_supervisor_badge_is_refused_by_station(env):
     users = (TestUser("SUP9", "Badge Supervisor", "SUPERVISOR", "pw-12345", badge_id="SUPBADGE"),)
     auth = env["make_auth"](users=users)
-    with pytest.raises(AuthenticationFailed, match="Supervisors must log in with a password"):
+    with pytest.raises(PasswordRequired, match="Supervisor badge recognised") as raised:
         auth.authenticate_badge("SUPBADGE", purpose="test")
+    assert raised.value.user_id == "SUP9"
 
 
 @pytest.mark.integration

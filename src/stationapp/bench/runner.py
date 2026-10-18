@@ -2,7 +2,7 @@
 
 Qt-free so it can be tested and scripted. One worker per selected slot,
 as in production. Results go to a CSV (one row per slot per run) and to
-per-slot MPCLI logs with the secret key redacted.
+per-slot MPCLI logs.
 """
 
 from __future__ import annotations
@@ -49,8 +49,6 @@ class RfMode(str, Enum):
 class BenchSettings:
     mpcli_path: Path
     firmware: Path
-    product_id: str
-    secret_key: str
     baud: int = 1_000_000
     two_step: bool = True
     flash_timeout_s: float = 90.0
@@ -115,8 +113,6 @@ class MpCliBenchHardware:
         self._driver = MpCliDriver(runner or MpCliProcessRunner(Path(settings.mpcli_path)))
         self._profile = MpCliProgrammingProfile(
             image_packet=Path(settings.firmware),
-            product_id=settings.product_id,
-            secret_key=settings.secret_key,
             baud=settings.baud,
         )
 

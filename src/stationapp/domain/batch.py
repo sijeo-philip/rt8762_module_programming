@@ -289,7 +289,7 @@ class Batch:
         self.state = BatchState.STOCK_PROGRAMMING
             
     
-    def record_stock_programming(self, slot_number: int, *, succeeded: bool) -> None:
+    def record_stock_programming(self, slot_number: int, *, succeeded: bool, reason: str | None = None) -> None:
         """Record one independent Stock programming result."""
 
         self._require_state(BatchState.STOCK_PROGRAMMING)
@@ -299,7 +299,7 @@ class Batch:
 
         slot = self._get_slot(slot_number)
 
-        slot.complete_stock_programming(succeeded)
+        slot.complete_stock_programming(succeeded, reason)
 
         # Wait until all occupied slots have reported an outcome.
         if any(item.state is DeviceState.STOCK_PROGRAMMING for item in self.occupied_slots):
@@ -480,7 +480,7 @@ class Batch:
         self.state = BatchState.PRICOL_PROGRAMMING
             
     
-    def record_pricol_programming(self, slot_number: int, *, succeeded: bool) -> None:
+    def record_pricol_programming(self, slot_number: int, *, succeeded: bool, reason: str | None = None) -> None:
         """Record independent Pricol programming outcome."""
         self._require_state(BatchState.PRICOL_PROGRAMMING)
         if slot_number not in self.occupied_slot_numbers:
@@ -488,7 +488,7 @@ class Batch:
         slot = self._get_slot(slot_number)
         if slot.state is not DeviceState.PRICOL_PROGRAMMING:
             raise InvalidBatchTransition(f"Slot {slot_number} is not programming Pricol")
-        slot.complete_pricol_programming(succeeded)
+        slot.complete_pricol_programming(succeeded, reason)
         if any(item.state is DeviceState.PRICOL_PROGRAMMING for item in self.occupied_slots):
             return
         if any(item.state is DeviceState.PRICOL_PROGRAMMED for item in self.occupied_slots):

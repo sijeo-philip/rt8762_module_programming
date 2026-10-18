@@ -36,6 +36,7 @@ from stationapp.services.access import StationAccessService, UserAdministrationS
 from stationapp.services.golden_rig_configuration import GoldenRigConfigurationService
 from stationapp.services.jig_configuration import JigConfigurationService
 from stationapp.services.server_sync import SyncScheduler
+from stationapp.drivers.qr_scanner import ScanFormat
 
 logger = logging.getLogger(__name__)
 
@@ -448,6 +449,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         access=access,
         qr_claims=qr_claims,
         enabled_slots=lambda: production_settings.current().enabled_slots,
+        qr_format=ScanFormat(length=settings.qr_code_length, hex_only=settings.qr_hex_only),
     )
 
     return production, readiness, mac_cache
@@ -462,13 +464,7 @@ def _mpcli_programmer_factory(settings: Settings):
     def profile(image: Path) -> MpCliProgrammingProfile:
         if not Path(image).is_file():
             raise ValueError(f"Firmware image not found: {image}")
-        if not settings.mpcli_product_id or settings.mpcli_secret_key is None:
-            raise ValueError("MPCLI_PRODUCT_ID and MPCLI_SECRET_KEY must be configured")
-        return MpCliProgrammingProfile(
-            image_packet=Path(image),
-            product_id=settings.mpcli_product_id,
-            secret_key=settings.mpcli_secret_key.get_secret_value(),
-        )
+        return MpCliProgrammingProfile(image_packet=Path(image))
 
     def factory(stock: Path | None, pricol: Path | None) -> ProgrammingService:
         if stock is None:

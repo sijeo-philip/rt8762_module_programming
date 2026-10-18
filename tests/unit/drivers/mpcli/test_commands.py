@@ -34,8 +34,6 @@ def make_profile(
         image_packet=Path(
             r"C:\firmware\stock.bin"
         ),
-        product_id="11223344",
-        secret_key=VALID_KEY,
         reboot_after_programming=reboot,
     )
 
@@ -103,14 +101,9 @@ def test_flash_with_mac_command() -> None:
 
         "-x",
         "AA:BB:CC:DD:EE:01",
-
-        "-n",
-        "11223344",
-
-        "-k",
-        VALID_KEY,
         "-r",
     )
+    assert "-n" not in command and "-k" not in command
 
 
 def test_flash_can_omit_reboot() -> None:

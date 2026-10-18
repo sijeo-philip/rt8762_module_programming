@@ -128,14 +128,10 @@ def make_profiles():
 
     stock = MpCliProgrammingProfile(
         image_packet=Path("stock.bin"),
-        product_id="11223344",
-        secret_key=VALID_KEY,
     )
 
     pricol = MpCliProgrammingProfile(
         image_packet=Path("pricol.bin"),
-        product_id="11223344",
-        secret_key=VALID_KEY,
     )
 
     return stock, pricol

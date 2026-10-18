@@ -38,9 +38,9 @@ def profiles(tmp_path: Path):
     stock_image.write_bytes(b"stock-image")
     pricol_image.write_bytes(b"pricol-image")
 
-    stock = MpCliProgrammingProfile(image_packet=stock_image, product_id="11223344", secret_key=VALID_KEY)
+    stock = MpCliProgrammingProfile(image_packet=stock_image)
 
-    pricol = MpCliProgrammingProfile(image_packet=pricol_image, product_id="11223344", secret_key=VALID_KEY)
+    pricol = MpCliProgrammingProfile(image_packet=pricol_image)
     return stock, pricol
 
 

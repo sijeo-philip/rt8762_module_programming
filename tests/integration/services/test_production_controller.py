@@ -100,6 +100,8 @@ def test_partial_jig_with_independent_slot_failures(session_factory):
 
     # Failures stay on their own slots; unrelated slots continue.
     assert batch.slots[2].state is DeviceState.HOLD
+    # The HOLD reason carries the programmer's explanation, not just "failed".
+    assert "Simulated programming failure" in batch.slots[2].hold_reason
     assert batch.slots[4].state is DeviceState.HOLD
     assert batch.slots[1].pricol_mac is not None
     assert batch.slots[2].pricol_mac is None

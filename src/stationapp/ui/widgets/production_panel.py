@@ -43,7 +43,9 @@ from stationapp.services.readiness import ReadinessReport, StationReadinessServi
 from stationapp.services.access import StationAccessService
 from stationapp.ui.dialogs.access_dialogs import SupervisorAuthorizationDialog
 from stationapp.services.jig_status_projection import SlotView, SlotVisualStatus
+from stationapp.drivers.qr_scanner import MODULE_QR_FORMAT
 from stationapp.ui.widgets.jig_slot_grid import JigSlotGrid
+from stationapp.ui.widgets.scanner_input import ScannerLineEdit
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +159,7 @@ class ProductionPanel(QWidget):
     _access_changed = pyqtSignal()
     _settings_changed = pyqtSignal()
 
-    def __init__(self, *, controller: ProductionController, readiness: StationReadinessService, operations: OperationManager, jig_grid: JigSlotGrid, station_id: str, default_stock_firmware: Path | None = None, default_pricol_firmware: Path | None = None, simulation: bool = False, access: StationAccessService | None = None, settings_service=None, parent: QWidget | None = None) -> None:
+    def __init__(self, *, controller: ProductionController, readiness: StationReadinessService, operations: OperationManager, jig_grid: JigSlotGrid, station_id: str, default_stock_firmware: Path | None = None, default_pricol_firmware: Path | None = None, simulation: bool = False, access: StationAccessService | None = None, settings_service=None, scan_debounce_ms: int = 2000, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._controller = controller
         self._readiness = readiness
@@ -178,6 +180,7 @@ class ProductionPanel(QWidget):
         # the Operator view shows only the jig, the instruction and START.
         self._supervisor_view = True
         self._shut_down = False
+        self._scan_debounce_ms = scan_debounce_ms
         self._settings_service = settings_service
         self._browse_buttons: list[QPushButton] = []
 
@@ -259,11 +262,15 @@ class ProductionPanel(QWidget):
         self.primary_button.clicked.connect(self._on_primary)
         actions.addWidget(self.primary_button)
 
-        self.qr_input = QLineEdit()
+        # USB keyboard-wedge QR scanner: hex-only, last N characters,
+        # completes by itself when the scan burst ends.
+        self.qr_input = ScannerLineEdit(self._controller.qr_format or MODULE_QR_FORMAT, debounce_ms=self._scan_debounce_ms)
         self.qr_input.setPlaceholderText("Scanner disabled")
         self.qr_input.setMinimumHeight(44)
         self.qr_input.setStyleSheet("font-size: 16px;")
-        self.qr_input.returnPressed.connect(self._on_scan)
+        self.qr_input.scanned.connect(self._on_scan_code)
+        self.qr_input.rejected.connect(self._on_scan_rejected)
+        self.qr_input.repeated.connect(lambda code: logger.info("Repeated read of QR %s discarded", code))
         actions.addWidget(self.qr_input, 1)
 
         self.abort_button = QPushButton("Supervisor: abort batch")
@@ -552,14 +559,20 @@ class ProductionPanel(QWidget):
             return
         self.primary_button.setEnabled(False)
 
-    def _on_scan(self) -> None:
-        text = self.qr_input.text()
-        self.qr_input.clear()
+    def _on_scan_rejected(self, raw: str) -> None:
+        self._action_error(
+            f"Invalid QR data {raw.strip()!r}: expected {self.qr_input.scan_format.description}. Scan again."
+        )
+        QApplication.beep()
+
+    def _on_scan_code(self, text: str) -> None:
         if not text.strip():
             return
         try:
             slot = self._controller.scan_qr(text)
         except ProductionError as exc:
+            # A refused scan may be retried at once with the same label.
+            self.qr_input.forget_last_scan()
             self._action_error(str(exc))
             QApplication.beep()
             return

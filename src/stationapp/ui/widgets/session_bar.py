@@ -49,6 +49,11 @@ class SessionBar(QFrame):
             self.sync_label.hide()
             self.sync_button.hide()
 
+        self.error_codes_button = QPushButton("Error codes")
+        self.error_codes_button.setToolTip("What each MPCLI error number means and what to do")
+        self.error_codes_button.clicked.connect(self._show_error_codes)
+        layout.addWidget(self.error_codes_button)
+
         self.operator_button = QPushButton()
         self.operator_button.clicked.connect(self._toggle_operator)
         layout.addWidget(self.operator_button)
@@ -135,6 +140,11 @@ class SessionBar(QFrame):
         if self._sync is not None:
             self._sync.request("MANUAL")
             self.render()
+
+    def _show_error_codes(self) -> None:
+        from stationapp.ui.dialogs.error_codes_dialog import ErrorCodesDialog
+
+        ErrorCodesDialog(self).exec()
 
     def _toggle_operator(self) -> None:
         self._access.logout_current()

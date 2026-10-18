@@ -6,6 +6,7 @@ import time
 
 from stationapp.concurrency.cancellation import CancellationToken
 from stationapp.domain.mac import MacAddress
+from stationapp.drivers.mpcli.parsers import parse_programming_result
 from stationapp.drivers.mpcli.types import (
     MacReadbackOutcome,
     MacReadbackResult,
@@ -49,12 +50,18 @@ class SimulatedBenchHardware:
         return MacReadbackResult(MacReadbackOutcome.READ, process, mac, "Simulated readback")
 
     def _result(self, command, failed: bool, text: str) -> ProgrammingResult:
-        process = ProcessResult(tuple(command), ProcessOutcome.COMPLETED, 1 if failed else 0, "" if failed else text, "SIMULATED FAILURE" if failed else "", self._delay)
-        return ProgrammingResult(
-            ProgrammingOutcome.FAILED if failed else ProgrammingOutcome.SUCCESS,
-            process,
-            "Simulated programming failure" if failed else "Simulated programming complete",
-        )
+        # A failing port behaves like a module that does not answer:
+        # MPCLI exits with ERR 6 during loadfw, as seen on real jigs.
+        output = "\n".join((
+            "CMD[2] loadfw --autodetect fw",
+            "-ERR: 6-",
+            "recv hci evt Fail!",
+            "Detect FW Fail",
+        )) if failed else text
+        process = ProcessResult(tuple(command), ProcessOutcome.COMPLETED, 6 if failed else 0, output, "", self._delay)
+        if failed:
+            return parse_programming_result(process)
+        return ProgrammingResult(ProgrammingOutcome.SUCCESS, process, "Simulated programming complete")
 
     def _wait(self, token: CancellationToken, factor: float) -> None:
         deadline = time.monotonic() + self._delay * factor

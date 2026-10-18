@@ -106,8 +106,9 @@ class JigSlotCard(QFrame):
         self.stage_label.setText(view.stage)
         self.mac_label.setText(view.mac or "No MAC assigned")
         short_detail = view.detail
-        if len(short_detail) > 65:
-            short_detail = short_detail[:62] + "..."
+        # Errors carry an explanation; show most of it, all of it on hover.
+        if len(short_detail) > 160:
+            short_detail = short_detail[:157] + "..."
         self.detail_label.setText(short_detail)
         self.setToolTip(
             f"Slot {view.number}\n"

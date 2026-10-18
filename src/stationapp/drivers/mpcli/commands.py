@@ -39,15 +39,14 @@ def build_flash_with_mac_command( *, com_port: str, mac: MacAddress, profile: Mp
         selects baud,
         provides packed firmware image,
         writes the requested MAC,
-        provides the configured Product ID,
-        provides the configured Secret Key,
         optionally reboots after programming.
 
+    MPCLI's optional -n/-k pair is not sent; -x works without it.
     This builder performs no subprocess execution.
     """
     port = normalize_com_port(com_port)
     image = _path_text(profile.image_packet)
-    command: list[str] = ["-P",image, "-c", port, "-b", str(profile.baud), "-x", mac.colon, "-n", profile.product_id, "-k", profile.secret_key]
+    command: list[str] = ["-P", image, "-c", port, "-b", str(profile.baud), "-x", mac.colon]
     if profile.reboot_after_programming:
         command.append("-r")
     return tuple(command)
@@ -58,8 +57,6 @@ def build_flash_command( *, com_port: str, profile: MpCliProgrammingProfile) -> 
         selects COM port,
         selects baud,
         provides packed firmware image,
-        provides the configured Product ID,
-        provides the configured Secret Key,
         optionally reboots after programming.
         """
     port = normalize_com_port(com_port)

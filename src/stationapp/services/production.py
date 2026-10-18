@@ -46,6 +46,7 @@ from stationapp.domain.users import AccessError, AuthenticatedUser
 from stationapp.drivers.mpcli.driver import PHASE_FLASHING, PHASE_WRITING_MAC
 from stationapp.drivers.mpcli.types import IdentityOutcome
 from stationapp.drivers.pricol.functional import FunctionalTestOutcome
+from stationapp.drivers.qr_scanner import InvalidScan, ScanFormat
 from stationapp.services.qr_registry import DuplicateQrError, ModuleQrClaimService
 from stationapp.services.golden_rig_eligibility import GoldenRigEligibilityService
 from stationapp.services.golden_rig_result_processor import GoldenRigResultProcessor
@@ -192,7 +193,7 @@ _FINISHED_STATES = frozenset({
 class ProductionController:
     """Owns the active batch and executes the production workflow."""
 
-    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, qr_claims: ModuleQrClaimService | None = None, enabled_slots: Callable[[], tuple[int, ...]] | None = None) -> None:
+    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, qr_claims: ModuleQrClaimService | None = None, enabled_slots: Callable[[], tuple[int, ...]] | None = None, qr_format: ScanFormat | None = None) -> None:
         """programmer_factory builds a programmer for the firmware images
         chosen at batch setup; programmer is a fixed alternative."""
         if slot_count not in (4, 8):
@@ -210,6 +211,7 @@ class ProductionController:
         self._access = access
         self._qr_claims = qr_claims
         self._enabled_slots = enabled_slots
+        self._qr_format = qr_format
         self._commit_listeners: list[Callable[[Batch], None]] = []
         self._rf_tester = rf_tester
         self._functional = functional_tester
@@ -246,6 +248,10 @@ class ProductionController:
         """A batch exists and is not yet committed or aborted."""
         with self._lock:
             return self._batch is not None and self._batch.state not in _FINISHED_STATES
+
+    @property
+    def qr_format(self) -> ScanFormat | None:
+        return self._qr_format
 
     @property
     def slot_count(self) -> int:
@@ -451,6 +457,13 @@ class ProductionController:
                 self._require_access()
 
             qr = raw.strip()
+            if self._qr_format is not None:
+                # Same normalisation as the scanner field (hex only, last N),
+                # enforced here so every input path obeys it.
+                try:
+                    qr = self._qr_format.validate(raw)
+                except InvalidScan as exc:
+                    raise ProductionError(str(exc)) from exc
             if not self._qr_pattern.fullmatch(qr):
                 raise ProductionError(f"Invalid QR data: {qr!r}")
 
@@ -690,9 +703,9 @@ class ProductionController:
 
             with self._lock:
                 if stock:
-                    batch.record_stock_programming(number, succeeded=succeeded)
+                    batch.record_stock_programming(number, succeeded=succeeded, reason=None if succeeded else detail.get("message"))
                 else:
-                    batch.record_pricol_programming(number, succeeded=succeeded)
+                    batch.record_pricol_programming(number, succeeded=succeeded, reason=None if succeeded else detail.get("message"))
 
                 event_type = (
                     (EventType.STOCK_PROGRAMMED if succeeded else EventType.STOCK_PROGRAMMING_UNCERTAIN)

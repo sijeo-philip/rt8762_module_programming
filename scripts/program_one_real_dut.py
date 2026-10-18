@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 import time
 
@@ -20,16 +19,8 @@ def main() -> int:
     parser.add_argument("--port", required=True)
     parser.add_argument("--mac", required=True)
     args = parser.parse_args()
-    product_id = os.environ.get("STATION_MPCLI_PRODUCT_ID")
-    secret_key = os.environ.get("STATION_MPCLI_SECRET_KEY")
 
-    if not product_id:
-        raise RuntimeError("STATION_MPCLI_PRODUCT_ID is not set")
-
-    if not secret_key:
-        raise RuntimeError("STATION_MPCLI_SECRET_KEY is not set")
-
-    profile = MpCliProgrammingProfile(image_packet=args.image, product_id=product_id, secret_key=secret_key)
+    profile = MpCliProgrammingProfile(image_packet=args.image)
     runner = MpCliProcessRunner(args.exe)
     driver = MpCliDriver(runner)
     requested_mac = MacAddress.parse(args.mac)

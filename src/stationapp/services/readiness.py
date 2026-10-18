@@ -155,11 +155,6 @@ class StationReadinessService:
                     "No Pricol functional tester configured; use Stock only",
                 ))
 
-        if not settings.mpcli_product_id or settings.mpcli_secret_key is None:
-            checks.append(HealthCheck("MPCLI credentials", Severity.FAIL, "Set MPCLI_PRODUCT_ID and MPCLI_SECRET_KEY in .env"))
-        else:
-            checks.append(HealthCheck("MPCLI credentials", Severity.OK, "configured"))
-
         return checks
 
     def _mac_checks(self, mode: ProgrammingMode, occupied: tuple[int, ...] | None, top_up: bool) -> list[HealthCheck]:

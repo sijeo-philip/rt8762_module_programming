@@ -94,8 +94,6 @@ def test_flash_builds_expected_arguments(
 
     profile = MpCliProgrammingProfile(
         image_packet=image,
-        product_id="11223344",
-        secret_key=VALID_KEY,
     )
 
     runner = FakeRunner()
@@ -136,8 +134,6 @@ def test_missing_image_is_rejected(tmp_path: Path) -> None:
             tmp_path
             / "missing.bin"
         ),
-        product_id="11223344",
-        secret_key=VALID_KEY,
     )
 
     driver = MpCliDriver(
@@ -156,7 +152,7 @@ def test_missing_image_is_rejected(tmp_path: Path) -> None:
 def test_structured_programming_result(tmp_path: Path) -> None:
     image = tmp_path / "image.bin"
     image.write_bytes(b"stub")
-    profile = MpCliProgrammingProfile(image_packet=image, product_id="11223344", secret_key=VALID_KEY)
+    profile = MpCliProgrammingProfile(image_packet=image)
     runner = FakeRunner()
     driver = MpCliDriver(runner)
     result = driver.program(com_port="COM3", mac=MacAddress.parse("AABBCCDDEE01"), profile=profile, timeout_seconds=30.0)

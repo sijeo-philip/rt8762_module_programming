@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 
+from stationapp.drivers.mpcli.error_codes import describe
 from stationapp.domain.mac import (MacAddress)
 from stationapp.drivers.mpcli.types import (
     MacReadbackOutcome,
@@ -157,10 +158,7 @@ def parse_programming_result(process: ProcessResult) -> ProgrammingResult:
         return ProgrammingResult(
             outcome=ProgrammingOutcome.FAILED,
             process=process,
-            message=(
-                "MPCLI exited with return code "
-                f"{process.return_code}."
-            ),
+            message=describe(process.return_code, _combined_output(process)),
         )
 
     output = _combined_output(
@@ -230,10 +228,7 @@ def parse_mac_readback(process: ProcessResult) -> MacReadbackResult:
             outcome=MacReadbackOutcome.PROCESS_FAILED,
             process=process,
             mac=None,
-            message=(
-                "MPCLI read-back exited with return code "
-                f"{process.return_code}."
-            ),
+            message="Read-back failed: " + describe(process.return_code, _combined_output(process)),
         )
 
     output = _combined_output(process)

@@ -278,6 +278,7 @@ class MainWindow(QMainWindow):
             simulation=context.simulation,
             access=context.access,
             settings_service=context.production_settings,
+            scan_debounce_ms=context.settings.qr_debounce_ms,
             parent=self,
         )
         if context.recovered_macs:

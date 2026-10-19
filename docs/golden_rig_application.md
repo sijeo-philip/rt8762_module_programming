@@ -49,7 +49,7 @@ The protocol is platform-neutral. The reference implementation (section 10) targ
 
 - **Hardware:** a Windows 10/11 or Linux PC (Raspberry Pi 4/5 is fine), or an embedded controller with a TCP/IP stack and TLS.
 - **Bluetooth:** a BLE 4.2+ adapter positioned within reliable range of all 8 jig positions. One adapter is enough; see section 8 on concurrency.
-- **Network:** wired Ethernet on the production LAN with a **fixed IP address** or a stable DNS name. Stations bind to the rig by host and port.
+- **Network:** wired Ethernet on the production LAN. Stations bind to the rig by **mDNS name** (recommended, e.g. `golden-rig-01.local`), DNS name or IP address, plus port. The rig must answer mDNS queries for its name (Avahi on Linux; built in on Windows 10+ and macOS), including one-shot queries sent from a non-5353 source port (RFC 6762 section 6.7), because stations fall back to such a query when the PC cannot resolve `.local` names itself. With an mDNS name, the rig's IP may change (DHCP) without re-binding.
 - **Clock:** time synchronized by NTP, so logs line up with station records.
 - **Software (reference):** Python 3.11+, the standard-library `asyncio` and `ssl` modules, and [`bleak`](https://github.com/hbldh/bleak) 0.22+ for BLE.
 
@@ -78,7 +78,7 @@ The station trusts the rig only if all of the following hold:
 Consequences:
 
 - **Replacing or renewing the rig certificate breaks the binding.** A Supervisor must re-approve the rig on every station. Plan renewals; use a long validity period (e.g. 3 years).
-- **Changing the rig's IP address or DNS name** requires a new certificate with a matching SAN, and therefore re-approval.
+- **The certificate must cover the name or address stations use.** Stations connect to the resolved IP but verify the certificate against the name the Supervisor bound, so a rig bound as `golden-rig-01.local` needs `DNS:golden-rig-01.local` in its SAN. When bound by mDNS name, the IP may change freely. Changing the **name** (or binding by an IP not in the SAN) requires a new certificate and re-approval.
 - If stations restrict approved rigs with `GOLDEN_RIG_INVENTORY`, the CN must be listed there.
 
 ### 3.3 Creating the CA and rig certificate (OpenSSL)

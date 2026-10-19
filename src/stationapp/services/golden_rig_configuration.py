@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 
 from stationapp.domain.audit import AuditRecord
+from stationapp.domain.golden_rig_binding import normalise_rig_host
+from stationapp.infrastructure.golden_rig.resolver import DEFAULT_RESOLVER, HostResolutionError, HostResolver
 from stationapp.domain.golden_rig_binding import GoldenRigBinding
 from stationapp.domain.session import StationConfiguration
 from stationapp.domain.users import AuthorizationError
@@ -47,15 +49,15 @@ class RigEndpoint:
     port: int
 
     def __post_init__(self) -> None:
-        if not self.host.strip():
-            raise ValueError("Golden Rig host is required")
         if isinstance(self.port, bool) or not 1 <= int(self.port) <= 65535:
             raise ValueError("Golden Rig port must be 1-65535")
-        object.__setattr__(self, "host", self.host.strip())
+        # IPv4, IPv6, DNS or mDNS (.local) name.
+        object.__setattr__(self, "host", normalise_rig_host(self.host))
         object.__setattr__(self, "port", int(self.port))
 
     def __str__(self) -> str:
-        return f"{self.host}:{self.port}"
+        host = f"[{self.host}]" if ":" in self.host else self.host
+        return f"{host}:{self.port}"
 
 
 def parse_endpoints(spec: str) -> tuple[RigEndpoint, ...]:
@@ -79,6 +81,13 @@ class GoldenRigIdentity:
     issuer: str
     valid_until: str
     in_inventory: bool
+    address: str | None = None       # IP the name resolved to
+
+    @property
+    def endpoint_label(self) -> str:
+        if self.address and self.address != self.endpoint.host:
+            return f"{self.endpoint} ({self.address})"
+        return str(self.endpoint)
 
     @property
     def approvable(self) -> bool:
@@ -88,7 +97,8 @@ class GoldenRigIdentity:
 class GoldenRigIdentityProbe:
     """Request a rig's authenticated identity over TLS."""
 
-    def __init__(self, *, ca_certificate: Path, inventory: Iterable[str] = (), timeout: float = 3.0) -> None:
+    def __init__(self, *, ca_certificate: Path, inventory: Iterable[str] = (), timeout: float = 3.0, resolver: HostResolver = DEFAULT_RESOLVER) -> None:
+        self._resolver = resolver
         self._ca_certificate = Path(ca_certificate)
         self._inventory = frozenset(item.strip().upper() for item in inventory if item.strip())
         self._timeout = timeout
@@ -107,10 +117,14 @@ class GoldenRigIdentityProbe:
         context.minimum_version = ssl.TLSVersion.TLSv1_2
 
         try:
-            with socket.create_connection((endpoint.host, endpoint.port), timeout=self._timeout) as raw:
+            with self._resolver.connect(endpoint.host, endpoint.port, timeout=self._timeout) as raw:
+                address = raw.getpeername()[0]
+                # Certificate checked against the name entered, not the IP.
                 with context.wrap_socket(raw, server_hostname=endpoint.host) as connection:
                     details = connection.getpeercert()
                     der = connection.getpeercert(binary_form=True)
+        except HostResolutionError as exc:
+            raise GoldenRigIdentityError(str(exc)) from exc
         except ssl.SSLCertVerificationError as exc:
             raise GoldenRigIdentityError(
                 f"{endpoint} presented a certificate that is not trusted by this station: {exc.verify_message}"
@@ -134,6 +148,7 @@ class GoldenRigIdentityProbe:
             issuer=_name_field(details.get("issuer", ()), "commonName") or "?",
             valid_until=str(details.get("notAfter", "?")),
             in_inventory=not self._inventory or rig_id.upper() in self._inventory,
+            address=address,
         )
 
 

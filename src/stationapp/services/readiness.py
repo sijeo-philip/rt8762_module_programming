@@ -17,6 +17,7 @@ from pathlib import Path
 from stationapp.config import Settings
 from stationapp.domain.batch import ProgrammingMode
 from stationapp.domain.mac import MacPurpose
+from stationapp.infrastructure.golden_rig.resolver import DEFAULT_RESOLVER
 from stationapp.services.health import HealthCheck, Severity
 from stationapp.services.mac_cache import MacCacheService
 from stationapp.services.production import SlotPort
@@ -225,7 +226,7 @@ def approved_golden_rig_check(binding_service, ca_certificate: Path, *, probe_ti
             return HealthCheck("Golden Rig", Severity.FAIL, f"CA certificate missing: {ca_certificate}")
 
         try:
-            with socket.create_connection((binding.host, binding.port), timeout=probe_timeout):
+            with DEFAULT_RESOLVER.connect(binding.host, binding.port, timeout=probe_timeout):
                 pass
         except OSError as exc:
             return HealthCheck(

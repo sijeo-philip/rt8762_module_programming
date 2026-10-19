@@ -428,8 +428,13 @@ class GoldenRigPage(_Page):
         bind_layout.addWidget(self.discovery_table)
 
         entry = QHBoxLayout()
-        entry.addWidget(QLabel("Host / IP"))
+        entry.addWidget(QLabel("mDNS name or IP"))
         self.host_input = QLineEdit()
+        self.host_input.setPlaceholderText("e.g. golden-rig-01.local or 192.168.10.50")
+        self.host_input.setToolTip(
+            "The Golden Rig's mDNS name (recommended: survives IP changes) or its IP address. "
+            "It must match a name/IP in the rig's certificate."
+        )
         entry.addWidget(self.host_input, 1)
         entry.addWidget(QLabel("Port"))
         self.port_input = QSpinBox()
@@ -533,7 +538,7 @@ class GoldenRigPage(_Page):
             if identity is None:
                 rows.append([str(result.endpoint), "-", "-", "-", result.error or "failed"])
             else:
-                rows.append([str(result.endpoint), identity.rig_id, "yes" if identity.in_inventory else "NO", _short(identity.certificate_sha256), "trusted"])
+                rows.append([identity.endpoint_label, identity.rig_id, "yes" if identity.in_inventory else "NO", _short(identity.certificate_sha256), "trusted"])
         _fill(self.discovery_table, rows)
         self.notice(f"{len(results)} candidate(s) probed." if results else "No candidate rigs configured; enter a host/IP.")
 
@@ -561,7 +566,7 @@ class GoldenRigPage(_Page):
         self._identity = identity
         inventory = "in approved inventory" if identity.in_inventory else "NOT in approved inventory"
         self.identity_label.setText(
-            f"<b>{identity.rig_id}</b> at {identity.endpoint} - certificate trusted by station CA "
+            f"<b>{identity.rig_id}</b> at {identity.endpoint_label} - certificate trusted by station CA "
             f"({identity.issuer}), valid until {identity.valid_until}, {inventory}.<br>"
             f"SHA-256: {identity.certificate_sha256}"
         )

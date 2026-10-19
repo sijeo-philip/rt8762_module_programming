@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from stationapp.domain.golden_rig_binding import GoldenRigBinding
+from stationapp.infrastructure.golden_rig.resolver import DEFAULT_RESOLVER, HostResolutionError, HostResolver
 
 from stationapp.infrastructure.golden_rig.transport import (
     FRAME_HEADER_SIZE,
@@ -42,6 +43,9 @@ class SecureGoldenRigTransport:
     io_timeout: float = 10.0
     operation_timeout: float = 30.0
     poll_interval: float = 0.2
+    # Resolves IP / DNS / mDNS (.local) names; the certificate is still
+    # verified against binding.host (the name), not the resolved IP.
+    resolver: HostResolver = DEFAULT_RESOLVER
 
     def __post_init__(self) -> None:
         for value in (
@@ -64,7 +68,7 @@ class SecureGoldenRigTransport:
         context.minimum_version = ssl.TLSVersion.TLSv1_2
 
         try:
-            with socket.create_connection((self.binding.host, self.binding.port),
+            with self.resolver.connect(self.binding.host, self.binding.port,
                 timeout=min(
                     self.connect_timeout,
                     self._remaining(deadline),
@@ -89,6 +93,9 @@ class SecureGoldenRigTransport:
                     if not 0 < length <= MAX_FRAME_SIZE:
                         raise GoldenRigFrameError("Invalid Golden Rig response length")
                     return self._read_exact(connection, length, cancel_event, deadline)
+
+        except HostResolutionError as exc:
+            raise GoldenRigConnectionError(str(exc)) from exc
 
         except ssl.SSLCertVerificationError as exc:
             raise GoldenRigAuthenticationError("Golden Rig TLS certificate rejected") from exc

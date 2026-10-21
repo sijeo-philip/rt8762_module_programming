@@ -582,7 +582,6 @@ class ProductionController:
         with self._lock:
             confirm = {
                 BatchState.STOCK_MACS_RESERVED: batch.request_stock_program_mode,
-                BatchState.STOCK_READBACK_VERIFIED: batch.request_stock_rf_mode,
                 BatchState.PRICOL_MACS_RESERVED: batch.request_pricol_program_mode,
                 BatchState.PRICOL_READBACK_VERIFIED: batch.request_functional_test_mode,
                 BatchState.AWAITING_FUNCTIONAL_TEST_MODE: batch.confirm_functional_test_mode,
@@ -602,7 +601,12 @@ class ProductionController:
                     if batch.slots[number].state is DeviceState.STOCK_PROGRAMMING
                 ])
 
-            elif state is BatchState.AWAITING_STOCK_RF_MODE:
+            elif state in (BatchState.STOCK_READBACK_VERIFIED, BatchState.AWAITING_STOCK_RF_MODE):
+                # RUN RF TEST: the operator has reset the modules from boot
+                # (download) mode into application mode. The RF test never
+                # starts without this press.
+                if state is BatchState.STOCK_READBACK_VERIFIED:
+                    batch.request_stock_rf_mode()
                 batch.begin_stock_rf_test()
                 self._store.save(batch)
 

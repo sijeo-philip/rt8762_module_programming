@@ -92,10 +92,20 @@ class BenchRun:
     csv_path: Path | None = None
     log_dir: Path | None = None
     cancelled: bool = False
+    rf_error: str | None = None      # last Golden Rig failure; RF can be retried
 
     @property
     def awaiting_manual_rf(self) -> list[SlotRun]:
         return [slot for slot in self.slots.values() if slot.rf == "AWAITING OPERATOR"]
+
+    @property
+    def awaiting_rig_rf(self) -> list[SlotRun]:
+        """Programmed slots waiting for the operator to reset them and press RUN RF TEST."""
+        return [slot for slot in self.slots.values() if slot.rf == "AWAITING RESET"]
+
+    @property
+    def rf_pending(self) -> bool:
+        return bool(self.awaiting_manual_rf or self.awaiting_rig_rf)
 
 
 class BenchHardware(Protocol):
@@ -203,6 +213,65 @@ class StockBenchRunner:
                 slot.rf_detail = "operator confirmed connect/disconnect" if passed else "operator reported failure"
         return self._finish(run, notify)
 
+    def run_golden_rig_rf(self, run: BenchRun, *, on_update: Listener | None = None, token: CancellationToken | None = None) -> BenchRun:
+        """Golden Rig RF test, started by the operator once the modules are
+        reset from boot (download) mode into application mode.
+
+        If the rig cannot be used (unreachable, busy, ...) the slots stay
+        waiting and run.rf_error says why, so the operator can retry.
+        """
+        notify = on_update or (lambda _slot: None)
+        token = token or CancellationToken()
+        waiting = run.awaiting_rig_rf
+        if not waiting:
+            raise ValueError("No module is waiting for the RF test")
+        if self._rf_tester is None:
+            raise ValueError("No approved Golden Rig is available for RF testing")
+
+        run.rf_error = None
+        for slot in waiting:
+            slot.stage, slot.progress = "Golden Rig RF test", 95
+            notify(replace(slot, log=[]))
+        try:
+            report = self._rf_tester.run_test(
+                batch_id=f"BENCH-{run.run_id}",
+                station_id=self._station_id,
+                jig_id=self._jig_id,
+                targets=tuple(GoldenRigTarget(slot.slot_number, MacAddress.parse(slot.mac)) for slot in waiting),
+                cancel_event=token.event,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported; the operator may retry
+            logger.exception("Golden Rig RF test failed")
+            run.rf_error = f"Golden Rig: {exc}"
+            for slot in waiting:
+                slot.stage, slot.progress = "RF not run - retry or finish without RF", 90
+                slot.rf_detail = run.rf_error
+                notify(replace(slot, log=[]))
+            return run
+
+        for result in report.response.results:
+            slot = run.slots[result.slot_number]
+            slot.rf = result.outcome.value
+            parts = [f"connected={result.connected}", f"disconnected={result.disconnected}"]
+            if result.reported_mac:
+                parts.append(f"reported={result.reported_mac}")
+            if result.error_code:
+                parts.append(result.error_code)
+            if result.detail:
+                parts.append(result.detail)
+            slot.rf_detail = ", ".join(parts)
+        for slot in run.awaiting_rig_rf:          # rig returned no result for it
+            slot.rf, slot.rf_detail = "ERROR", "no result from the Golden Rig"
+        return self._finish(run, notify)
+
+    def finish_without_rf(self, run: BenchRun, *, on_update: Listener | None = None) -> BenchRun:
+        """Operator ends a run that is waiting for RF without testing."""
+        notify = on_update or (lambda _slot: None)
+        for slot in run.awaiting_rig_rf + run.awaiting_manual_rf:
+            slot.rf, slot.rf_detail = "NOT TESTED", "operator finished without RF"
+        run.rf_error = None
+        return self._finish(run, notify)
+
     # ------------------------------------------------------------------
 
     def _program_slot(self, hardware: BenchHardware, settings: BenchSettings, slot: SlotRun, token: CancellationToken, notify: Listener) -> None:
@@ -278,43 +347,21 @@ class StockBenchRunner:
                 notify(replace(slot, log=[]))
             return
 
+        # Golden Rig: the modules are still in boot (download) mode after
+        # programming. The operator resets them into application mode and
+        # then starts the RF test (run_golden_rig_rf).
         for slot in verified:
-            slot.stage = "Golden Rig RF test"
+            slot.rf, slot.stage = "AWAITING RESET", "Reset to application mode, then RUN RF TEST"
             notify(replace(slot, log=[]))
-        try:
-            report = self._rf_tester.run_test(
-                batch_id=f"BENCH-{run.run_id}",
-                station_id=self._station_id,
-                jig_id=self._jig_id,
-                targets=tuple(GoldenRigTarget(slot.slot_number, MacAddress.parse(slot.mac)) for slot in verified),
-                cancel_event=token.event,
-            )
-        except Exception as exc:  # noqa: BLE001 - rig problems are reported, not fatal
-            logger.exception("Golden Rig RF test failed")
-            for slot in verified:
-                slot.rf, slot.rf_detail = "ERROR", f"Golden Rig: {exc}"
-            return
-
-        for result in report.response.results:
-            slot = run.slots[result.slot_number]
-            slot.rf = result.outcome.value
-            parts = [f"connected={result.connected}", f"disconnected={result.disconnected}"]
-            if result.reported_mac:
-                parts.append(f"reported={result.reported_mac}")
-            if result.error_code:
-                parts.append(result.error_code)
-            if result.detail:
-                parts.append(result.detail)
-            slot.rf_detail = ", ".join(parts)
 
     def _finish(self, run: BenchRun, notify: Listener) -> BenchRun:
         for slot in run.slots.values():
             slot.verdict = _verdict(slot, run)
-            if not run.awaiting_manual_rf:
+            if not run.rf_pending:
                 slot.stage, slot.progress = "Done", 100
             notify(replace(slot, log=[]))
 
-        if not run.awaiting_manual_rf:
+        if not run.rf_pending:
             run.finished_at = datetime.now()
             self._write_results(run)
         return run
@@ -367,7 +414,7 @@ def _verdict(slot: SlotRun, run: BenchRun) -> str:
         return "PASS"
     if slot.rf in {"SKIPPED", "NOT TESTED"}:
         return "PASS (no RF)"
-    if slot.rf == "AWAITING OPERATOR":
+    if slot.rf in {"AWAITING OPERATOR", "AWAITING RESET"}:
         return "RF PENDING"
     return f"RF {slot.rf}"
 

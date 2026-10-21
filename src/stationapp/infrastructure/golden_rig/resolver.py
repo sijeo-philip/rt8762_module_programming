@@ -156,8 +156,12 @@ class HostResolver:
 
     def resolve(self, host: str, port: int) -> list[str]:
         """IP addresses to try for host, best first."""
+        return self.lookup(host, port)[0]
+
+    def lookup(self, host: str, port: int) -> tuple[list[str], str]:
+        """(addresses, how they were found): 'IP address', 'system resolver' or 'mDNS'."""
         try:
-            return [str(ipaddress.ip_address(host.strip("[]")))]
+            return [str(ipaddress.ip_address(host.strip("[]")))], "IP address"
         except ValueError:
             pass
 
@@ -172,7 +176,7 @@ class HostResolver:
             if addresses:
                 # IPv4 first: link-local IPv6 (fe80::) results often need an
                 # interface scope to connect, rigs are normally on IPv4.
-                return sorted(addresses, key=lambda item: ":" in item)
+                return sorted(addresses, key=lambda item: ":" in item), "system resolver"
         except (socket.gaierror, UnicodeError, OSError) as exc:
             system_error = exc
 
@@ -184,7 +188,7 @@ class HostResolver:
                 addresses = []
             if addresses:
                 logger.info("Resolved %s via mDNS: %s", host, ", ".join(addresses))
-                return addresses
+                return addresses, "mDNS"
             raise HostResolutionError(
                 f"Cannot resolve {host}: no answer from the system resolver or mDNS. "
                 "Check the rig is powered and on this network, and that UDP port 5353 is not blocked."

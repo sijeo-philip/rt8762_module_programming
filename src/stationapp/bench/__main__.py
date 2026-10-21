@@ -36,9 +36,9 @@ def _settings():
 
 
 def _golden_rig(settings):
-    """RF tester for the station's approved Golden Rig, if any."""
+    """RF tester for the station's approved Golden Rig, if any, and that binding."""
     if settings is None:
-        return None, "no station configuration"
+        return None, "no station configuration", None
     try:
         from stationapp.infrastructure.golden_rig.sqlite_binding_store import SqliteGoldenRigBindingStore
         from stationapp.services.golden_rig_authorization import GoldenRigAuthorizationService
@@ -48,15 +48,30 @@ def _golden_rig(settings):
         store = SqliteGoldenRigBindingStore(settings.database_url)
         binding = store.load(settings.station_id)
         if binding is None or not binding.enabled:
-            return None, "none approved - bind it in the station app"
+            return None, "none approved - bind it in the station app", None
         if not Path(settings.golden_rig_ca_certificate).is_file():
-            return None, f"CA certificate missing: {settings.golden_rig_ca_certificate}"
+            return None, f"CA certificate missing: {settings.golden_rig_ca_certificate}", binding
         bindings = SecureGoldenRigBindingService(settings.station_id, store)
         tester = GoldenRigService(GoldenRigAuthorizationService(bindings, settings.golden_rig_ca_certificate))
-        return tester, f"{binding.rig_id} at {binding.host}:{binding.port}"
+        return tester, f"{binding.rig_id} at {binding.host}:{binding.port}", binding
     except Exception as exc:  # noqa: BLE001 - e.g. database not yet created
         logger.warning("Golden Rig unavailable for bench: %s", exc)
-        return None, "not available"
+        return None, "not available", None
+
+
+def _default_rig_host(settings, binding) -> str:
+    """Approved rig, else the first discovery candidate, else the usual name."""
+    if binding is not None:
+        return binding.host
+    try:
+        from stationapp.services.golden_rig_configuration import parse_endpoints
+
+        candidates = parse_endpoints(getattr(settings, "golden_rig_candidates", "") or "")
+        if candidates:
+            return candidates[0].host
+    except Exception:  # noqa: BLE001 - only a default for the input field
+        pass
+    return "golden-rig-01.local"
 
 
 def _ports():
@@ -108,6 +123,9 @@ def main(argv: list[str] | None = None) -> int:
         fail = frozenset(port.strip().upper() for port in args.fail_ports.split(",") if port.strip())
         hardware_factory = lambda _settings: SimulatedBenchHardware(delay_s=0.6, fail_ports=fail)  # noqa: E731
         rf_tester, rig_status = SimulatedGoldenRig(delay_seconds=0.5, failures=frozenset()), "simulated"
+        from stationapp.services.golden_rig_check import simulated_rig_check
+
+        rig_check, rig_address, rig_host = simulated_rig_check, ("golden-rig-01.local", 8762), "golden-rig-01.local"
         port_lister = lambda: [(f"COM{100 + n}", "simulated") for n in range(1, jig_positions + 1)]  # noqa: E731
         slot_ports = {n: f"COM{100 + n}" for n in range(1, jig_positions + 1)}
         import tempfile
@@ -116,7 +134,13 @@ def main(argv: list[str] | None = None) -> int:
         placeholder.write_bytes(b"SIMULATED STOCK FIRMWARE")
     else:
         hardware_factory = MpCliBenchHardware
-        rf_tester, rig_status = _golden_rig(settings)
+        rf_tester, rig_status, binding = _golden_rig(settings)
+        from stationapp.services.golden_rig_check import GoldenRigConnectionCheck
+
+        ca = Path(settings.golden_rig_ca_certificate) if settings else Path("config/certificates/golden_rig_ca.pem")
+        rig_check = GoldenRigConnectionCheck(ca_certificate=ca, binding=lambda: binding).check
+        rig_address = (binding.host, binding.port) if binding is not None and binding.enabled else None
+        rig_host = _default_rig_host(settings, binding)
         port_lister = _ports
         slot_ports = _bound_ports(settings)
 
@@ -136,6 +160,9 @@ def main(argv: list[str] | None = None) -> int:
         mpcli_path=Path(settings.mpcli_path) if settings else None,
         firmware=placeholder if args.simulate else (settings.stock_firmware_path if settings else None),
         golden_rig_status=rig_status,
+        rig_check=rig_check,
+        rig_address=rig_address,
+        default_rig_host=rig_host,
         port_lister=port_lister,
         slot_ports=slot_ports,
         simulation=args.simulate,

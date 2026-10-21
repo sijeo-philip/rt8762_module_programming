@@ -371,3 +371,33 @@ def test_pricol_functional_test_over_uart_records_evidence(session_factory):
     assert app[1]["passed"] is True and app[1]["response"].strip() == "PRICOLAPP"
     assert app[2]["passed"] is False and app[2]["response"].startswith("BOOTLOADER ERROR")
     assert app[3]["passed"] is None and app[3]["com_port"] == "COM13"
+
+
+class CountingRig:
+    def __init__(self) -> None:
+        self.calls = 0
+        self._real = SimulatedGoldenRig(delay_seconds=0, failures=frozenset())
+
+    def run_test(self, **kwargs):
+        self.calls += 1
+        return self._real.run_test(**kwargs)
+
+
+@pytest.mark.integration
+def test_rf_test_starts_only_when_operator_presses_run_rf_test(session_factory):
+    rig = CountingRig()
+    controller = make_controller(session_factory, rf_tester=rig)
+    controller.start_batch(occupied=(1, 2), ports=ports(1, 2), mode=ProgrammingMode.STOCK_ONLY)
+
+    controller.advance()                      # confirm program mode
+    controller.advance()                      # program + read back
+    workflow = controller.snapshot().workflow
+    assert controller.batch.state is BatchState.STOCK_READBACK_VERIFIED
+    assert workflow.headline == "RESET MODULES FOR RF TEST"
+    assert workflow.button_label == "RUN RF TEST"
+    assert "application mode" in workflow.instruction
+    assert rig.calls == 0                     # waiting for the operator
+
+    controller.advance()                      # RUN RF TEST (one press)
+    assert rig.calls == 1
+    assert controller.batch.state is BatchState.QR_SCANNING

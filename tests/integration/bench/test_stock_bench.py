@@ -71,8 +71,14 @@ def test_readback_mismatch_fails_slot(bench, monkeypatch):
 def test_golden_rig_rf_only_for_verified_slots(bench, monkeypatch):
     monkeypatch.setenv("STUB_MPCLI_FAIL_PORTS", "COM12")
     rig = SimulatedGoldenRig(delay_seconds=0, failures=parse_failures("rf:3"))
-    run = bench["make"](rig).run(bench["settings"], {1: "COM11", 2: "COM12", 3: "COM13"}, RfMode.GOLDEN_RIG)
+    runner = bench["make"](rig)
+    run = runner.run(bench["settings"], {1: "COM11", 2: "COM12", 3: "COM13"}, RfMode.GOLDEN_RIG)
 
+    # Programming done; RF waits for the operator to reset the modules.
+    assert [slot.slot_number for slot in run.awaiting_rig_rf] == [1, 3]
+    assert run.csv_path is None and run.slots[1].verdict == "RF PENDING"
+
+    run = runner.run_golden_rig_rf(run)
     assert run.slots[1].rf == "PASS" and run.slots[1].verdict == "PASS"
     assert run.slots[2].rf == "NOT TESTED"
     assert run.slots[3].rf == "FAIL" and "CONNECT_FAILED" in run.slots[3].rf_detail
@@ -118,3 +124,21 @@ def test_rejects_bad_input(bench):
         bench["pool"].set_range("01:00:00:00:00:00", "01:00:00:00:00:05")
     with pytest.raises(MacRangeError, match="exhausted"):
         bench["pool"].allocate(100)
+
+
+@pytest.mark.integration
+def test_unreachable_rig_keeps_modules_waiting_for_retry(bench):
+    class DownRig:
+        def run_test(self, **kwargs):
+            raise ConnectionError("rig unreachable")
+
+    runner = bench["make"](DownRig())
+    run = runner.run(bench["settings"], {1: "COM11"}, RfMode.GOLDEN_RIG)
+    run = runner.run_golden_rig_rf(run)
+
+    assert "rig unreachable" in run.rf_error
+    assert run.awaiting_rig_rf and run.csv_path is None      # can retry
+
+    run = runner.finish_without_rf(run)
+    assert run.slots[1].rf == "NOT TESTED" and run.slots[1].verdict == "PASS (no RF)"
+    assert run.csv_path.exists()

@@ -169,35 +169,23 @@ class WorkflowService:
                 ),
             )
 
-        if state is BatchState.STOCK_READBACK_VERIFIED:
+        if state in (BatchState.STOCK_READBACK_VERIFIED, BatchState.AWAITING_STOCK_RF_MODE):
+            # Modules are still in boot (download) mode after programming;
+            # the RF test needs them running the application.
             return OperatorWorkflow(
                 batch_id=batch.batch_id,
                 batch_state=state,
                 action=(
                     OperatorAction.CHANGE_TO_STOCK_RF_MODE
                 ),
-                headline="PREPARE FOR RF TEST",
+                headline="RESET MODULES FOR RF TEST",
                 instruction=(
-                    "Stock MAC readback verification passed. "
-                    "Set the jig for Golden Module Rig "
-                    "RF verification."
-                ),
-                allow_start_button=True
-            )
-
-        if state is BatchState.AWAITING_STOCK_RF_MODE:
-            return OperatorWorkflow(
-                batch_id=batch.batch_id,
-                batch_state=state,
-                action=(
-                    OperatorAction.CHANGE_TO_STOCK_RF_MODE
-                ),
-                headline="RF TEST MODE",
-                instruction=(
-                    "Complete the indicated setup, "
-                    "then press CONTINUE."
+                    "Programming and MAC readback passed. Switch every "
+                    "module from boot mode to application mode and reset "
+                    "it, then press RUN RF TEST."
                 ),
                 allow_start_button=True,
+                button_label="RUN RF TEST",
             )
 
         if state is BatchState.STOCK_RF_TESTING:

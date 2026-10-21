@@ -37,6 +37,7 @@ Each step says who does it:
   - [C9. End of shift (Supervisor)](#c9-end-of-shift-supervisor)
 - [D. Problems and what to do](#d-problems-and-what-to-do)
 - [E. Checklists](#e-checklists)
+- [F. Bench tool: test the whole flow without the LAN server](#f-bench-tool-test-the-whole-flow-without-the-lan-server)
 
 ---
 
@@ -405,14 +406,18 @@ The Operator screen shows a large coloured **headline**, an **instruction** unde
 
 ### Pricol programming and functional test (only in Stock + Pricol mode)
 
+Each of these steps needs you to switch or reset the modules by hand. Nothing starts until you press the button.
+
 | Headline | What you do |
 |---|---|
-| **PREPARE FOR FINAL PROGRAMMING** / **FINAL PROGRAM MODE** | Set the jig for Pricol programming, then press **CONTINUE**. |
-| **FINAL PROGRAMMING**, **VERIFYING MAC ADDRESSES** | Wait. |
-| **PREPARE FOR FUNCTIONAL TEST** / **FUNCTIONAL TEST MODE** | Set the jig for the functional test, then press **CONTINUE**. |
-| **RESET MODULES** (1st time) | Reset all modules, then press **RESET DONE - RUN APP TEST**. |
-| **RESET MODULES** (2nd time) | Reset all modules again, then press **RESET DONE - RUN DFU TEST**. |
-| **TESTS COMPLETE** | Wait. |
+| **SWITCH MODULES TO BOOT MODE** | After the RF test the modules are running the application. Switch **every** module back to **boot (download) mode** and **reset** it, then press **PROGRAM PRICOL FIRMWARE**. |
+| **FINAL PROGRAMMING**, **VERIFYING MAC ADDRESSES** | Wait. The Pricol firmware and Pricol MAC are written and read back. **Do not remove modules.** |
+| **SWITCH MODULES TO APPLICATION MODE** | Switch **every** module from boot mode to **application mode** and **power-cycle** it (switch its power off and on), then press **RUN APP TEST**. The station sends *PRICOLAPP* to each module. |
+| **RUNNING APPLICATION TEST** | Wait. |
+| **RESET MODULES** | **Reset** all modules again, then press **RUN DFU TEST**. The station sends *PRICOLDFU* to each module. |
+| **RUNNING DFU TEST**, **TESTS COMPLETE** | Wait. |
+
+> If you press a button before switching or resetting the modules, those modules fail that step and cannot be retested in the same batch. Always switch or reset first, then press the button.
 
 ### QR scan and finish
 
@@ -496,6 +501,7 @@ Use the table in [B3](#b3-changes-to-the-rig-that-need-re-approval) to decide wh
 | **JIG NOT READY** (Operator screen) | A slot or the jig is not detected. | Supervisor checks [C3](#c3-bind-jig-slots-to-com-ports-supervisor) and [C6](#c6-start-of-every-shift--open-the-session-supervisor). |
 | An adapter does not appear in **Detected interface** | It has no USB identity the station can use (some cheap adapters), or its driver is not installed. | Try another adapter. Ask the technician to check Windows Device Manager. |
 | Slot fails with **ERR: 6** (or another number) | Programming error from the module. 6 = the module did not answer (not in program mode, poorly seated, or no power). | Press **Error codes** for the meaning. Re-seat the module and check the jig mode switch. If one slot keeps failing, call the Supervisor. |
+| Every module fails Pricol programming, the APP test or the RF test at once | The button was pressed before the modules were switched: Pricol programming needs **boot mode**, the RF / APP tests need **application mode** after a reset or power cycle. | Follow the instruction on screen **before** pressing the button. The affected modules cannot be retested in the same batch; set them aside for the Supervisor. |
 
 ### Login
 
@@ -538,3 +544,67 @@ Use the table in [B3](#b3-changes-to-the-rig-that-need-re-approval) to decide wh
 - The rig's certificate was renewed, or the rig was renamed or replaced → new certificate and re-approval on every station ([B3](#b3-changes-to-the-rig-that-need-re-approval), [C8.3](#c83-the-rigs-address-or-certificate-changed)).
 - The rig was bound **by IP** and the IP changed → re-bind, preferably by name.
 - A QR code is reported as already used, **SUPERVISOR REQUIRED** is shown, or a fingerprint does not match → stop and investigate.
+
+---
+
+## F. Bench tool: test the whole flow without the LAN server
+
+🔵🟠 For Supervisors and engineers. The bench tool runs the same programming and test steps as production on one PC: Stock only, or Stock + Pricol. It needs **no LAN server, login or production session**. It uses its own **test MAC ranges** and writes nothing to the production database, so **never ship modules programmed on the bench as production modules.**
+
+### F1. Start it
+
+- Real jig: open a terminal in the StationApp folder and run `python -m stationapp.bench` (or `stationapp-bench`).
+- No hardware: run `python -m stationapp.bench --simulate`. A brown **SIMULATION** banner is shown.
+
+It reads the MPCLI path, firmware files, jig size, slot-to-COM bindings and QR scanner settings from the station `.env` when one is present.
+
+### F2. Set it up (once; it is remembered)
+
+1. **Programming:** choose **Stock only** or **Stock + Pricol**.
+2. **MPCLI**, **Stock firmware** and, for Stock + Pricol, **Pricol firmware**: choose the files with **Browse...**.
+3. **Test MAC ranges:** enter a first and last MAC for **Stock** and press **Set**. For Stock + Pricol, do the same for **Pricol**. The two ranges must not overlap. Each MAC is used once, even if programming fails. The line below each range shows the next MAC and how many are left.
+4. **RF test:**
+   - **Skip RF**: no RF test.
+   - **Golden Rig**: only if this PC's station app has an approved rig. Use **Check connection** to test the rig first.
+   - **Manual**: you check each module with a BLE phone app.
+5. **QR code scanner:** tick **Scan module QRs after each run** to scan every module's QR at the end. **Scanner test** checks the scanner without programming anything.
+6. In the table, tick **Use** for each slot that holds a module and check its **COM port**.
+
+### F3. Run it
+
+Press **START**. The steps follow, and a large blue instruction above the buttons always says what to do next. For each manual step: **first switch or reset the modules as the instruction says, then press the green button.**
+
+| # | Instruction / button | What happens |
+|---|---|---|
+| 1 | *(automatic after START)* | Stock firmware flashed, Stock MAC written and read back. |
+| 2 | **RESET MODULES FOR RF TEST** → **RUN RF TEST** | Golden Rig only: switch the modules to application mode and reset them, then press. *(Manual RF opens a check list instead; Skip RF goes straight on.)* |
+| 3 | **SWITCH MODULES TO BOOT MODE** → **PROGRAM PRICOL FIRMWARE** | Stock + Pricol only: switch the modules to boot mode and reset them, then press. Pricol firmware is flashed, and the Pricol MAC (from the Pricol range) written and read back. |
+| 4 | **SWITCH MODULES TO APPLICATION MODE** → **RUN APP TEST** | Switch the modules to application mode and power-cycle them, then press. *PRICOLAPP* is sent on each slot's COM port. |
+| 5 | **RESET MODULES** → **RUN DFU TEST** | Reset the modules again, then press. *PRICOLDFU* is sent. |
+| 6 | **SCAN QR of module in SLOT n** | If ticked: scan every module's QR, failed ones included. |
+
+Only modules that passed a step go on to the next one. The others keep their result. While a run waits for you, **START** stays disabled.
+
+**Stop early:** the grey button next to the green one (**Finish without RF**, **Stop here (no Pricol)**, **Stop here (no tests)**…) records the remaining steps as not done and finishes the run.
+
+**Golden Rig not reachable:** the modules keep waiting. Fix the rig, then press **RUN RF TEST** again.
+
+**Restart the workflow (repeat the test N times):** press the orange **RESTART WORKFLOW** button and confirm. It works at any point: while programming is running, while the run waits at a manual step, during QR scanning, or after a run is cancelled or finished.
+- A step that is running is stopped first. MPCLI is given time to stop.
+- The current run is recorded as it stands in the results file. Modules that had not finished are marked **ABORTED**.
+- The complete workflow then starts again from step 1, with the slots and settings now selected. Each new run uses new test MACs.
+- Before restarting, put the modules back in **boot (download) mode**, because the new run starts by flashing the Stock firmware.
+
+### F4. Read the results
+
+| Column | Meaning |
+|---|---|
+| **MAC / Readback / RF** | Stock MAC, its readback (MATCH or the MAC actually read), RF result. |
+| **Pricol MAC / Pricol readback** | Stock + Pricol only. |
+| **APP / DFU** | Functional test results, e.g. *APP PASS / DFU PASS*. Hover for the module's response. |
+| **Result** | **PASS** / **PASS (no RF)** (green); **FAIL**, **RF FAIL**, **PRICOL FAIL**, **FUNCTIONAL FAIL** (red); pending or not run (amber). |
+| **QR** | The scanned QR, or NOT SCANNED. |
+
+- **Results folder:** **Open results folder** opens `logs\bench`, which holds `stock_bench_results.csv` (one row per module per run) and one folder of MPCLI logs per run.
+- **MPCLI log:** double-click a row to open that module's log.
+- **Error numbers:** press **Error codes** for what each **ERR** number means.

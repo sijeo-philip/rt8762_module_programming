@@ -1,4 +1,5 @@
-"""Stock firmware bench tool.
+"""Bench tool: the production flow (Stock only or Stock + Pricol) on one
+PC, without the LAN server.
 
     python -m stationapp.bench               # real MPCLI on the jig
     python -m stationapp.bench --simulate    # no hardware
@@ -111,7 +112,7 @@ def _bound_ports(settings) -> dict[int, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m stationapp.bench", description="Stock firmware bench tool")
+    parser = argparse.ArgumentParser(prog="python -m stationapp.bench", description="Production bench tool (Stock only or Stock + Pricol, no LAN server)")
     parser.add_argument("--simulate", action="store_true", help="no MPCLI or jig; simulated programming and Golden Rig")
     parser.add_argument("--fail-ports", default="", help="simulation: comma-separated ports that fail to flash")
     parser.add_argument("--slots", type=int, choices=(4, 8), help="override jig size")
@@ -124,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     jig_positions = args.slots or (settings.jig_positions if settings else 8)
     results_dir = log_dir / "bench"
     pool = BenchMacPool(Path("data") / "bench_mac_state.json")
+    # Separate range for Pricol test MACs (Stock + Pricol runs).
+    pricol_pool = BenchMacPool(Path("data") / "bench_pricol_mac_state.json")
 
     if args.simulate:
         from stationapp.bench.simulated import SimulatedBenchHardware
@@ -141,6 +144,11 @@ def main(argv: list[str] | None = None) -> int:
 
         placeholder = Path(tempfile.gettempdir()) / "stationapp_bench_simulated_firmware.bin"
         placeholder.write_bytes(b"SIMULATED STOCK FIRMWARE")
+        pricol_placeholder = Path(tempfile.gettempdir()) / "stationapp_bench_simulated_pricol.bin"
+        pricol_placeholder.write_bytes(b"SIMULATED PRICOL FIRMWARE")
+        from stationapp.services.simulation import SimulatedFunctionalTester
+
+        functional = SimulatedFunctionalTester(delay_seconds=0.5, failures=frozenset())
     else:
         hardware_factory = MpCliBenchHardware
         rf_tester, rig_status, binding = _golden_rig(settings)
@@ -153,6 +161,14 @@ def main(argv: list[str] | None = None) -> int:
         port_lister = _ports
         slot_ports = _bound_ports(settings)
 
+    if not args.simulate:
+        from stationapp.drivers.pricol.functional import PricolFunctionalTester
+
+        functional = PricolFunctionalTester(
+            baudrate=settings.pricol_uart_baudrate if settings else 115200,
+            response_timeout_seconds=settings.pricol_response_timeout_seconds if settings else 3.0,
+        )
+
     runner = StockBenchRunner(
         hardware_factory=hardware_factory,
         mac_pool=pool,
@@ -160,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
         rf_tester=rf_tester,
         station_id=settings.station_id if settings else "BENCH",
         jig_id=settings.jig_id if settings else "BENCH",
+        pricol_mac_pool=pricol_pool,
+        functional_tester=functional,
     )
     context = BenchContext(
         runner=runner,
@@ -168,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
         results_dir=results_dir,
         mpcli_path=Path(settings.mpcli_path) if settings else None,
         firmware=placeholder if args.simulate else (settings.stock_firmware_path if settings else None),
+        pricol_mac_pool=pricol_pool,
+        pricol_firmware=pricol_placeholder if args.simulate else (settings.pricol_firmware_path if settings else None),
         golden_rig_status=rig_status,
         rig_check=rig_check,
         rig_address=rig_address,
@@ -181,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("Stock Firmware Bench")
+    app.setApplicationName("Production Bench")
     window = BenchWindow(context)
     window.show()
     return app.exec()

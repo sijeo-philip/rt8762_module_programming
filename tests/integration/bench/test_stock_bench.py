@@ -176,7 +176,7 @@ def test_old_results_file_is_kept_aside(bench, tmp_path):
 
     run = runner.run(bench["settings"], {1: "COM11"}, RfMode.SKIP)
 
-    assert run.csv_path.read_text(encoding="utf-8").startswith("run_id,finished_at,slot,com_port")
+    assert run.csv_path.read_text(encoding="utf-8").startswith("run_id,finished_at,mode,slot,com_port")
     assert list(results.glob("stock_bench_results_before_*.csv"))
 
 
@@ -197,3 +197,120 @@ def test_failed_modules_qr_is_scanned_and_recorded(bench, monkeypatch):
         ("1", "AA11BB22", "PASS (no RF)"),
         ("2", "CC33DD44", "FAIL"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Stock + Pricol: every manual step waits for the operator
+# ---------------------------------------------------------------------------
+
+
+class FakeFunctional:
+    """PRICOLAPP / PRICOLDFU per COM port: True, False or None (no answer)."""
+
+    def __init__(self, app=None, dfu=None):
+        self.app, self.dfu = app or {}, dfu or {}
+        self.calls = []
+
+    def run_app_test(self, *, slot_number, com_port, cancellation_token=None):
+        self.calls.append(("APP", com_port))
+        return self.app.get(com_port, True)
+
+    def run_dfu_test(self, *, slot_number, com_port, cancellation_token=None):
+        self.calls.append(("DFU", com_port))
+        return self.dfu.get(com_port, True)
+
+
+def pricol_runner(bench, functional):
+    from stationapp.bench.runner import MpCliBenchHardware
+
+    pricol_pool = BenchMacPool(bench["tmp"] / "pricol_state.json")
+    pricol_pool.set_range("02:5B:00:00:00:01", "02:5B:00:00:00:10")
+    stock = bench["make"]()
+    runner = StockBenchRunner(
+        hardware_factory=stock._hardware_factory,
+        mac_pool=bench["pool"],
+        results_dir=bench["tmp"] / "results",
+        pricol_mac_pool=pricol_pool,
+        functional_tester=functional,
+    )
+    firmware = bench["tmp"] / "pricol.bin"
+    firmware.write_bytes(b"pricol-firmware")
+    pricol_settings = BenchSettings(mpcli_path=bench["settings"].mpcli_path, firmware=firmware, settle_s=0)
+    return runner, pricol_settings, pricol_pool
+
+
+@pytest.mark.integration
+def test_stock_and_pricol_flow_waits_for_operator_at_each_manual_step(bench, monkeypatch):
+    from stationapp.bench.runner import PricolStep
+
+    functional = FakeFunctional(app={"COM13": False}, dfu={"COM14": None})
+    runner, pricol_settings, pricol_pool = pricol_runner(bench, functional)
+    monkeypatch.setenv("STUB_MPCLI_FAIL_PORTS", "COM12")              # slot 2 fails Stock
+
+    run = runner.run(bench["settings"], {1: "COM11", 2: "COM12", 3: "COM13", 4: "COM14"}, RfMode.SKIP,
+                     pricol_settings=pricol_settings, scan_qr=True)
+
+    # 1. Stock done; waiting for: boot mode + reset -> PROGRAM PRICOL FIRMWARE
+    assert run.pricol_step is PricolStep.PROGRAM
+    assert [slot.slot_number for slot in run.pricol_candidates] == [1, 3, 4]
+    assert run.slots[1].pricol_flash == "-" and run.slots[1].verdict == "PRICOL PENDING"
+    assert run.slots[2].verdict == "FAIL"
+    assert not run.awaiting_qr and run.csv_path is None
+
+    # 2. PROGRAM PRICOL FIRMWARE -> waiting for: app mode + power cycle
+    monkeypatch.delenv("STUB_MPCLI_FAIL_PORTS")
+    run = runner.program_pricol(run)
+    assert run.pricol_step is PricolStep.APP
+    for number in (1, 3, 4):
+        slot = run.slots[number]
+        assert slot.pricol_readback == "MATCH" and slot.pricol_readback_mac == slot.pricol_mac
+        assert slot.pricol_mac.startswith("02:5B") and slot.pricol_mac != slot.mac
+    assert run.slots[2].pricol_mac == ""
+    assert functional.calls == []
+    assert pricol_pool.remaining() == 13
+
+    # 3. RUN APP TEST -> waiting for: reset -> RUN DFU TEST
+    run = runner.run_app_test(run)
+    assert run.pricol_step is PricolStep.DFU
+    assert [c for c in functional.calls] == [("APP", "COM11"), ("APP", "COM13"), ("APP", "COM14")]
+    assert run.slots[3].app == "FAIL" and run.slots[3].verdict == "FUNCTIONAL FAIL"
+
+    # 4. RUN DFU TEST (APP-failed modules are DFU-tested too, as in production)
+    run = runner.run_dfu_test(run)
+    assert run.pricol_step is PricolStep.DONE
+    assert ("DFU", "COM13") in functional.calls
+    assert run.awaiting_qr                                            # 5. QR scan, every module
+
+    for number, qr in ((1, "AA000001"), (2, "AA000002"), (3, "AA000003"), (4, "AA000004")):
+        runner.record_qr(run, number, qr)
+    run = runner.complete_qr(run)
+
+    rows = {row["slot"]: row for row in csv.DictReader(run.csv_path.open(encoding="utf-8"))}
+    assert rows["1"]["verdict"] == "PASS (no RF)" and rows["1"]["mode"] == "STOCK_AND_PRICOL"
+    assert rows["1"]["app"] == "PASS" and rows["1"]["dfu"] == "PASS"
+    assert rows["2"]["verdict"] == "FAIL" and rows["2"]["qr"] == "AA000002"
+    assert rows["3"]["verdict"] == "FUNCTIONAL FAIL"
+    assert rows["4"]["dfu"] == "ERROR" and rows["4"]["verdict"] == "FUNCTIONAL ERROR"
+    assert rows["1"]["pricol_firmware"] == "pricol.bin"
+
+
+@pytest.mark.integration
+def test_operator_can_stop_before_pricol_steps(bench):
+    from stationapp.bench.runner import PricolStep
+
+    runner, pricol_settings, _pool = pricol_runner(bench, FakeFunctional())
+    run = runner.run(bench["settings"], {1: "COM11"}, RfMode.SKIP, pricol_settings=pricol_settings)
+    run = runner.program_pricol(run)
+    run = runner.finish_without_pricol(run)                           # before the APP test
+
+    assert run.pricol_step is PricolStep.DONE
+    assert run.slots[1].app == "NOT TESTED" and run.slots[1].verdict == "NOT TESTED"
+    assert run.csv_path.exists()
+
+
+@pytest.mark.integration
+def test_pricol_needs_a_separate_mac_range(bench):
+    runner, pricol_settings, pricol_pool = pricol_runner(bench, FakeFunctional())
+    pricol_pool.set_range("02:5A:00:00:00:08", "02:5A:00:00:00:20")    # overlaps the Stock range
+    with pytest.raises(ValueError, match="overlap"):
+        runner.run(bench["settings"], {1: "COM11"}, RfMode.SKIP, pricol_settings=pricol_settings)

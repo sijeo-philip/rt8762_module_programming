@@ -415,3 +415,72 @@ def test_rf_test_starts_only_when_operator_presses_run_rf_test(session_factory):
     controller.advance()                      # RUN RF TEST (one press)
     assert rig.calls == 1
     assert controller.batch.state is BatchState.QR_SCANNING
+
+
+class CountingProgrammer:
+    def __init__(self) -> None:
+        self.pricol_calls = 0
+        self._real = SimulatedProgrammer(delay_seconds=0, failures=frozenset())
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def program_pricol(self, *args, **kwargs):
+        self.pricol_calls += 1
+        return self._real.program_pricol(*args, **kwargs)
+
+
+class CountingFunctional:
+    def __init__(self) -> None:
+        self.app_calls = 0
+        self.dfu_calls = 0
+        self._real = SimulatedFunctionalTester(delay_seconds=0, failures=frozenset())
+
+    def run_app_test(self, **kwargs):
+        self.app_calls += 1
+        return self._real.run_app_test(**kwargs)
+
+    def run_dfu_test(self, **kwargs):
+        self.dfu_calls += 1
+        return self._real.run_dfu_test(**kwargs)
+
+
+@pytest.mark.integration
+def test_pricol_programming_and_tests_start_only_on_operator_buttons(session_factory):
+    programmer, functional = CountingProgrammer(), CountingFunctional()
+    controller = ProductionController(
+        station_id=STATION,
+        jig_id=JIG,
+        slot_count=8,
+        store=SqlProductionStore(session_factory),
+        programmer=programmer,
+        rf_tester=SimulatedGoldenRig(delay_seconds=0, failures=frozenset()),
+        functional_tester=functional,
+    )
+    controller.start_batch(occupied=(1, 2), ports=ports(1, 2), mode=ProgrammingMode.STOCK_AND_PRICOL)
+
+    def screen():
+        return controller.snapshot().workflow
+
+    controller.advance()                              # confirm stock program mode
+    controller.advance()                              # stock program + readback
+    controller.advance()                              # RUN RF TEST
+    assert screen().headline == "SWITCH MODULES TO BOOT MODE"
+    assert screen().button_label == "PROGRAM PRICOL FIRMWARE"
+    assert "boot" in screen().instruction
+    assert programmer.pricol_calls == 0
+
+    controller.advance()                              # PROGRAM PRICOL FIRMWARE (one press)
+    assert programmer.pricol_calls == 2
+    assert screen().headline == "SWITCH MODULES TO APPLICATION MODE"
+    assert screen().button_label == "RUN APP TEST"
+    assert "power-cycle" in screen().instruction
+    assert functional.app_calls == 0
+
+    controller.advance()                              # RUN APP TEST (one press)
+    assert functional.app_calls == 2 and functional.dfu_calls == 0
+    assert screen().button_label == "RUN DFU TEST"
+
+    controller.advance()                              # RUN DFU TEST
+    assert functional.dfu_calls == 2
+    assert controller.batch.state is BatchState.QR_SCANNING

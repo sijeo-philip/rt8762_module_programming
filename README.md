@@ -269,7 +269,9 @@ Only slots that have successfully completed Stock programming and Stock MAC read
 
 ## 13. Stock RF Test
 
-After Stock programming and readback verification, only the successfully verified Stock MAC addresses are transmitted over the LAN/Wi-Fi connection to the Golden Module Test Jig.
+After Stock programming and readback verification, the modules are still in boot (download) mode. The Operator switches every module to application mode and resets it, then starts the RF test with **RUN RF TEST**; the RF test never starts automatically.
+
+Only the successfully verified Stock MAC addresses are then transmitted over the LAN/Wi-Fi connection to the Golden Module Test Jig.
 
 Slots that are empty, failed, uncertain, or did not complete MAC verification are excluded from the RF-test request.
 
@@ -302,6 +304,8 @@ The Pricol MAC must be different from the temporary Stock MAC assigned to the sa
 ---
 
 ## 15. Pricol Programming
+
+After the RF test the modules run the application, so they must be returned to boot mode before flashing. The Operator switches every module to boot (download) mode and resets it, then starts Pricol programming with **PROGRAM PRICOL FIRMWARE**; it never starts automatically.
 
 All eligible slots are programmed with the Pricol firmware.
 
@@ -355,7 +359,9 @@ Other slots whose Pricol MAC readback matches correctly may continue to the Func
 
 ## 17. Functional Test
 
-After successful Pricol programming and MAC verification, the Station Application performs the required functional tests only on the slots that remain eligible.
+After successful Pricol programming and MAC verification, the modules are in boot mode. The Operator switches every module to application mode and power-cycles it, then starts the test with **RUN APP TEST** (PRICOLAPP). The Operator then resets the modules again and starts **RUN DFU TEST** (PRICOLDFU). Neither test starts automatically.
+
+The Station Application performs the required functional tests only on the slots that remain eligible.
 
 A defined sequence of AT commands is issued to each module to validate the Pricol firmware.
 
@@ -367,11 +373,11 @@ The functional-test stage produces a PASS or FAIL result based on the configured
 
 ## 18. QR Scan
 
-After programming and testing are complete, the Operator scans the QR code printed on each module that has successfully completed the required workflow stages.
+After programming and testing are complete, the Operator scans the QR code printed on **every module in the jig, whatever its result**. Passed modules are bound to their MAC records; failed or HOLD modules keep their result and their QR is recorded with it. A batch in which every module failed is still scanned and recorded.
 
-Slots that are empty, failed, HOLD, or otherwise ineligible are skipped automatically.
+Empty slots are skipped automatically.
 
-The scan order is fixed by ascending eligible slot number.
+The scan order is fixed by ascending slot number.
 
 For a fully populated and successful 8-slot batch:
 

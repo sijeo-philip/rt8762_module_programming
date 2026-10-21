@@ -216,33 +216,23 @@ class WorkflowService:
                 ),
             )
 
-        if state is BatchState.PRICOL_MACS_RESERVED:
+        if state in (BatchState.PRICOL_MACS_RESERVED, BatchState.AWAITING_PRICOL_PROGRAM_MODE):
+            # After the RF test the modules run the application; flashing
+            # needs them back in boot (download) mode.
             return OperatorWorkflow(
                 batch_id=batch.batch_id,
                 batch_state=state,
                 action=(
                     OperatorAction.CHANGE_TO_PRICOL_PROGRAM_MODE
                 ),
-                headline="PREPARE FOR FINAL PROGRAMMING",
+                headline="SWITCH MODULES TO BOOT MODE",
                 instruction=(
-                    "Set the jig for Pricol programming."
+                    "RF test complete. Switch every module to boot "
+                    "(download) mode and reset it, then press "
+                    "PROGRAM PRICOL FIRMWARE."
                 ),
                 allow_start_button=True,
-            )
-
-        if state is BatchState.AWAITING_PRICOL_PROGRAM_MODE:
-            return OperatorWorkflow(
-                batch_id=batch.batch_id,
-                batch_state=state,
-                action=(
-                    OperatorAction.CHANGE_TO_PRICOL_PROGRAM_MODE
-                ),
-                headline="FINAL PROGRAM MODE",
-                instruction=(
-                    "Complete the indicated setup, "
-                    "then press CONTINUE."
-                ),
-                allow_start_button=True,
+                button_label="PROGRAM PRICOL FIRMWARE",
             )
 
         if state is BatchState.PRICOL_PROGRAMMING:
@@ -264,48 +254,26 @@ class WorkflowService:
                 ),
             )
 
-        if state is BatchState.PRICOL_READBACK_VERIFIED:
-            return OperatorWorkflow(
-                batch_id=batch.batch_id,
-                batch_state=state,
-                action=(
-                    OperatorAction.CHANGE_TO_FUNCTIONAL_TEST_MODE
-                ),
-                headline="PREPARE FOR FUNCTIONAL TEST",
-                instruction=(
-                    "Set the jig for functional testing."
-                ),
-                allow_start_button=True,
-            )
-
-        if state is BatchState.AWAITING_FUNCTIONAL_TEST_MODE:
-            return OperatorWorkflow(
-                batch_id=batch.batch_id,
-                batch_state=state,
-                action=(
-                    OperatorAction.CHANGE_TO_FUNCTIONAL_TEST_MODE
-                ),
-                headline="FUNCTIONAL TEST MODE",
-                instruction=(
-                    "Complete the indicated setup, "
-                    "then press CONTINUE."
-                ),
-                allow_start_button=True,
-            )
-
-        if state is BatchState.AWAITING_PRICOLAPP_RESET:
+        if state in (
+            BatchState.PRICOL_READBACK_VERIFIED,
+            BatchState.AWAITING_FUNCTIONAL_TEST_MODE,
+            BatchState.AWAITING_PRICOLAPP_RESET,
+        ):
+            # After Pricol programming the modules are in boot mode; the
+            # functional test needs them running the application.
             return OperatorWorkflow(
                 batch_id=batch.batch_id,
                 batch_state=state,
                 action=OperatorAction.RESET_FOR_PRICOL_APP,
-                headline="RESET MODULES",
+                headline="SWITCH MODULES TO APPLICATION MODE",
                 instruction=(
-                    "Reset all modules in the jig, then press the "
-                    "button. The station sends PRICOLAPP to each "
-                    "module and checks it starts the application."
+                    "Pricol firmware and MAC verified. Switch every "
+                    "module from boot mode to application mode and "
+                    "power-cycle it, then press RUN APP TEST. The "
+                    "station sends PRICOLAPP to each module."
                 ),
                 allow_start_button=True,
-                button_label="RESET DONE - RUN APP TEST",
+                button_label="RUN APP TEST",
             )
 
         if state is BatchState.PRICOLAPP_TESTING:
@@ -325,11 +293,11 @@ class WorkflowService:
                 headline="RESET MODULES",
                 instruction=(
                     "Reset all modules in the jig again, then press "
-                    "the button. The station sends PRICOLDFU to each "
+                    "RUN DFU TEST. The station sends PRICOLDFU to each "
                     "module and checks it enters DFU mode."
                 ),
                 allow_start_button=True,
-                button_label="RESET DONE - RUN DFU TEST",
+                button_label="RUN DFU TEST",
             )
 
         if state is BatchState.PRICOLDFU_TESTING:

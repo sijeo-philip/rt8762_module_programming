@@ -1,4 +1,4 @@
-"""Stock firmware bench tool window."""
+"""Bench tool window: the production flow on one PC, no LAN server."""
 
 from __future__ import annotations
 
@@ -38,17 +38,47 @@ from PyQt6.QtWidgets import (
 )
 
 from stationapp.bench.mac_pool import BenchMacPool, MacRangeError
-from stationapp.bench.runner import NOT_SCANNED, BenchRun, BenchSettings, DuplicateQrError, RfMode, SlotRun, StockBenchRunner
+from stationapp.bench.runner import NOT_SCANNED, BenchRun, BenchSettings, DuplicateQrError, PricolStep, RfMode, SlotRun, StockBenchRunner
 from stationapp.concurrency.manager import OperationManager
 from stationapp.drivers.qr_scanner import MODULE_QR_FORMAT, ScanFormat
 from stationapp.services.golden_rig_check import RigCheckResult, RigCheckStatus
 
 logger = logging.getLogger(__name__)
 
-COLUMNS = ["Use", "Slot", "COM port", "Stage", "Progress", "MAC", "Readback", "RF", "Result", "QR"]
-QR_COLUMN = 9
-TEXT_COLUMNS = (3, 5, 6, 7, 8, QR_COLUMN)
-RESULT_COLOURS = {"PASS": "#dcfce7", "FAIL": "#fee2e2", "CANCELLED": "#fef3c7"}
+COLUMNS = [
+    "Use", "Slot", "COM port", "Stage", "Progress", "MAC", "Readback", "RF",
+    "Pricol MAC", "Pricol readback", "APP / DFU", "Result", "QR",
+]
+COL_STAGE, COL_MAC, COL_READBACK, COL_RF = 3, 5, 6, 7
+COL_PRICOL_MAC, COL_PRICOL_READBACK, COL_FUNCTIONAL = 8, 9, 10
+COL_RESULT, COL_QR = 11, 12
+QR_COLUMN = COL_QR
+PRICOL_COLUMNS = (COL_PRICOL_MAC, COL_PRICOL_READBACK, COL_FUNCTIONAL)
+TEXT_COLUMNS = (COL_STAGE, COL_MAC, COL_READBACK, COL_RF, *PRICOL_COLUMNS, COL_RESULT, COL_QR)
+GREEN_BG, RED_BG, AMBER_BG = "#dcfce7", "#fee2e2", "#fef3c7"
+
+# The operator step a run is waiting for: (headline + instruction, button, stop button)
+STEP_TEXT = {
+    "RF": (
+        "RESET MODULES FOR RF TEST - switch the module(s) in slot {slots} from boot mode to "
+        "application mode and reset them, then press RUN RF TEST.",
+        "RUN RF TEST", "Finish without RF",
+    ),
+    PricolStep.PROGRAM: (
+        "SWITCH MODULES TO BOOT MODE - switch the module(s) in slot {slots} to boot (download) mode "
+        "and reset them, then press PROGRAM PRICOL FIRMWARE.",
+        "PROGRAM PRICOL FIRMWARE", "Stop here (no Pricol)",
+    ),
+    PricolStep.APP: (
+        "SWITCH MODULES TO APPLICATION MODE - switch the module(s) in slot {slots} from boot mode to "
+        "application mode and power-cycle them, then press RUN APP TEST.",
+        "RUN APP TEST", "Stop here (no tests)",
+    ),
+    PricolStep.DFU: (
+        "RESET MODULES - reset the module(s) in slot {slots} again, then press RUN DFU TEST.",
+        "RUN DFU TEST", "Stop here (no DFU test)",
+    ),
+}
 CHECK_MARKS = {
     RigCheckStatus.PASS: ("&#10004;", "#166534"),
     RigCheckStatus.FAIL: ("&#10008;", "#991b1b"),
@@ -78,6 +108,9 @@ class BenchContext:
     qr_debounce_ms: int = 2000
     # Also read scanners in HID POS mode (they do not type keystrokes).
     use_pos_scanner: bool = False
+    # Stock + Pricol: separate test MAC range and the Pricol firmware.
+    pricol_mac_pool: BenchMacPool | None = None
+    pricol_firmware: Path | None = None
 
 
 class ManualRfDialog(QDialog):
@@ -132,12 +165,17 @@ class BenchWindow(QMainWindow):
         self._qr_mode: str | None = None
         self._qr_test_queue: list[int] = []
         self._qr_test_scans: dict[int, str] = {}
+        self._step_error: str | None = None
+        # RESTART WORKFLOW: set while the current step is being stopped.
+        self._restart_requested = False
+        self.restart_count = 0
 
-        self.setWindowTitle("Stock Firmware Bench" + (" - SIMULATION" if context.simulation else ""))
+        self.setWindowTitle("Production Bench (no LAN server)" + (" - SIMULATION" if context.simulation else ""))
         self.resize(1250, 820)
         self._build()
         self._load_preferences()
         self._slot_update.connect(self._apply_update, Qt.ConnectionType.QueuedConnection)
+        self._operations.operation_removed.connect(self._on_operation_removed)
         self._rig_checked.connect(self._show_rig_check, Qt.ConnectionType.QueuedConnection)
         self._refresh_ports()
         self._refresh_mac_status()
@@ -165,10 +203,25 @@ class BenchWindow(QMainWindow):
         top = QHBoxLayout()
         layout.addLayout(top)
 
-        config = QGroupBox("MPCLI and Stock firmware")
+        config = QGroupBox("MPCLI and firmware")
         form = QFormLayout(config)
+        mode_row = QHBoxLayout()
+        self.mode_group = QButtonGroup(self)
+        self.stock_only_radio = QRadioButton("Stock only")
+        self.stock_pricol_radio = QRadioButton("Stock + Pricol")
+        self.stock_only_radio.setChecked(True)
+        if not self._ctx.runner.pricol_available:
+            self.stock_pricol_radio.setEnabled(False)
+            self.stock_pricol_radio.setToolTip("Needs a Pricol test MAC range and the Pricol functional tester")
+        for button in (self.stock_only_radio, self.stock_pricol_radio):
+            self.mode_group.addButton(button)
+            mode_row.addWidget(button)
+            button.toggled.connect(self._update_mode)
+        mode_row.addStretch()
+        form.addRow("Programming", mode_row)
         self.mpcli_input = self._path_row(form, "MPCLI", "mpcli.exe (*.exe);;All files (*)")
         self.firmware_input = self._path_row(form, "Stock firmware", "Firmware (*.bin);;All files (*)")
+        self.pricol_firmware_input = self._path_row(form, "Pricol firmware", "Firmware (*.bin);;All files (*)")
         sequence = QHBoxLayout()
         self.two_step_radio = QRadioButton("Flash, then write MAC (validated)")
         self.combined_radio = QRadioButton("Combined command")
@@ -179,21 +232,12 @@ class BenchWindow(QMainWindow):
         top.addWidget(config, 3)
 
         right = QVBoxLayout()
-        macs = QGroupBox("Test MAC range")
+        macs = QGroupBox("Test MAC ranges (each MAC is used once, even if programming fails)")
         mac_form = QFormLayout(macs)
-        self.mac_start_input = QLineEdit()
-        self.mac_end_input = QLineEdit()
-        mac_form.addRow("First MAC", self.mac_start_input)
-        mac_form.addRow("Last MAC", self.mac_end_input)
-        self.mac_status = QLabel()
-        self.mac_status.setWordWrap(True)
-        mac_form.addRow("", self.mac_status)
-        note = QLabel("Each MAC is used once, even if programming fails.")
-        note.setStyleSheet("color:#64748b;")
-        mac_form.addRow("", note)
-        apply_range = QPushButton("Set range")
-        apply_range.clicked.connect(self._apply_range)
-        mac_form.addRow("", apply_range)
+        self.mac_start_input, self.mac_end_input, self.mac_status = self._range_row(mac_form, "Stock", self._apply_range)
+        self.pricol_mac_start_input, self.pricol_mac_end_input, self.pricol_mac_status = self._range_row(
+            mac_form, "Pricol", self._apply_pricol_range
+        )
         right.addWidget(macs)
 
         rf = QGroupBox("RF test")
@@ -245,8 +289,8 @@ class BenchWindow(QMainWindow):
         header = self.table.horizontalHeader()
         for column in range(len(COLUMNS)):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(COL_STAGE, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(COL_RESULT, QHeaderView.ResizeMode.Stretch)
         self.use_checks: dict[int, QCheckBox] = {}
         self.port_combos: dict[int, QComboBox] = {}
         self.progress_bars: dict[int, QProgressBar] = {}
@@ -285,21 +329,32 @@ class BenchWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self._cancel)
         buttons.addWidget(self.cancel_button)
-        self.rf_button = QPushButton("RUN RF TEST")
-        self.rf_button.setMinimumHeight(44)
-        self.rf_button.setMinimumWidth(180)
-        self.rf_button.setToolTip("Press after resetting the modules from boot mode into application mode")
-        self.rf_button.setStyleSheet("QPushButton{font-size:16px;font-weight:700;color:white;background:#15803d;border-radius:6px;}QPushButton:disabled{background:#cbd5e1;color:#475569;}")
-        self.rf_button.clicked.connect(self._run_rf)
-        self.rf_button.hide()
-        buttons.addWidget(self.rf_button)
-        self.skip_rf_button = QPushButton("Finish without RF")
-        self.skip_rf_button.clicked.connect(self._finish_without_rf)
-        self.skip_rf_button.hide()
-        buttons.addWidget(self.skip_rf_button)
-        self.status_label = QLabel("Ready")
-        self.status_label.setWordWrap(True)
-        buttons.addWidget(self.status_label, 1)
+        self.restart_button = QPushButton("RESTART WORKFLOW")
+        self.restart_button.setMinimumHeight(44)
+        self.restart_button.setToolTip(
+            "Abort the current run at any point (the run is recorded, unfinished modules as ABORTED) "
+            "and start the complete workflow again with the selected slots and settings"
+        )
+        self.restart_button.setStyleSheet("QPushButton{font-size:14px;font-weight:700;color:white;background:#b45309;border-radius:6px;padding:0 14px;}QPushButton:disabled{background:#cbd5e1;color:#475569;}")
+        self.restart_button.setEnabled(False)
+        self.restart_button.clicked.connect(self._restart_workflow)
+        buttons.addWidget(self.restart_button)
+        # One button for whichever manual step the run waits for:
+        # RUN RF TEST / PROGRAM PRICOL FIRMWARE / RUN APP TEST / RUN DFU TEST.
+        self.step_button = QPushButton("RUN RF TEST")
+        self.step_button.setMinimumHeight(44)
+        self.step_button.setMinimumWidth(220)
+        self.step_button.setToolTip("Press after switching / resetting the modules as the instruction says")
+        self.step_button.setStyleSheet("QPushButton{font-size:16px;font-weight:700;color:white;background:#15803d;border-radius:6px;}QPushButton:disabled{background:#cbd5e1;color:#475569;}")
+        self.step_button.clicked.connect(self._run_step)
+        self.step_button.hide()
+        buttons.addWidget(self.step_button)
+        self.stop_step_button = QPushButton("Finish without RF")
+        self.stop_step_button.clicked.connect(self._stop_step)
+        self.stop_step_button.hide()
+        buttons.addWidget(self.stop_step_button)
+        self.rf_button, self.skip_rf_button = self.step_button, self.stop_step_button
+        buttons.addStretch(1)
         error_codes = QPushButton("Error codes")
         error_codes.setToolTip("What each MPCLI error number means and what to do")
         error_codes.clicked.connect(self._show_error_codes)
@@ -307,6 +362,11 @@ class BenchWindow(QMainWindow):
         open_results = QPushButton("Open results folder")
         open_results.clicked.connect(self._open_results)
         buttons.addWidget(open_results)
+        # Full-width line for the instruction the operator must follow.
+        self.status_label = QLabel("Ready")
+        self.status_label.setWordWrap(True)
+        self.status_label.setMinimumHeight(28)
+        layout.addWidget(self.status_label)
         layout.addLayout(buttons)
 
     def _build_qr_bar(self) -> QGroupBox:
@@ -353,6 +413,31 @@ class BenchWindow(QMainWindow):
         self.finish_qr_button.hide()
         return box
 
+    def _range_row(self, form: QFormLayout, label: str, apply) -> tuple[QLineEdit, QLineEdit, QLabel]:
+        row = QHBoxLayout()
+        start, end = QLineEdit(), QLineEdit()
+        start.setPlaceholderText("first")
+        end.setPlaceholderText("last")
+        button = QPushButton("Set")
+        button.clicked.connect(apply)
+        row.addWidget(start, 1)
+        row.addWidget(QLabel("to"))
+        row.addWidget(end, 1)
+        row.addWidget(button)
+        form.addRow(label, row)
+        status = QLabel()
+        status.setWordWrap(True)
+        form.addRow("", status)
+        return start, end, status
+
+    def _update_mode(self) -> None:
+        pricol = self.stock_pricol_radio.isChecked()
+        for column in PRICOL_COLUMNS:
+            self.table.setColumnHidden(column, not pricol)
+        self.pricol_firmware_input.setEnabled(pricol)
+        for widget in (self.pricol_mac_start_input, self.pricol_mac_end_input):
+            widget.setEnabled(pricol)
+
     def _path_row(self, form: QFormLayout, label: str, file_filter: str) -> QLineEdit:
         row = QHBoxLayout()
         edit = QLineEdit()
@@ -376,9 +461,16 @@ class BenchWindow(QMainWindow):
         self.mpcli_input.setText(prefs.value("mpcli", str(ctx.mpcli_path or "")))
         self.firmware_input.setText(prefs.value("firmware", str(ctx.firmware or "")))
         self.combined_radio.setChecked(prefs.value("combined", "false") == "true")
+        self.pricol_firmware_input.setText(prefs.value("pricol_firmware", str(ctx.pricol_firmware or "")))
         if ctx.mac_pool.start is not None:
             self.mac_start_input.setText(str(ctx.mac_pool.start))
             self.mac_end_input.setText(str(ctx.mac_pool.end))
+        if ctx.pricol_mac_pool is not None and ctx.pricol_mac_pool.start is not None:
+            self.pricol_mac_start_input.setText(str(ctx.pricol_mac_pool.start))
+            self.pricol_mac_end_input.setText(str(ctx.pricol_mac_pool.end))
+        if self.stock_pricol_radio.isEnabled() and prefs.value("pricol", "false") == "true":
+            self.stock_pricol_radio.setChecked(True)
+        self._update_mode()
         for number, check in self.use_checks.items():
             check.setChecked(prefs.value(f"use/{number}", "false") == "true")
         self.scan_qr_check.setChecked(prefs.value("scan_qr", "false") == "true")
@@ -395,6 +487,8 @@ class BenchWindow(QMainWindow):
         prefs = self._settings
         prefs.setValue("mpcli", self.mpcli_input.text())
         prefs.setValue("firmware", self.firmware_input.text())
+        prefs.setValue("pricol_firmware", self.pricol_firmware_input.text())
+        prefs.setValue("pricol", "true" if self.stock_pricol_radio.isChecked() else "false")
         prefs.setValue("combined", "true" if self.combined_radio.isChecked() else "false")
         for number, check in self.use_checks.items():
             prefs.setValue(f"use/{number}", "true" if check.isChecked() else "false")
@@ -428,15 +522,27 @@ class BenchWindow(QMainWindow):
             QMessageBox.warning(self, "Test MAC range", str(exc))
         self._refresh_mac_status()
 
+    def _apply_pricol_range(self) -> None:
+        pool = self._ctx.pricol_mac_pool
+        if pool is None:
+            return
+        try:
+            pool.set_range(self.pricol_mac_start_input.text(), self.pricol_mac_end_input.text())
+        except (MacRangeError, ValueError) as exc:
+            QMessageBox.warning(self, "Pricol test MAC range", str(exc))
+        self._refresh_mac_status()
+
     def _refresh_mac_status(self) -> None:
-        pool = self._ctx.mac_pool
-        nxt = pool.peek_next()
-        if pool.start is None:
-            self.mac_status.setText("No range set")
-            self.mac_status.setStyleSheet("color:#991b1b;")
-        else:
-            self.mac_status.setText(f"Next: {nxt or '-'} | {pool.remaining()} unused")
-            self.mac_status.setStyleSheet("color:#166534;" if pool.remaining() else "color:#991b1b;")
+        for pool, label in ((self._ctx.mac_pool, self.mac_status), (self._ctx.pricol_mac_pool, self.pricol_mac_status)):
+            if pool is None:
+                label.setText("Not available")
+                label.setStyleSheet("color:#64748b;")
+            elif pool.start is None:
+                label.setText("No range set")
+                label.setStyleSheet("color:#991b1b;")
+            else:
+                label.setText(f"Next: {pool.peek_next() or '-'} | {pool.remaining()} unused")
+                label.setStyleSheet("color:#166534;" if pool.remaining() else "color:#991b1b;")
 
     # ------------------------------------------------------------- run
 
@@ -472,6 +578,13 @@ class BenchWindow(QMainWindow):
             firmware=Path(self.firmware_input.text().strip()),
             two_step=self.two_step_radio.isChecked(),
         )
+        pricol_settings = None
+        if self.stock_pricol_radio.isChecked():
+            pricol_settings = BenchSettings(
+                mpcli_path=settings.mpcli_path,
+                firmware=Path(self.pricol_firmware_input.text().strip()),
+                two_step=settings.two_step,
+            )
         mode = self._rf_mode()
         scan_qr = self.scan_qr_check.isChecked()
         self._save_preferences()
@@ -496,7 +609,7 @@ class BenchWindow(QMainWindow):
                     )
                 token.raise_if_cancelled()
             try:
-                return runner.run(settings, slots, mode, on_update=self._slot_update.emit, token=token, scan_qr=scan_qr)
+                return runner.run(settings, slots, mode, on_update=self._slot_update.emit, token=token, scan_qr=scan_qr, pricol_settings=pricol_settings)
             except (ValueError, MacRangeError) as exc:
                 return exc
 
@@ -512,6 +625,7 @@ class BenchWindow(QMainWindow):
             self.status_label.setText(f"Could not start: {exc}")
             return
         self._set_running(True)
+        self.restart_button.setEnabled(True)
         if check_rig:
             self.status_label.setText(f"Checking Golden Rig at {rig_address[0]}:{rig_address[1]}, then running {len(slots)} slot(s)...")
         else:
@@ -555,7 +669,7 @@ class BenchWindow(QMainWindow):
 
     def _set_running(self, running: bool) -> None:
         # Modules waiting for RF must be tested or finished first.
-        waiting = self._qr_mode is not None or (self._run is not None and self._run.awaiting_rig_rf)
+        waiting = self._qr_mode is not None or self._waiting_step() is not None
         self.start_button.setEnabled(not running and not waiting)
         self.qr_test_button.setEnabled(not running and not waiting)
         self.cancel_button.setEnabled(running)
@@ -571,6 +685,10 @@ class BenchWindow(QMainWindow):
         self.status_label.setText(f"Run failed: {message}")
 
     def _on_done(self, value) -> None:
+        if self._restart_requested:
+            if isinstance(value, BenchRun):
+                self._run = value
+            return
         if isinstance(value, Exception):
             self.status_label.setText(str(value))
             QMessageBox.warning(self, "Cannot start", str(value))
@@ -578,16 +696,21 @@ class BenchWindow(QMainWindow):
         self._continue_run(value)
 
     def _continue_run(self, run: BenchRun) -> None:
-        """Next operator step of a run: RF, manual RF, QR scan or done."""
+        """Next operator step of a run: RF, manual RF, Pricol steps, QR, done."""
         self._run = run
+        if self._restart_requested:
+            return
         if run.awaiting_rig_rf:
-            self._await_rf(run)
+            self._await_step(run)
             return
         if run.awaiting_manual_rf:
             dialog = ManualRfDialog(run.awaiting_manual_rf, self)
             dialog.exec()
             run = self._ctx.runner.complete_manual_rf(run, dialog.decisions, on_update=self._apply_update)
             self._run = run
+        if run.pricol_pending:
+            self._await_step(run)
+            return
         if run.awaiting_qr:
             self._begin_run_qr(run)
             return
@@ -600,81 +723,170 @@ class BenchWindow(QMainWindow):
             "(double-click a row for its MPCLI log)"
         )
 
-    # ------------------------------------------------- operator-started RF
+    # ------------------------------------------------ operator-started steps
 
-    def _await_rf(self, run: BenchRun) -> None:
-        """Programming done: wait for the operator to reset the modules."""
-        slots = ", ".join(str(slot.slot_number) for slot in run.awaiting_rig_rf)
-        text = (
-            f"RESET MODULES FOR RF TEST - switch the module(s) in slot {slots} from boot mode "
-            "to application mode and reset them, then press RUN RF TEST."
-        )
-        if run.rf_error:
-            text = f"RF test not run: {run.rf_error}. Check the Golden Rig, then press RUN RF TEST to retry. " + text
+    def _waiting_step(self):
+        """"RF", a PricolStep, or None: the manual step the run waits for."""
+        run = self._run
+        if run is None:
+            return None
+        if run.awaiting_rig_rf:
+            return "RF"
+        if run.pricol_pending:
+            return run.pricol_step
+        return None
+
+    def _waiting_slots(self) -> list[SlotRun]:
+        run, step = self._run, self._waiting_step()
+        if step == "RF":
+            return run.awaiting_rig_rf
+        return {
+            PricolStep.PROGRAM: run.pricol_candidates,
+            PricolStep.APP: run.app_candidates,
+            PricolStep.DFU: run.dfu_candidates,
+        }.get(step, [])
+
+    def _await_step(self, run: BenchRun) -> None:
+        """Wait for the operator to switch / reset the modules and press the button."""
+        self._run = run
+        step = self._waiting_step()
+        if step is None:
+            return
+        slots = ", ".join(str(slot.slot_number) for slot in self._waiting_slots())
+        text, button, stop = STEP_TEXT[step]
+        text = text.format(slots=slots)
+        error = self._step_error or (run.rf_error if step == "RF" else None)
+        self._step_error = None
+        if error:
+            text = f"Not done: {error}. Fix it, then press {button} to retry. " + text
         self.status_label.setText(text)
-        self.status_label.setStyleSheet("color:#991b1b;font-weight:700;" if run.rf_error else "color:#1d4ed8;font-weight:700;")
+        self.status_label.setStyleSheet(
+            "color:#991b1b;font-weight:700;font-size:15px;" if error else "color:#1d4ed8;font-weight:700;font-size:15px;"
+        )
         self.start_button.setEnabled(False)
-        self.rf_button.show()
-        self.skip_rf_button.show()
-        self.rf_button.setEnabled(True)
-        self.skip_rf_button.setEnabled(True)
-        self.rf_button.setFocus()
+        self.qr_test_button.setEnabled(False)
+        self.step_button.setText(button)
+        self.stop_step_button.setText(stop)
+        self.step_button.show()
+        self.stop_step_button.show()
+        self.step_button.setEnabled(True)
+        self.stop_step_button.setEnabled(True)
+        self.step_button.setFocus()
 
-    def _end_rf_wait(self) -> None:
-        self.rf_button.hide()
-        self.skip_rf_button.hide()
+    def _end_step_wait(self) -> None:
+        self.step_button.hide()
+        self.stop_step_button.hide()
         self.status_label.setStyleSheet("")
         self.start_button.setEnabled(True)
+        self.qr_test_button.setEnabled(True)
 
-    def _run_rf(self) -> None:
-        run = self._run
-        if run is None or not run.awaiting_rig_rf:
+    def _run_step(self) -> None:
+        run, step = self._run, self._waiting_step()
+        if step is None:
             return
         runner = self._ctx.runner
+        action = {
+            "RF": runner.run_golden_rig_rf,
+            PricolStep.PROGRAM: runner.program_pricol,
+            PricolStep.APP: runner.run_app_test,
+            PricolStep.DFU: runner.run_dfu_test,
+        }[step]
+        button = STEP_TEXT[step][1]
 
         def operation(_id, token, _progress):
             try:
-                return runner.run_golden_rig_rf(run, on_update=self._slot_update.emit, token=token)
-            except ValueError as exc:
+                return action(run, on_update=self._slot_update.emit, token=token)
+            except (ValueError, MacRangeError) as exc:
                 return exc
 
         def finished(value) -> None:
             if isinstance(value, Exception):
-                self.status_label.setText(str(value))
-                self._await_rf(run)
-            elif value.awaiting_rig_rf:
-                self._await_rf(value)
+                self._step_error = str(value)
+                self._continue_run(run)
             else:
-                self._end_rf_wait()
+                self._end_step_wait()
                 self._continue_run(value)
+
+        def failed(failure) -> None:
+            self._step_error = failure.user_message
+            self._continue_run(run)
 
         def configure(worker) -> None:
             worker.succeeded.connect(lambda result: finished(result.value))
-            worker.failed.connect(lambda failure: (self.status_label.setText(f"RF test failed: {failure.user_message}"), self._await_rf(run)))
+            worker.failed.connect(failed)
 
         try:
-            self._operations.start(operation, operation_id="stock-bench-rf", configure=configure)
+            self._operations.start(operation, operation_id="bench-step", configure=configure)
         except Exception as exc:  # noqa: BLE001
-            self.status_label.setText(f"Could not start the RF test: {exc}")
+            self.status_label.setText(f"Could not start {button}: {exc}")
             return
-        self.rf_button.setEnabled(False)
-        self.skip_rf_button.setEnabled(False)
+        self.step_button.setEnabled(False)
+        self.stop_step_button.setEnabled(False)
         self.status_label.setStyleSheet("")
-        self.status_label.setText("Golden Rig RF test running...")
+        self.status_label.setText(f"{button.capitalize()}: running...")
 
-    def _finish_without_rf(self) -> None:
-        run = self._run
-        if run is None or not run.rf_pending:
+    # ------------------------------------------------------- restart
+
+    def _restart_workflow(self) -> None:
+        """Abort the run wherever it is and start the whole workflow again."""
+        if self._restart_requested:
             return
-        answer = QMessageBox.question(
+        if QMessageBox.question(
             self,
-            "Finish without RF",
-            "Record the waiting modules as NOT RF TESTED and finish this run?",
-        )
-        if answer is not QMessageBox.StandardButton.Yes:
+            "Restart workflow",
+            "Abort the current run and start the complete workflow again from the beginning?\n\n"
+            "The current run is recorded as it stands: modules that had not finished are marked ABORTED. "
+            "Test MACs already used are not reused.\n\n"
+            "Make sure the modules are in boot (download) mode before the new run programs them.",
+        ) is not QMessageBox.StandardButton.Yes:
             return
-        run = self._ctx.runner.finish_without_rf(run, on_update=self._apply_update)
-        self._end_rf_wait()
+        self._restart_requested = True
+        self.restart_button.setEnabled(False)
+        self.step_button.setEnabled(False)
+        self.stop_step_button.setEnabled(False)
+        if self._operations.active_count:
+            self._operations.cancel_all()
+            self.status_label.setStyleSheet("")
+            self.status_label.setText("Restarting: stopping the current step (MPCLI is given time to stop)...")
+            return                      # continues in _on_operation_removed
+        self._do_restart()
+
+    def _on_operation_removed(self, _operation_id: str) -> None:
+        if self._restart_requested and not self._operations.active_count:
+            self._do_restart()
+
+    def _do_restart(self) -> None:
+        self._restart_requested = False
+        run = self._run
+        if run is not None and run.csv_path is None:
+            self._run = self._ctx.runner.abort_run(run, on_update=self._apply_update)
+        if self._qr_mode is not None:
+            self._leave_qr_mode()
+            self._set_qr_prompt("Scanner ready.", "#64748b")
+        self._end_step_wait()
+        self.restart_count += 1
+        aborted = self._run.run_id if self._run is not None else None
+        self._start()
+        if self._operations.active_count:
+            note = f" (run {aborted} recorded)" if aborted else ""
+            self.status_label.setText(f"Restart #{self.restart_count}{note}: " + self.status_label.text())
+        else:
+            self.restart_button.setEnabled(self._run is not None)
+
+    def _stop_step(self) -> None:
+        run, step = self._run, self._waiting_step()
+        if step is None:
+            return
+        question = (
+            "Record the waiting modules as NOT RF TESTED and continue?"
+            if step == "RF"
+            else "Stop here and record the remaining Pricol steps as not done?"
+        )
+        if QMessageBox.question(self, STEP_TEXT[step][2], question) is not QMessageBox.StandardButton.Yes:
+            return
+        runner = self._ctx.runner
+        run = runner.finish_without_rf(run, on_update=self._apply_update) if step == "RF" else runner.finish_without_pricol(run, on_update=self._apply_update)
+        self._end_step_wait()
         self._continue_run(run)
 
     # ------------------------------------------------------------ QR scan
@@ -843,23 +1055,41 @@ class BenchWindow(QMainWindow):
 
     def _apply_update(self, slot: SlotRun) -> None:
         row = slot.slot_number - 1
+        if slot.pricol_readback != "-":
+            pricol_readback = slot.pricol_readback + (
+                f" ({slot.pricol_readback_mac})" if slot.pricol_readback_mac and slot.pricol_readback != "MATCH" else ""
+            )
+        else:
+            pricol_readback = "" if slot.pricol_flash == "-" else slot.pricol_flash
+        functional = ""
+        if slot.app != "-":
+            functional = f"APP {slot.app} / DFU {slot.dfu if slot.dfu != '-' else '...'}"
         values = {
-            3: slot.stage + (f" - {slot.message}" if slot.message else ""),
-            5: slot.mac,
-            6: slot.readback + (f" ({slot.readback_mac})" if slot.readback_mac and slot.readback != "MATCH" else ""),
-            7: slot.rf + (f" - {slot.rf_detail}" if slot.rf_detail and slot.rf not in {"-", "SKIPPED"} else ""),
-            8: slot.verdict,
-            QR_COLUMN: slot.qr + (f" ({slot.qr_note})" if slot.qr_note else ""),
+            COL_STAGE: slot.stage + (f" - {slot.message}" if slot.message else ""),
+            COL_MAC: slot.mac,
+            COL_READBACK: slot.readback + (f" ({slot.readback_mac})" if slot.readback_mac and slot.readback != "MATCH" else ""),
+            COL_RF: slot.rf + (f" - {slot.rf_detail}" if slot.rf_detail and slot.rf not in {"-", "SKIPPED"} else ""),
+            COL_PRICOL_MAC: slot.pricol_mac,
+            COL_PRICOL_READBACK: pricol_readback,
+            COL_FUNCTIONAL: functional,
+            COL_RESULT: slot.verdict,
+            COL_QR: slot.qr + (f" ({slot.qr_note})" if slot.qr_note else ""),
         }
+        tooltips = {COL_FUNCTIONAL: "\n".join(part for part in (slot.app_detail, slot.dfu_detail) if part) or functional}
         for column, text in values.items():
             item = self.table.item(row, column)
             item.setText(text)
-            item.setToolTip(text)
-        colour = next((value for key, value in RESULT_COLOURS.items() if slot.verdict.startswith(key)), None)
-        if slot.verdict and colour is None:
-            colour = "#fef3c7"
+            item.setToolTip(tooltips.get(column, text))
+        verdict = slot.verdict
+        colour = None
+        if verdict.startswith("PASS"):
+            colour = GREEN_BG
+        elif "FAIL" in verdict:
+            colour = RED_BG
+        elif verdict:
+            colour = AMBER_BG
         if colour:
-            self.table.item(row, 8).setBackground(QColor(colour))
+            self.table.item(row, COL_RESULT).setBackground(QColor(colour))
         self.progress_bars[slot.slot_number].setValue(slot.progress)
 
     def _show_slot_log(self, row: int, _column: int) -> None:
@@ -901,22 +1131,21 @@ class BenchWindow(QMainWindow):
                 return
             self._operations.cancel_all()
             self._operations.wait_for_all(20_000)
-        if self._run is not None and self._run.awaiting_rig_rf:
+        run = self._run
+        if run is not None and (self._waiting_step() is not None or self._qr_mode == "run"):
             if QMessageBox.question(
-                self, "RF test not run",
-                "Modules are waiting for the RF test. Close and record them as NOT RF TESTED?",
+                self, "Run not finished",
+                "The run is waiting for an operator step. Close and record the remaining steps as not done?",
             ) is not QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
-            self._ctx.runner.finish_without_rf(self._run)
-        elif self._qr_mode == "run" and self._run is not None:
-            if QMessageBox.question(
-                self, "QR scanning not finished",
-                "Some modules have no QR yet. Close and record them as NOT SCANNED?",
-            ) is not QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
-            self._ctx.runner.complete_qr(self._run)
+            runner = self._ctx.runner
+            if run.rf_pending:
+                run = runner.finish_without_rf(run)
+            if run.pricol_pending:
+                run = runner.finish_without_pricol(run)
+            if run.awaiting_qr:
+                runner.complete_qr(run)
         self._save_preferences()
         if self._pos_scanner is not None:
             self._pos_scanner.stop()

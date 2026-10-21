@@ -582,9 +582,6 @@ class ProductionController:
         with self._lock:
             confirm = {
                 BatchState.STOCK_MACS_RESERVED: batch.request_stock_program_mode,
-                BatchState.PRICOL_MACS_RESERVED: batch.request_pricol_program_mode,
-                BatchState.PRICOL_READBACK_VERIFIED: batch.request_functional_test_mode,
-                BatchState.AWAITING_FUNCTIONAL_TEST_MODE: batch.confirm_functional_test_mode,
             }.get(state)
 
             if confirm is not None:
@@ -610,7 +607,11 @@ class ProductionController:
                 batch.begin_stock_rf_test()
                 self._store.save(batch)
 
-            elif state is BatchState.AWAITING_PRICOL_PROGRAM_MODE:
+            elif state in (BatchState.PRICOL_MACS_RESERVED, BatchState.AWAITING_PRICOL_PROGRAM_MODE):
+                # PROGRAM PRICOL FIRMWARE: the operator has switched the
+                # modules back to boot mode and reset them.
+                if state is BatchState.PRICOL_MACS_RESERVED:
+                    batch.request_pricol_program_mode()
                 batch.confirm_pricol_program_mode()
                 self._store.save(batch, [
                     self._event(batch, EventType.PRICOL_PROGRAMMING_STARTED, slot=number, mac=str(batch.slots[number].pricol_mac))
@@ -618,7 +619,18 @@ class ProductionController:
                     if batch.slots[number].state is DeviceState.PRICOL_PROGRAMMING
                 ])
 
-            elif state is BatchState.AWAITING_PRICOLAPP_RESET:
+            elif state in (
+                BatchState.PRICOL_READBACK_VERIFIED,
+                BatchState.AWAITING_FUNCTIONAL_TEST_MODE,
+                BatchState.AWAITING_PRICOLAPP_RESET,
+            ):
+                # RUN APP TEST: the operator has switched the modules to
+                # application mode and power-cycled them.
+                if state is BatchState.PRICOL_READBACK_VERIFIED:
+                    batch.request_functional_test_mode()
+                    state = BatchState.AWAITING_FUNCTIONAL_TEST_MODE
+                if state is BatchState.AWAITING_FUNCTIONAL_TEST_MODE:
+                    batch.confirm_functional_test_mode()
                 batch.confirm_pricol_app_reset()
                 self._store.save(batch)
 

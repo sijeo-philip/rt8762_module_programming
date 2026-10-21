@@ -83,4 +83,5 @@ class GoldenRigResultProcessor:
         if any(slot.state is DeviceState.STOCK_RF_CONFIRMED for slot in batch.ordered_slots):
             batch.state = BatchState.STOCK_RF_CONFIRMED
         else:
-            batch.place_on_hold("No modules passed Golden Rig RF testing")
+            # Every module failed RF: still scan and record their QRs.
+            batch.begin_qr_scanning_without_survivors()

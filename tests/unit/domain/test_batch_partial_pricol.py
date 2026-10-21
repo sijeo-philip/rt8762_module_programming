@@ -279,14 +279,14 @@ def test_pricol_readback_failure_isolated():
     )
 
 @pytest.mark.unit
-def test_all_pricol_programming_failures_hold_batch():
+def test_all_pricol_programming_failures_go_to_qr_scanning():
     batch = make_rf_verified_batch()
     begin_pricol_programming(batch)
 
     batch.record_pricol_programming(1, succeeded=False)
     batch.record_pricol_programming(4, succeeded=False)
 
-    assert batch.state is BatchState.HOLD
+    assert batch.state is BatchState.QR_SCANNING
     assert batch.slots[1].state is DeviceState.HOLD
     assert batch.slots[4].state is DeviceState.HOLD
 

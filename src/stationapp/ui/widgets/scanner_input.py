@@ -72,6 +72,18 @@ class ScannerLineEdit(QLineEdit):
             self.clear()
             self.rejected.emit(raw)
 
+    def submit(self, raw: str) -> None:
+        """A complete read from a scanner that does not type (HID POS mode).
+
+        Same normalisation and repeat-read filter as a typed scan.
+        """
+        self._timer.stop()
+        code = self._format.normalise(raw)
+        if self._format.is_complete(code):
+            self._emit(code)
+        else:
+            self.rejected.emit(raw)
+
     def forget_last_scan(self) -> None:
         """The last scan was refused: let an immediate re-scan through."""
         self._debouncer.forget()

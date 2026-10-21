@@ -110,6 +110,7 @@ class MainWindow(QMainWindow):
             self._view_timer.timeout.connect(self._update_view)
             self._view_timer.start()
         self._update_view()
+        self._start_pos_scanner()
         #Periodic re-check: Mpcli can be closed, a USB cable pulled. The
         # station's condition is not a startup time fact
         self._timer = QTimer(self)
@@ -451,7 +452,9 @@ class MainWindow(QMainWindow):
         if self._operation_manager.get(ADVANCE_OPERATION) is None:
             self.shutdown()
             event.accept()
-            return 
+            return
+        if getattr(self, "_pos_scanner", None) is not None:
+            self._pos_scanner.stop()
             
         answer = QMessageBox.question(self, "Operations are still running",
                 (
@@ -495,9 +498,40 @@ class MainWindow(QMainWindow):
         event.accept()
 
     
+    # ----------------------------------------------- HID POS scanner
+
+    def _start_pos_scanner(self) -> None:
+        self._pos_scanner = None
+        if not getattr(self._context.settings, "qr_scanner_hid_pos", False):
+            return
+        from stationapp.ui.widgets.pos_scanner_bridge import PosScannerBridge
+
+        bridge = PosScannerBridge(self)
+        self.attach_pos_scanner(bridge)
+        bridge.start()
+
+    def attach_pos_scanner(self, bridge) -> None:
+        self._pos_scanner = bridge
+        bridge.scanned.connect(self._on_pos_scan)
+
+    def _on_pos_scan(self, raw: str) -> None:
+        """A HID POS read goes where a keyboard scan would have gone:
+        the badge field on the login screen, else the module QR field
+        while the batch is waiting for a QR."""
+        if self._login_page is not None and self._stack.currentWidget() is self._login_page:
+            self._login_page.badge_input.submit(raw)
+            return
+        panel = self._production_panel
+        if panel is not None and panel.qr_input.isEnabled():
+            panel.qr_input.submit(raw)
+            return
+        logger.info("HID POS scan ignored - no scan expected now: %r", raw)
+
     def shutdown(self, timeout_ms: int = 10_000) -> None:
         """Stop timers and background work (application exit, tests)."""
         self._closing = True
+        if getattr(self, "_pos_scanner", None) is not None:
+            self._pos_scanner.stop()
         for timer in (self._timer, self._topology_timer, getattr(self, "_view_timer", None)):
             if timer is not None:
                 timer.stop()

@@ -163,7 +163,7 @@ def test_committed_batch_requests_module_removal() -> None:
 
     assert view.completed is True
 
-def test_qr_workflow_skips_empty_and_held_slots() -> None:
+def test_qr_workflow_skips_empty_slots_and_scans_held_ones() -> None:
     batch = make_qr_scanning_batch()
 
     batch.slots[1].module_qr = "QR-0001"
@@ -175,11 +175,12 @@ def test_qr_workflow_skips_empty_and_held_slots() -> None:
     assert view.expected_slot == 4
     assert "SLOT 4" in view.instruction
 
-    # Slot 7 is held and must not be scanned through
-    # the normal production QR sequence.
+    # Slot 7 is held: its QR is still scanned and recorded.
     batch.slots[4].module_qr = "QR-0004"
 
-    assert batch.next_qr_slot is None
+    assert batch.next_qr_slot == 7
+    view = WorkflowService().describe(batch)
+    assert "FAILED module in SLOT 7" in view.instruction
 
 def test_qr_scanning_without_candidate_requires_supervisor():
     batch = make_batch()

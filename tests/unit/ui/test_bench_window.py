@@ -230,3 +230,104 @@ def test_skip_rf_run_does_not_check_the_rig(rig_window, qtbot):
     window.start_button.click()
     qtbot.waitUntil(lambda: "passed" in window.status_label.text(), timeout=10_000)
     assert state["calls"] == []
+
+
+# ---------------------------------------------------------------------------
+# QR code scanner
+# ---------------------------------------------------------------------------
+
+
+def scan(qtbot, window, text):
+    """A keyboard-wedge scanner burst, as the POS HID Barcode Scanner types it."""
+    qtbot.keyClicks(window.qr_input, text)
+    qtbot.wait(150)                     # burst settles -> scan complete
+
+
+@pytest.mark.unit
+def test_idle_scan_shows_scanner_works(window, qtbot):
+    assert "Scanner ready" in window.qr_prompt.text()
+    scan(qtbot, window, "PRICOL/1a2b3c4d")
+    assert "Scanner OK - read 1A2B3C4D" in window.qr_prompt.text()
+    qtbot.keyClicks(window.qr_input, "ABC")                    # too short
+    window.qr_input.returnPressed.emit()
+    assert "Not a valid QR" in window.qr_prompt.text()
+
+
+@pytest.mark.unit
+def test_qrs_are_scanned_against_each_passed_slot_after_the_run(window, qtbot):
+    for number in (1, 2, 3):
+        window.use_checks[number].setChecked(True)
+    window.use_checks[4].setChecked(False)
+    window.scan_qr_check.setChecked(True)
+
+    window.start_button.click()
+    qtbot.waitUntil(lambda: "SLOT 1" in window.qr_prompt.text(), timeout=10_000)
+    assert window._run.csv_path is None                         # recorded after QRs
+    assert window.table.item(0, 3).text() == "Scan QR"
+    qtbot.waitUntil(lambda: not window._operations.active_count, timeout=5_000)
+    assert not window.start_button.isEnabled()
+
+    scan(qtbot, window, "AA11BB22")
+    # Slot 2 failed programming (COM102): its QR is still scanned.
+    assert "SLOT 2 (FAIL" in window.qr_prompt.text()
+    scan(qtbot, window, "AA11BB22")                             # repeat read: ignored
+    assert "read twice" in window.qr_prompt.text()
+    window.qr_input.forget_last_scan()
+    scan(qtbot, window, "AA11BB22")                             # same label on slot 2
+    assert "already scanned for slot 1" in window.qr_prompt.text()
+    scan(qtbot, window, "EE55FF66")
+    assert "SLOT 3" in window.qr_prompt.text()
+    scan(qtbot, window, "CC33DD44")
+
+    qtbot.waitUntil(lambda: "passed" in window.status_label.text(), timeout=5_000)
+    assert window.table.item(0, 9).text() == "AA11BB22"
+    assert window.table.item(1, 9).text() == "EE55FF66"           # failed module recorded
+    assert window.table.item(1, 8).text() == "FAIL"
+    assert window.table.item(2, 9).text() == "CC33DD44"
+    csv_text = window._run.csv_path.read_text(encoding="utf-8")
+    assert "AA11BB22" in csv_text and "CC33DD44" in csv_text and ",qr,qr_note," in csv_text
+    assert window.start_button.isEnabled()
+    assert window.skip_qr_button.isHidden()
+
+
+@pytest.mark.unit
+def test_scanner_test_without_programming(window, qtbot):
+    window.use_checks[1].setChecked(True)
+    window.use_checks[2].setChecked(True)
+    window.use_checks[3].setChecked(False)
+    window.use_checks[4].setChecked(False)
+
+    window.qr_test_button.click()
+    assert "SCANNER TEST" in window.qr_prompt.text() and "SLOT 1" in window.qr_prompt.text()
+    assert not window.start_button.isEnabled()
+    scan(qtbot, window, "0000ABCD")
+    window.skip_qr_button.click()                               # slot 2 skipped
+
+    assert window.table.item(0, 9).text() == "0000ABCD"
+    assert window.table.item(1, 9).text() == "NOT SCANNED"
+    assert "1 QR(s) read" in window.status_label.text()
+    saved = (window._ctx.results_dir / "qr_scan_test.csv").read_text(encoding="utf-8")
+    assert "0000ABCD" in saved
+    assert window.start_button.isEnabled()
+    assert window.table.item(0, 5).text() == ""                 # nothing programmed
+
+
+@pytest.mark.unit
+def test_hid_pos_scanner_reads_fill_the_qr_column(window, qtbot):
+    from tests.unit.drivers.test_pos_scanner import FakeBridge
+
+    bridge = FakeBridge()
+    window.attach_pos_scanner(bridge)
+    assert "1470g connected" in window.scanner_status.text()
+
+    window.use_checks[1].setChecked(True)
+    for number in (2, 3, 4):
+        window.use_checks[number].setChecked(False)
+    window.qr_test_button.click()
+    bridge.scanned.emit("Unisem0A00000B")      # no keystrokes: HID POS mode
+
+    assert window.table.item(0, 9).text() == "0A00000B"
+    assert "0A00000B" in (window._ctx.results_dir / "qr_scan_test.csv").read_text(encoding="utf-8")
+
+    bridge.status_changed.emit("HID POS scanner: not connected (keyboard-mode scanners still work)")
+    assert "not connected" in window.scanner_status.text()

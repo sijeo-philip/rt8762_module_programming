@@ -74,6 +74,15 @@ def _default_rig_host(settings, binding) -> str:
     return "golden-rig-01.local"
 
 
+def _qr_format(settings):
+    """Module QR format from the station .env (QR_CODE_LENGTH, QR_HEX_ONLY)."""
+    from stationapp.drivers.qr_scanner import MODULE_QR_FORMAT, ScanFormat
+
+    if settings is None:
+        return MODULE_QR_FORMAT
+    return ScanFormat(length=settings.qr_code_length, hex_only=settings.qr_hex_only)
+
+
 def _ports():
     from stationapp.drivers.serial.discovery import discover_serial_ports
 
@@ -163,6 +172,9 @@ def main(argv: list[str] | None = None) -> int:
         rig_check=rig_check,
         rig_address=rig_address,
         default_rig_host=rig_host,
+        qr_format=_qr_format(settings),
+        qr_debounce_ms=settings.qr_debounce_ms if settings else 2000,
+        use_pos_scanner=settings.qr_scanner_hid_pos if settings else True,
         port_lister=port_lister,
         slot_ports=slot_ports,
         simulation=args.simulate,

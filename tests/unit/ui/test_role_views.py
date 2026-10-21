@@ -98,3 +98,21 @@ def test_role_based_screens(app_window, qtbot):
     access.logout_current()
     qtbot.waitUntil(lambda: not panel.supervisor_view, timeout=3_000)
     assert access.operator is not None and visible_tabs(window) == ["Production"]
+
+
+@pytest.mark.unit
+def test_hid_pos_badge_scan_logs_in(app_window, qtbot):
+    from tests.unit.drivers.test_pos_scanner import FakeBridge
+
+    window, context = app_window
+    access = context.access
+    access.login("SUPERVISOR1", "Sup@1234")
+    access.start_session(access.current_configuration())
+    window._session_bar.operator_button.click()                # supervisor logs out
+    qtbot.waitUntil(lambda: window._stack.currentWidget() is window._login_page, timeout=3_000)
+
+    bridge = FakeBridge()
+    window.attach_pos_scanner(bridge)
+    bridge.scanned.emit("OPBADGE001")                           # badge read in HID POS mode
+    qtbot.waitUntil(lambda: window._stack.currentWidget() is window._work_page, timeout=3_000)
+    assert access.operator is not None

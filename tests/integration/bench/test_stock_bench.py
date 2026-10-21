@@ -142,3 +142,58 @@ def test_unreachable_rig_keeps_modules_waiting_for_retry(bench):
     run = runner.finish_without_rf(run)
     assert run.slots[1].rf == "NOT TESTED" and run.slots[1].verdict == "PASS (no RF)"
     assert run.csv_path.exists()
+
+
+@pytest.mark.integration
+def test_qr_scan_after_run_and_history(bench):
+    from stationapp.bench.runner import DuplicateQrError
+
+    runner = bench["make"]()
+    run = runner.run(bench["settings"], {1: "COM11", 2: "COM13"}, RfMode.SKIP, scan_qr=True)
+    assert run.awaiting_qr and run.csv_path is None
+    assert run.next_qr_slot.slot_number == 1
+
+    runner.record_qr(run, 1, "aa11bb22")
+    with pytest.raises(DuplicateQrError):
+        runner.record_qr(run, 2, "AA11BB22")
+    run = runner.complete_qr(run)                    # slot 2 never scanned
+    assert run.slots[1].qr == "AA11BB22"
+    assert run.slots[2].qr == "NOT SCANNED"
+    assert run.csv_path.exists()
+
+    # A later run may scan the same module again: allowed, but noted.
+    second = bench["make"]().run(bench["settings"], {1: "COM11"}, RfMode.SKIP, scan_qr=True)
+    slot = bench["make"]().record_qr(second, 1, "AA11BB22")
+    assert slot.qr_note.startswith("seen before: run ")
+
+
+@pytest.mark.integration
+def test_old_results_file_is_kept_aside(bench, tmp_path):
+    runner = bench["make"]()
+    results = runner._results_dir
+    results.mkdir(parents=True, exist_ok=True)
+    (results / "stock_bench_results.csv").write_text("run_id,finished_at,slot\nold,x,1\n", encoding="utf-8")
+
+    run = runner.run(bench["settings"], {1: "COM11"}, RfMode.SKIP)
+
+    assert run.csv_path.read_text(encoding="utf-8").startswith("run_id,finished_at,slot,com_port")
+    assert list(results.glob("stock_bench_results_before_*.csv"))
+
+
+@pytest.mark.integration
+def test_failed_modules_qr_is_scanned_and_recorded(bench, monkeypatch):
+    monkeypatch.setenv("STUB_MPCLI_FAIL_PORTS", "COM12")
+    runner = bench["make"]()
+    run = runner.run(bench["settings"], {1: "COM11", 2: "COM12"}, RfMode.SKIP, scan_qr=True)
+
+    assert run.slots[2].verdict == "FAIL"
+    assert [slot.slot_number for slot in run.qr_slots] == [1, 2]   # failed one included
+    runner.record_qr(run, 1, "AA11BB22")
+    runner.record_qr(run, 2, "CC33DD44")
+    run = runner.complete_qr(run)
+
+    rows = list(csv.DictReader(run.csv_path.open(encoding="utf-8")))
+    assert [(row["slot"], row["qr"], row["verdict"]) for row in rows] == [
+        ("1", "AA11BB22", "PASS (no RF)"),
+        ("2", "CC33DD44", "FAIL"),
+    ]

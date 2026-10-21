@@ -171,6 +171,24 @@ class JigSlot:
         self.state = DeviceState.QR_BOUND
 
         
+    def record_rejected_module_qr(self, module_qr: str) -> None:
+        """Record the QR of a module that failed or was held.
+
+        Every module's QR is recorded whatever its result. A held module's
+        MACs stay quarantined and are not linked to the QR; the slot keeps
+        its HOLD state and reason.
+        """
+        if self.state is not DeviceState.HOLD:
+            raise InvalidDeviceTransition(
+                f"Slot {self.number} is not on HOLD; bind its QR after the final test stage"
+            )
+        qr = module_qr.strip()
+        if not qr:
+            raise ValueError("module QR cannot be empty")
+        if self.module_qr is not None and self.module_qr != qr:
+            raise SlotAlreadyOccupied(f"Slot {self.number} is already linked to Module QR {self.module_qr}")
+        self.module_qr = qr
+
     def bind_port(self, port_identity: str) -> None:
         """Bind a stable hardware-port identity before programming."""
         if self.state not in {

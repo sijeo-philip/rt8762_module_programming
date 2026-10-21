@@ -157,13 +157,14 @@ def test_functional_failure_still_requires_qr():
 
     batch.begin_qr_scanning()
 
-    assert batch.next_qr_slot == 1
-    assert batch.scan_module_qr("MODULE-001") == 1
-
-    assert batch.next_qr_slot == 4
-    assert batch.scan_module_qr("MODULE-004") == 4
+    # Every module's QR is scanned in slot order, held ones (2, 7) included.
+    for number in (1, 2, 4, 7):
+        assert batch.next_qr_slot == number
+        assert batch.scan_module_qr(f"MODULE-00{number}") == number
 
     assert batch.next_qr_slot is None
+    assert batch.slots[2].module_qr == "MODULE-002"
+    assert batch.slots[2].state is DeviceState.HOLD                 # result unchanged
     assert batch.state is BatchState.QR_BOUND
 
     assert batch.releasable_slot_numbers == (1,)
@@ -184,7 +185,10 @@ def test_held_duts_do_not_block_mixed_batch_commit():
 
     batch.begin_qr_scanning()
     batch.scan_module_qr("MODULE-001")
+    batch.scan_module_qr("MODULE-002")
     batch.scan_module_qr("MODULE-004")
+    assert not batch.can_commit                                     # slot 7 has no QR yet
+    batch.scan_module_qr("MODULE-007")
 
     assert batch.can_commit
     assert batch.releasable_slot_numbers == (1,)
@@ -217,7 +221,7 @@ def test_app_timeout_quarantines_only_one_slot():
     assert batch.state is BatchState.FUNCTIONAL_TEST_COMPLETE
 
     batch.begin_qr_scanning()
-    assert batch.next_qr_slot == 4
+    assert batch.next_qr_slot == 1                                  # held, still scanned
 
 
 @pytest.mark.unit
@@ -255,7 +259,7 @@ def test_duplicate_app_result_is_rejected():
 
 
 @pytest.mark.unit
-def test_no_remaining_functional_dut_holds_batch():
+def test_no_remaining_functional_dut_goes_to_qr_scanning():
     batch = make_functional_batch()
 
     batch.record_pricol_app_unverified(
@@ -265,6 +269,6 @@ def test_no_remaining_functional_dut_holds_batch():
         4, reason="No response"
     )
 
-    assert batch.state is BatchState.HOLD
+    assert batch.state is BatchState.QR_SCANNING
     assert batch.slots[1].state is DeviceState.HOLD
     assert batch.slots[4].state is DeviceState.HOLD

@@ -117,8 +117,12 @@ def test_held_slot_is_hold_disposition_not_pass():
 
     batch.begin_qr_scanning()
     batch.scan_module_qr("QR-1")
+    assert batch.state is BatchState.QR_SCANNING                    # held slot 2 next
+    batch.scan_module_qr("QR-2")
 
     assert batch.state is BatchState.QR_BOUND
+    assert batch.slots[2].module_qr == "QR-2"
+    assert batch.slots[2].stock_mac_record.module_qr is None        # quarantined MAC not linked
     assert batch.disposition_for(1) is SlotDisposition.PASS
     assert batch.disposition_for(2) is SlotDisposition.HOLD
     assert batch.can_commit

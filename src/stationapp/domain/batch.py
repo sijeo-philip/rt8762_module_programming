@@ -158,17 +158,13 @@ class Batch:
 
         candidates = self.qr_candidates
 
-        # No completed, identified module means no
-        # normal batch commit.
-        if not candidates:
-            return False
-
         if any(not self._identity_complete(slot) for slot in candidates):
             return False
 
         # Every occupied position must be either:
         # - QR-bound after completed functional testing, or
-        # - quarantined with a documented reason.
+        # - quarantined with a documented reason AND its QR recorded
+        #   (every module's QR is recorded, whatever its result).
         return all(
             (
                 slot.state is DeviceState.QR_BOUND
@@ -177,6 +173,7 @@ class Batch:
             or (
                 slot.state is DeviceState.HOLD
                 and bool(slot.hold_reason)
+                and bool(slot.module_qr)
                 and (
                     slot.stock_mac_record is not None
                     or slot.pricol_mac_record is not None
@@ -311,7 +308,7 @@ class Batch:
             return
 
         # There is no valid module to continue.
-        self.place_on_hold("No occupied slots completed Stock programming")
+        self.begin_qr_scanning_without_survivors()
 
     def record_stock_readback(self, slot_number: int, reported_mac: str) -> None:
         """Record one MPCLI Stock MAC readback result."""
@@ -355,7 +352,7 @@ class Batch:
         if any(slot.state is DeviceState.STOCK_READBACK_VERIFIED for slot in self.occupied_slots):
             self.state = BatchState.STOCK_READBACK_VERIFIED
         else:
-            self.place_on_hold("No Stock MAC addresses passed readback")
+            self.begin_qr_scanning_without_survivors()
 
     # -----------------------------------------------------------------------------------
     # Only RF-test stage: stock firmware
@@ -494,7 +491,7 @@ class Batch:
         if any(item.state is DeviceState.PRICOL_PROGRAMMED for item in self.occupied_slots):
             self.state = BatchState.PRICOL_PROGRAMMED
             return
-        self.place_on_hold("No DUTs completed Pricol programming")
+        self.begin_qr_scanning_without_survivors()
 
             
     
@@ -543,7 +540,7 @@ class Batch:
         if any(slot.state is DeviceState.PRICOL_MAC_CONFIRMED for slot in self.occupied_slots):
             self.state = BatchState.PRICOL_READBACK_VERIFIED
         else:
-            self.place_on_hold("No Pricol MAC addresses passed readback")
+            self.begin_qr_scanning_without_survivors()
 
             
     # ---------------------------------------------------------------------------------
@@ -581,7 +578,7 @@ class Batch:
         if self.functional_dfu_targets:
             self.state = BatchState.AWAITING_PRICOLDFU_RESET
         else:
-            self.place_on_hold("No eligible DUTs remain for DFU testing")
+            self.begin_qr_scanning_without_survivors()
 
 
     def record_pricol_app(self, slot_number: int, passed: bool) -> None:
@@ -622,7 +619,7 @@ class Batch:
         if self.qr_candidates:
             self.state = BatchState.FUNCTIONAL_TEST_COMPLETE
         else:
-            self.place_on_hold("No completed functional results remain")
+            self.begin_qr_scanning_without_survivors()
 
 
     def record_pricol_dfu(self, slot_number: int, passed: bool) -> None:
@@ -661,19 +658,31 @@ class Batch:
             if self.requires_pricol
             else BatchState.STOCK_RF_CONFIRMED
         )
-        if not self.qr_candidates:
-            raise InvalidBatchTransition(
-                "No completed DUTs eligible for QR scanning"
-            )
-
         self.state = BatchState.QR_SCANNING
 
+    def begin_qr_scanning_without_survivors(self) -> None:
+        """Every module failed or was held at the current stage.
+
+        No further test can run, but every module's QR is still scanned
+        and recorded, so the batch goes straight to QR scanning (instead of
+        a batch-level HOLD) and commits with each slot's FAIL/HOLD result.
+        """
+        if any(not slot.is_held for slot in self.occupied_slots):
+            raise InvalidBatchTransition("Some modules are still in test")
+        self.state = BatchState.QR_SCANNING
+
+    @property
+    def qr_scan_slots(self) -> tuple[JigSlot, ...]:
+        """Every occupied module, in slot order: passed or failed, each
+        module's QR is scanned and recorded."""
+        candidates = self.qr_candidates
+        return tuple(slot for slot in self.occupied_slots if slot in candidates or slot.is_held)
 
     @property
     def next_qr_slot(self) -> int | None:
-        """Next completed functional DUT needing QR binding."""
+        """Next module needing its QR, in physical slot order."""
 
-        for slot in self.qr_candidates:
+        for slot in self.qr_scan_slots:
             if slot.module_qr is None:
                 return slot.number
 
@@ -706,9 +715,13 @@ class Batch:
 
         slot = self.slots[slot_number]
 
-        # Existing JigSlot method validates completed
-        # functional testing and MAC genealogy.
-        slot.bind_module(qr, require_pricol=self.requires_pricol)
+        if slot.is_held:
+            # Failed / held module: QR recorded, MACs stay quarantined.
+            slot.record_rejected_module_qr(qr)
+        else:
+            # Existing JigSlot method validates completed
+            # functional testing and MAC genealogy.
+            slot.bind_module(qr, require_pricol=self.requires_pricol)
 
         if self.next_qr_slot is None:
             self.state = BatchState.QR_BOUND

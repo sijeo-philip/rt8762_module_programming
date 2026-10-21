@@ -73,6 +73,8 @@ class SlotRun:
     verdict: str = ""
     message: str = ""
     seconds: float = 0.0
+    qr: str = ""                     # scanned module QR, or "NOT SCANNED"
+    qr_note: str = ""                # e.g. seen in an earlier bench run
     log: list[str] = field(default_factory=list)
 
     @property
@@ -93,6 +95,8 @@ class BenchRun:
     log_dir: Path | None = None
     cancelled: bool = False
     rf_error: str | None = None      # last Golden Rig failure; RF can be retried
+    scan_qr: bool = False            # operator scans module QRs after RF
+    qr_done: bool = False
 
     @property
     def awaiting_manual_rf(self) -> list[SlotRun]:
@@ -106,6 +110,32 @@ class BenchRun:
     @property
     def rf_pending(self) -> bool:
         return bool(self.awaiting_manual_rf or self.awaiting_rig_rf)
+
+    @property
+    def qr_slots(self) -> list[SlotRun]:
+        """Every module in the run, in slot order: each QR is scanned and
+        recorded whatever the module's test result."""
+        return [slot for _, slot in sorted(self.slots.items())]
+
+    @property
+    def awaiting_qr(self) -> bool:
+        return self.scan_qr and not self.qr_done and not self.rf_pending and bool(self.qr_slots)
+
+    @property
+    def next_qr_slot(self) -> SlotRun | None:
+        return next((slot for slot in self.qr_slots if not slot.qr), None)
+
+
+class DuplicateQrError(ValueError):
+    """The QR is already used by another module in this run."""
+
+
+NOT_SCANNED = "NOT SCANNED"
+CSV_HEADER = [
+    "run_id", "finished_at", "slot", "com_port", "mac", "flash", "mac_write",
+    "readback_mac", "readback", "rf_mode", "rf", "rf_detail", "qr", "qr_note", "verdict",
+    "seconds", "message", "firmware", "firmware_sha256",
+]
 
 
 class BenchHardware(Protocol):
@@ -151,6 +181,7 @@ class StockBenchRunner:
         self._mac_pool = mac_pool
         self._results_dir = Path(results_dir)
         self._rf_tester = rf_tester
+        self._qr_history: dict[str, str] | None = None   # QR -> "run R slot S"
         self._station_id = station_id
         self._jig_id = jig_id
         self._lock = threading.Lock()
@@ -161,7 +192,7 @@ class StockBenchRunner:
 
     # ------------------------------------------------------------------
 
-    def run(self, settings: BenchSettings, slots: dict[int, str], rf_mode: RfMode, *, on_update: Listener | None = None, token: CancellationToken | None = None) -> BenchRun:
+    def run(self, settings: BenchSettings, slots: dict[int, str], rf_mode: RfMode, *, on_update: Listener | None = None, token: CancellationToken | None = None, scan_qr: bool = False) -> BenchRun:
         if not slots:
             raise ValueError("Select at least one slot")
         ports = [port.strip().upper() for port in slots.values()]
@@ -189,6 +220,7 @@ class StockBenchRunner:
                 for number, mac in zip(sorted(slots), macs, strict=True)
             },
             started_at=started,
+            scan_qr=scan_qr,
         )
         for slot in run.slots.values():
             notify(replace(slot, log=[]))
@@ -271,6 +303,74 @@ class StockBenchRunner:
             slot.rf, slot.rf_detail = "NOT TESTED", "operator finished without RF"
         run.rf_error = None
         return self._finish(run, notify)
+
+    # ------------------------------------------------------------- QR scan
+
+    def record_qr(self, run: BenchRun, slot_number: int, code: str, *, on_update: Listener | None = None) -> SlotRun:
+        """Bind a scanned QR to the module in slot_number."""
+        notify = on_update or (lambda _slot: None)
+        code = code.strip().upper()
+        slot = run.slots.get(slot_number)
+        if slot is None or slot not in run.qr_slots:
+            raise ValueError(f"Slot {slot_number} does not take a QR in this run")
+        if slot.qr:
+            raise ValueError(f"Slot {slot_number} already has QR {slot.qr}")
+        owner = next((other.slot_number for other in run.slots.values() if other.qr == code), None)
+        if owner is not None:
+            raise DuplicateQrError(f"QR {code} was already scanned for slot {owner} in this run")
+        slot.qr = code
+        seen = self.qr_history().get(code)
+        slot.qr_note = f"seen before: {seen}" if seen else ""
+        slot.stage, slot.progress = "Done", 100
+        notify(replace(slot, log=[]))
+        return slot
+
+    def skip_qr(self, run: BenchRun, slot_number: int, *, on_update: Listener | None = None) -> None:
+        slot = run.slots[slot_number]
+        if not slot.qr:
+            slot.qr = NOT_SCANNED
+            slot.stage, slot.progress = "Done", 100
+            (on_update or (lambda _slot: None))(replace(slot, log=[]))
+
+    def complete_qr(self, run: BenchRun, *, on_update: Listener | None = None) -> BenchRun:
+        """End QR scanning (unscanned slots: NOT SCANNED) and record the run."""
+        for slot in run.qr_slots:
+            if not slot.qr:
+                slot.qr = NOT_SCANNED
+        run.qr_done = True
+        return self._finish(run, on_update or (lambda _slot: None))
+
+    def qr_history(self) -> dict[str, str]:
+        """QRs recorded by earlier bench runs (from the results CSV)."""
+        with self._lock:
+            if self._qr_history is None:
+                history: dict[str, str] = {}
+                path = self._results_dir / "stock_bench_results.csv"
+                try:
+                    with path.open(newline="", encoding="utf-8") as handle:
+                        for row in csv.DictReader(handle):
+                            qr = (row.get("qr") or "").strip().upper()
+                            if qr and qr != NOT_SCANNED:
+                                history.setdefault(qr, f"run {row.get('run_id')} slot {row.get('slot')}")
+                except (OSError, csv.Error):
+                    pass
+                self._qr_history = history
+            return self._qr_history
+
+    def write_qr_test(self, scans: dict[int, str]) -> Path:
+        """Scanner test without programming: append the scans to a CSV."""
+        with self._lock:
+            self._results_dir.mkdir(parents=True, exist_ok=True)
+            path = self._results_dir / "qr_scan_test.csv"
+            new_file = not path.exists()
+            stamp = datetime.now().isoformat(timespec="seconds")
+            with path.open("a", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                if new_file:
+                    writer.writerow(["scanned_at", "slot", "qr"])
+                for slot_number, code in sorted(scans.items()):
+                    writer.writerow([stamp, slot_number, code])
+            return path
 
     # ------------------------------------------------------------------
 
@@ -357,11 +457,21 @@ class StockBenchRunner:
     def _finish(self, run: BenchRun, notify: Listener) -> BenchRun:
         for slot in run.slots.values():
             slot.verdict = _verdict(slot, run)
-            if not run.rf_pending:
+
+        if run.rf_pending:
+            for slot in run.slots.values():
+                notify(replace(slot, log=[]))
+            return run
+
+        waiting_for_qr = run.awaiting_qr
+        for slot in run.slots.values():
+            if waiting_for_qr and slot in run.qr_slots and not slot.qr:
+                slot.stage, slot.progress = "Scan QR", 95
+            else:
                 slot.stage, slot.progress = "Done", 100
             notify(replace(slot, log=[]))
 
-        if not run.rf_pending:
+        if not waiting_for_qr:
             run.finished_at = datetime.now()
             self._write_results(run)
         return run
@@ -383,26 +493,41 @@ class StockBenchRunner:
             run.log_dir = self._results_dir / run.run_id
             run.log_dir.mkdir(parents=True, exist_ok=True)
 
+            _retire_old_csv(run.csv_path)
             new_file = not run.csv_path.exists()
             with run.csv_path.open("a", newline="", encoding="utf-8") as handle:
                 writer = csv.writer(handle)
                 if new_file:
-                    writer.writerow([
-                        "run_id", "finished_at", "slot", "com_port", "mac", "flash", "mac_write",
-                        "readback_mac", "readback", "rf_mode", "rf", "rf_detail", "verdict",
-                        "seconds", "message", "firmware", "firmware_sha256",
-                    ])
+                    writer.writerow(CSV_HEADER)
                 for slot in sorted(run.slots.values(), key=lambda item: item.slot_number):
                     writer.writerow([
                         run.run_id, run.finished_at.isoformat(timespec="seconds"), slot.slot_number,
                         slot.com_port, slot.mac, slot.flash, slot.mac_write, slot.readback_mac,
-                        slot.readback, run.rf_mode.value, slot.rf, slot.rf_detail, slot.verdict,
-                        slot.seconds, slot.message, run.firmware.name, run.firmware_sha256,
+                        slot.readback, run.rf_mode.value, slot.rf, slot.rf_detail, slot.qr, slot.qr_note,
+                        slot.verdict, slot.seconds, slot.message, run.firmware.name, run.firmware_sha256,
                     ])
+            if self._qr_history is not None:
+                for slot in run.slots.values():
+                    if slot.qr and slot.qr != NOT_SCANNED:
+                        self._qr_history.setdefault(slot.qr, f"run {run.run_id} slot {slot.slot_number}")
 
             for slot in run.slots.values():
                 path = run.log_dir / f"slot{slot.slot_number}_{slot.com_port}.log"
                 path.write_text("".join(slot.log) or "(no MPCLI output)\n", encoding="utf-8")
+
+
+def _retire_old_csv(path: Path) -> None:
+    """A results file from an older bench version (other columns) is
+    renamed, so new rows never land under the wrong headings."""
+    if not path.exists():
+        return
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            header = next(csv.reader(handle), None)
+    except (OSError, csv.Error):
+        return
+    if header and header != CSV_HEADER:
+        path.rename(path.with_name(f"{path.stem}_before_{datetime.now():%Y%m%d-%H%M%S}{path.suffix}"))
 
 
 def _verdict(slot: SlotRun, run: BenchRun) -> str:

@@ -619,7 +619,7 @@ def test_batch_rf_mode_requires_stock_readback() -> None:
     )
 
 @pytest.mark.unit
-def test_all_stock_programming_failures_hold_batch() -> None:
+def test_all_stock_programming_failures_go_to_qr_scanning() -> None:
     batch = make_batch()
     bind_batch_ports(batch)
 
@@ -639,7 +639,9 @@ def test_all_stock_programming_failures_hold_batch() -> None:
             succeeded=False,
         )
 
-    assert batch.state is BatchState.HOLD
+    # No further test can run, but every module's QR is still recorded.
+    assert batch.state is BatchState.QR_SCANNING
+    assert batch.next_qr_slot == 1
 
     for number in (1, 2, 3, 4):
         assert batch.slots[number].state is DeviceState.HOLD

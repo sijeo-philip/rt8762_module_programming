@@ -236,7 +236,9 @@ Do this once per station PC.
    | `GOLDEN_RIG_CANDIDATES` | `golden-rig-01.local:8762` | Optional. Rigs listed under *Discover rigs*, so Supervisors do not have to type them. |
    | `SIMULATION_MODE` | `false` | **Must be `false` in production.** |
 
-4. Plug the USB QR / badge scanner into the station PC.
+4. Plug the USB QR / badge scanner into the station PC. Both scanner modes work:
+   - **HID POS mode:** Device Manager shows *POS HID Barcode scanner*. The app reads it through Windows. Install the requirements with `pip install -r requirements.txt` (this includes the `winrt-…` packages), and keep `QR_SCANNER_HID_POS=true`.
+   - **Keyboard mode:** the scanner types the code. The cursor must be in the scan box.
 5. Make sure the Operator and Supervisor accounts are **enrolled on the LAN server**. Accounts are not created on the station: anyone enrolled can log in on any station.
 
 > If the app shows a yellow **SIMULATION MODE** banner, or the login screen says it is using **test users**, the station is **not** set up for production. Do not produce; call the technician.
@@ -416,7 +418,7 @@ The Operator screen shows a large coloured **headline**, an **instruction** unde
 
 | Headline | What you do |
 |---|---|
-| **SCAN MODULE QR** | Scan the QR label of the module in the slot named in the instruction (e.g. *"SLOT 3"*). The station moves on to the next slot by itself. |
+| **SCAN MODULE QR** | Scan the QR label of the module in the slot named in the instruction (e.g. *"SLOT 3"*). **Every module is scanned, including failed ones.** For a failed module the instruction says *"Scan the QR on the FAILED module in SLOT n"*: scan it, then keep it apart from the good modules. The station moves on to the next slot by itself. This applies even if every module in the batch failed. |
 | **FINAL VALIDATION** | Check the slot results on screen, then press **COMPLETE BATCH**. |
 | **BATCH COMPLETE** | Remove the modules, then press **PREPARE NEXT BATCH**. Keep **passed** and **failed** modules apart, as the slot colours show. |
 

@@ -361,7 +361,7 @@ class WorkflowService:
                     action=OperatorAction.CALL_SUPERVISOR,
                     headline="QR SCANNING STATE INCONSISTENT",
                     instruction=(
-                        "No eligible module remains for QR scanning, "
+                        "No module remains for QR scanning, "
                         "but the batch is still in QR_SCANNING. "
                         "Request supervisor review."
                     ),
@@ -375,8 +375,10 @@ class WorkflowService:
                 action=OperatorAction.SCAN_QR,
                 headline="SCAN MODULE QR",
                 instruction=(
-                    f"Scan the QR on the module "
-                    f"in SLOT {slot_number}."
+                    f"Scan the QR on the FAILED module in SLOT {slot_number}, "
+                    "then keep it apart from the good modules."
+                    if batch.slots[slot_number].is_held
+                    else f"Scan the QR on the module in SLOT {slot_number}."
                 ),
                 expected_slot=slot_number,
                 scanner_enabled=True,

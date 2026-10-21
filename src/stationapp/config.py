@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # A repeat read of the same code within this many milliseconds is
     # discarded (scanner double-read / held trigger). 0 disables.
     qr_debounce_ms: int = Field(2000, ge=0, le=60_000)
+    # Also read USB scanners set to HID POS mode (Windows Point of
+    # Service), which do not type keystrokes. Keyboard mode always works.
+    qr_scanner_hid_pos: bool = True
 
     # --- Access control ---
     # Supervisor elevation lapses after this much inactivity.

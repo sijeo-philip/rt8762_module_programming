@@ -473,7 +473,7 @@ class ProductionController:
 
             expected_slot = batch.next_qr_slot
             if expected_slot is None:
-                raise ProductionError("All eligible module QRs have been scanned")
+                raise ProductionError("All module QRs have been scanned")
 
             # Claim the QR line-wide before binding it. Offline, the
             # binding proceeds UNCONFIRMED and is checked at the next sync.
@@ -490,7 +490,7 @@ class ProductionController:
             except (DuplicateModuleQr, DomainError) as exc:
                 raise ProductionError(str(exc)) from exc
 
-            events = [self._event(batch, EventType.MODULE_QR_BOUND, slot=slot_number, module_qr=qr, server_status=server_status, claim_detail=claim_detail)]
+            events = [self._event(batch, EventType.MODULE_QR_BOUND, slot=slot_number, module_qr=qr, server_status=server_status, claim_detail=claim_detail, module_failed=batch.slots[slot_number].is_held)]
             bind = getattr(self._store, "bind_module_qr", None)
             if bind is not None:
                 bind(batch, events, module_qr=qr, slot_number=slot_number, server_status=server_status)
@@ -657,9 +657,14 @@ class ProductionController:
             elif state is BatchState.FUNCTIONAL_TEST_COMPLETE:
                 with self._lock:
                     batch.begin_qr_scanning()
-                    self._store.save(batch, [self._event(batch, EventType.QR_SCANNING_STARTED, slots=[slot.number for slot in batch.qr_candidates])])
+                    self._store.save(batch, [self._event(batch, EventType.QR_SCANNING_STARTED, slots=[slot.number for slot in batch.qr_scan_slots])])
             else:
                 return
+
+            if batch.state is BatchState.QR_SCANNING and state not in (BatchState.STOCK_RF_CONFIRMED, BatchState.FUNCTIONAL_TEST_COMPLETE):
+                # Every module failed at this stage: straight to QR scanning.
+                with self._lock:
+                    self._store.save(batch, [self._event(batch, EventType.QR_SCANNING_STARTED, slots=[slot.number for slot in batch.qr_scan_slots], all_modules_failed=True)])
 
             self._notify()
 
@@ -832,7 +837,7 @@ class ProductionController:
         with self._lock:
             if not batch.requires_pricol:
                 batch.begin_qr_scanning()
-                self._store.save(batch, [self._event(batch, EventType.QR_SCANNING_STARTED, slots=[slot.number for slot in batch.qr_candidates])])
+                self._store.save(batch, [self._event(batch, EventType.QR_SCANNING_STARTED, slots=[slot.number for slot in batch.qr_scan_slots])])
                 return
 
             eligible = tuple(slot.number for slot in batch.pricol_eligible_slots)

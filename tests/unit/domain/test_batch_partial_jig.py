@@ -149,7 +149,8 @@ def test_all_stock_programming_failed() -> None:
     for n in (1, 2, 4, 7):
         batch.record_stock_programming(n, succeeded=False)
 
-    assert batch.state is BatchState.HOLD
+    assert batch.state is BatchState.QR_SCANNING
+    assert [slot.number for slot in batch.qr_scan_slots] == [1, 2, 4, 7]
     assert all(
         batch.slots[n].state is DeviceState.HOLD
         for n in (1, 2, 4, 7)

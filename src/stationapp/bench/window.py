@@ -38,13 +38,16 @@ from PyQt6.QtWidgets import (
 )
 
 from stationapp.bench.mac_pool import BenchMacPool, MacRangeError
-from stationapp.bench.runner import BenchRun, BenchSettings, RfMode, SlotRun, StockBenchRunner
+from stationapp.bench.runner import NOT_SCANNED, BenchRun, BenchSettings, DuplicateQrError, RfMode, SlotRun, StockBenchRunner
 from stationapp.concurrency.manager import OperationManager
+from stationapp.drivers.qr_scanner import MODULE_QR_FORMAT, ScanFormat
 from stationapp.services.golden_rig_check import RigCheckResult, RigCheckStatus
 
 logger = logging.getLogger(__name__)
 
-COLUMNS = ["Use", "Slot", "COM port", "Stage", "Progress", "MAC", "Readback", "RF", "Result"]
+COLUMNS = ["Use", "Slot", "COM port", "Stage", "Progress", "MAC", "Readback", "RF", "Result", "QR"]
+QR_COLUMN = 9
+TEXT_COLUMNS = (3, 5, 6, 7, 8, QR_COLUMN)
 RESULT_COLOURS = {"PASS": "#dcfce7", "FAIL": "#fee2e2", "CANCELLED": "#fef3c7"}
 CHECK_MARKS = {
     RigCheckStatus.PASS: ("&#10004;", "#166534"),
@@ -70,6 +73,11 @@ class BenchContext:
     # Address RF tests use (the approved binding); checked before each run.
     rig_address: tuple[str, int] | None = None
     default_rig_host: str = "golden-rig-01.local"
+    # USB QR scanner (keyboard wedge, e.g. "POS HID Barcode Scanner").
+    qr_format: ScanFormat = MODULE_QR_FORMAT
+    qr_debounce_ms: int = 2000
+    # Also read scanners in HID POS mode (they do not type keystrokes).
+    use_pos_scanner: bool = False
 
 
 class ManualRfDialog(QDialog):
@@ -119,6 +127,11 @@ class BenchWindow(QMainWindow):
         self._settings = preferences or QSettings("StationApp", "StockBench")
         self._run: BenchRun | None = None
         self._run_error: str | None = None
+        # QR scanning: None (idle: any scan is just shown), "run" (QRs for
+        # the finished run) or "test" (scanner test, no programming).
+        self._qr_mode: str | None = None
+        self._qr_test_queue: list[int] = []
+        self._qr_test_scans: dict[int, str] = {}
 
         self.setWindowTitle("Stock Firmware Bench" + (" - SIMULATION" if context.simulation else ""))
         self.resize(1250, 820)
@@ -128,6 +141,13 @@ class BenchWindow(QMainWindow):
         self._rig_checked.connect(self._show_rig_check, Qt.ConnectionType.QueuedConnection)
         self._refresh_ports()
         self._refresh_mac_status()
+        self._pos_scanner = None
+        if context.use_pos_scanner:
+            from stationapp.ui.widgets.pos_scanner_bridge import PosScannerBridge
+
+            bridge = PosScannerBridge(self)
+            self.attach_pos_scanner(bridge)
+            bridge.start()
 
     # ------------------------------------------------------------------ UI
 
@@ -216,6 +236,8 @@ class BenchWindow(QMainWindow):
         right.addWidget(rf)
         top.addLayout(right, 2)
 
+        layout.addWidget(self._build_qr_bar())
+
         self.table = QTableWidget(self._ctx.jig_positions, len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.verticalHeader().setVisible(False)
@@ -244,7 +266,7 @@ class BenchWindow(QMainWindow):
             bar.setValue(0)
             self.progress_bars[number] = bar
             self.table.setCellWidget(row, 4, bar)
-            for column in (3, 5, 6, 7, 8):
+            for column in TEXT_COLUMNS:
                 self.table.setItem(row, column, QTableWidgetItem(""))
         self.table.cellDoubleClicked.connect(self._show_slot_log)
         layout.addWidget(self.table, 1)
@@ -287,6 +309,50 @@ class BenchWindow(QMainWindow):
         buttons.addWidget(open_results)
         layout.addLayout(buttons)
 
+    def _build_qr_bar(self) -> QGroupBox:
+        from stationapp.ui.widgets.scanner_input import ScannerLineEdit
+
+        box = QGroupBox("QR code scanner")
+        box_layout = QVBoxLayout(box)
+        row = QHBoxLayout()
+        self.scan_qr_check = QCheckBox("Scan module QRs after each run")
+        self.scan_qr_check.setToolTip("After programming (and RF), scan the QR label of every module, passed or failed, slot by slot")
+        row.addWidget(self.scan_qr_check)
+        self.qr_input = ScannerLineEdit(self._ctx.qr_format, debounce_ms=self._ctx.qr_debounce_ms)
+        self.qr_input.setPlaceholderText("Scan here")
+        self.qr_input.setMinimumWidth(180)
+        self.qr_input.setToolTip(
+            "The USB scanner (shown in Windows as 'POS HID Barcode Scanner') types like a keyboard: "
+            "keep the cursor in this box while scanning."
+        )
+        self.qr_input.scanned.connect(self._on_qr_scanned)
+        self.qr_input.rejected.connect(self._on_qr_rejected)
+        self.qr_input.repeated.connect(self._on_qr_repeated)
+        row.addWidget(self.qr_input)
+        self.qr_prompt = QLabel()
+        self.qr_prompt.setWordWrap(True)
+        row.addWidget(self.qr_prompt, 1)
+        self.skip_qr_button = QPushButton("Skip slot")
+        self.skip_qr_button.clicked.connect(self._skip_qr)
+        row.addWidget(self.skip_qr_button)
+        self.finish_qr_button = QPushButton("Finish scanning")
+        self.finish_qr_button.clicked.connect(self._finish_qr)
+        row.addWidget(self.finish_qr_button)
+        self.qr_test_button = QPushButton("Scanner test")
+        self.qr_test_button.setToolTip("Scan a QR for each ticked slot without programming anything")
+        self.qr_test_button.clicked.connect(self._start_qr_test)
+        row.addWidget(self.qr_test_button)
+        box_layout.addLayout(row)
+        self.scanner_status = QLabel("Keyboard-mode scanners: keep the cursor in the scan box.")
+        self.scanner_status.setStyleSheet("color:#64748b;")
+        box_layout.addWidget(self.scanner_status)
+        self._set_qr_prompt(
+            f"Scanner ready: scan any QR to test it ({self._ctx.qr_format.description}).", "#64748b"
+        )
+        self.skip_qr_button.hide()
+        self.finish_qr_button.hide()
+        return box
+
     def _path_row(self, form: QFormLayout, label: str, file_filter: str) -> QLineEdit:
         row = QHBoxLayout()
         edit = QLineEdit()
@@ -315,6 +381,7 @@ class BenchWindow(QMainWindow):
             self.mac_end_input.setText(str(ctx.mac_pool.end))
         for number, check in self.use_checks.items():
             check.setChecked(prefs.value(f"use/{number}", "false") == "true")
+        self.scan_qr_check.setChecked(prefs.value("scan_qr", "false") == "true")
         # The approved rig wins; otherwise the last rig checked.
         if ctx.rig_address is not None:
             host, port = ctx.rig_address
@@ -332,6 +399,7 @@ class BenchWindow(QMainWindow):
         for number, check in self.use_checks.items():
             prefs.setValue(f"use/{number}", "true" if check.isChecked() else "false")
             prefs.setValue(f"port/{number}", self.port_combos[number].currentText())
+        prefs.setValue("scan_qr", "true" if self.scan_qr_check.isChecked() else "false")
         prefs.setValue("rig_host", self.rig_host_input.text().strip())
         prefs.setValue("rig_port", self.rig_port_input.value())
 
@@ -387,6 +455,9 @@ class BenchWindow(QMainWindow):
         return RfMode.SKIP
 
     def _start(self) -> None:
+        if self._qr_mode is not None:
+            self.status_label.setText("Finish QR scanning first")
+            return
         slots = self._selected_slots()
         if not slots:
             self.status_label.setText("Tick at least one slot")
@@ -402,6 +473,7 @@ class BenchWindow(QMainWindow):
             two_step=self.two_step_radio.isChecked(),
         )
         mode = self._rf_mode()
+        scan_qr = self.scan_qr_check.isChecked()
         self._save_preferences()
         self._clear_rows(slots)
         runner = self._ctx.runner
@@ -424,7 +496,7 @@ class BenchWindow(QMainWindow):
                     )
                 token.raise_if_cancelled()
             try:
-                return runner.run(settings, slots, mode, on_update=self._slot_update.emit, token=token)
+                return runner.run(settings, slots, mode, on_update=self._slot_update.emit, token=token, scan_qr=scan_qr)
             except (ValueError, MacRangeError) as exc:
                 return exc
 
@@ -483,8 +555,9 @@ class BenchWindow(QMainWindow):
 
     def _set_running(self, running: bool) -> None:
         # Modules waiting for RF must be tested or finished first.
-        waiting = self._run is not None and self._run.awaiting_rig_rf
+        waiting = self._qr_mode is not None or (self._run is not None and self._run.awaiting_rig_rf)
         self.start_button.setEnabled(not running and not waiting)
+        self.qr_test_button.setEnabled(not running and not waiting)
         self.cancel_button.setEnabled(running)
         self.rescan_button.setEnabled(not running)
         self.rig_check_button.setEnabled(not running and self._ctx.rig_check is not None)
@@ -502,7 +575,10 @@ class BenchWindow(QMainWindow):
             self.status_label.setText(str(value))
             QMessageBox.warning(self, "Cannot start", str(value))
             return
-        run: BenchRun = value
+        self._continue_run(value)
+
+    def _continue_run(self, run: BenchRun) -> None:
+        """Next operator step of a run: RF, manual RF, QR scan or done."""
         self._run = run
         if run.awaiting_rig_rf:
             self._await_rf(run)
@@ -512,6 +588,9 @@ class BenchWindow(QMainWindow):
             dialog.exec()
             run = self._ctx.runner.complete_manual_rf(run, dialog.decisions, on_update=self._apply_update)
             self._run = run
+        if run.awaiting_qr:
+            self._begin_run_qr(run)
+            return
         self._report_run(run)
 
     def _report_run(self, run: BenchRun) -> None:
@@ -567,7 +646,7 @@ class BenchWindow(QMainWindow):
                 self._await_rf(value)
             else:
                 self._end_rf_wait()
-                self._report_run(value)
+                self._continue_run(value)
 
         def configure(worker) -> None:
             worker.succeeded.connect(lambda result: finished(result.value))
@@ -594,14 +673,169 @@ class BenchWindow(QMainWindow):
         )
         if answer is not QMessageBox.StandardButton.Yes:
             return
-        self._run = self._ctx.runner.finish_without_rf(run, on_update=self._apply_update)
+        run = self._ctx.runner.finish_without_rf(run, on_update=self._apply_update)
         self._end_rf_wait()
-        self._report_run(self._run)
+        self._continue_run(run)
+
+    # ------------------------------------------------------------ QR scan
+
+    def attach_pos_scanner(self, bridge) -> None:
+        """Feed reads from a HID POS scanner into the scan box."""
+        self._pos_scanner = bridge
+        bridge.scanned.connect(self.qr_input.submit)
+        bridge.status_changed.connect(self._show_scanner_status)
+        self._show_scanner_status(bridge.status)
+
+    def _show_scanner_status(self, text: str) -> None:
+        connected = text.endswith("connected") and "not connected" not in text
+        self.scanner_status.setText(text + ("" if connected else " | keyboard-mode scanners: keep the cursor in the scan box"))
+        self.scanner_status.setStyleSheet("color:#166534;font-weight:600;" if connected else "color:#92400e;")
+
+    def _set_qr_prompt(self, text: str, colour: str, *, big: bool = False) -> None:
+        self.qr_prompt.setText(text)
+        size = "16px" if big else "12px"
+        self.qr_prompt.setStyleSheet(f"color:{colour};font-weight:700;font-size:{size};")
+
+    def _enter_qr_mode(self, mode: str) -> None:
+        self._qr_mode = mode
+        self.start_button.setEnabled(False)
+        self.qr_test_button.setEnabled(False)
+        self.skip_qr_button.show()
+        self.finish_qr_button.show()
+        self.qr_input.setFocus()
+
+    def _leave_qr_mode(self) -> None:
+        self._qr_mode = None
+        self._qr_test_queue = []
+        self.skip_qr_button.hide()
+        self.finish_qr_button.hide()
+        self.table.clearSelection()
+        self.start_button.setEnabled(not self._operations.active_count)
+        self.qr_test_button.setEnabled(not self._operations.active_count)
+
+    def _expected_qr_slot(self) -> int | None:
+        if self._qr_mode == "run" and self._run is not None:
+            slot = self._run.next_qr_slot
+            return slot.slot_number if slot else None
+        if self._qr_mode == "test":
+            return self._qr_test_queue[0] if self._qr_test_queue else None
+        return None
+
+    def _prompt_next_qr(self) -> None:
+        number = self._expected_qr_slot()
+        if number is None:
+            self._end_qr_scanning()
+            return
+        self.table.selectRow(number - 1)
+        label = "SCAN QR" if self._qr_mode == "run" else "SCANNER TEST - scan QR"
+        failed = ""
+        if self._qr_mode == "run" and self._run is not None:
+            verdict = self._run.slots[number].verdict
+            if not verdict.startswith("PASS"):
+                failed = f" ({verdict} - keep it apart)"
+        self._set_qr_prompt(f"{label} of module in SLOT {number}{failed}", "#991b1b" if failed else "#1d4ed8", big=True)
+        self.qr_input.setFocus()
+
+    def _begin_run_qr(self, run: BenchRun) -> None:
+        self._enter_qr_mode("run")
+        slots = ", ".join(str(slot.slot_number) for slot in run.qr_slots)
+        self.status_label.setText(f"Programming finished. Scan the QR of every module, passed or failed (slot {slots}).")
+        self._prompt_next_qr()
+
+    def _start_qr_test(self) -> None:
+        if self._qr_mode is not None or self._operations.active_count:
+            return
+        slots = sorted(number for number, check in self.use_checks.items() if check.isChecked())
+        slots = slots or list(self.use_checks)
+        self._qr_test_queue = slots
+        self._qr_test_scans = {}
+        for number in slots:
+            self.table.item(number - 1, QR_COLUMN).setText("")
+        self._enter_qr_mode("test")
+        self.status_label.setText(f"Scanner test: scan one QR for slot(s) {', '.join(map(str, slots))}. Nothing is programmed.")
+        self._prompt_next_qr()
+
+    def _on_qr_scanned(self, code: str) -> None:
+        number = self._expected_qr_slot()
+        if self._qr_mode is None or number is None:
+            self._set_qr_prompt(f"Scanner OK - read {code}", "#166534", big=True)
+            return
+
+        if self._qr_mode == "run":
+            try:
+                self._ctx.runner.record_qr(self._run, number, code, on_update=self._apply_update)
+            except DuplicateQrError as exc:
+                self.qr_input.forget_last_scan()
+                self._set_qr_prompt(f"{exc}. Scan the QR of the module in SLOT {number}.", "#991b1b", big=True)
+                return
+        else:
+            owner = next((slot for slot, scanned in self._qr_test_scans.items() if scanned == code), None)
+            if owner is not None:
+                self.qr_input.forget_last_scan()
+                self._set_qr_prompt(f"QR {code} was already scanned for slot {owner}. Scan the QR for SLOT {number}.", "#991b1b", big=True)
+                return
+            self._qr_test_scans[number] = code
+            self._qr_test_queue.pop(0)
+            item = self.table.item(number - 1, QR_COLUMN)
+            item.setText(code)
+            item.setToolTip(code)
+        self._prompt_next_qr()
+
+    def _on_qr_rejected(self, raw: str) -> None:
+        self._set_qr_prompt(
+            f"Not a valid QR: {raw.strip()!r} - expected {self._ctx.qr_format.description}. Scan again.", "#991b1b"
+        )
+
+    def _on_qr_repeated(self, code: str) -> None:
+        number = self._expected_qr_slot()
+        suffix = f" Scan the QR for SLOT {number}." if number else ""
+        self._set_qr_prompt(f"{code} read twice - the second read was ignored.{suffix}", "#92400e", big=bool(number))
+
+    def _skip_qr(self) -> None:
+        number = self._expected_qr_slot()
+        if number is None:
+            return
+        if self._qr_mode == "run":
+            self._ctx.runner.skip_qr(self._run, number, on_update=self._apply_update)
+        else:
+            self._qr_test_queue.pop(0)
+            self.table.item(number - 1, QR_COLUMN).setText(NOT_SCANNED)
+        self._prompt_next_qr()
+
+    def _finish_qr(self) -> None:
+        if self._expected_qr_slot() is not None and QMessageBox.question(
+            self, "Finish scanning", "Some slots have no QR yet. Finish and record them as NOT SCANNED?"
+        ) is not QMessageBox.StandardButton.Yes:
+            return
+        if self._qr_mode == "test":
+            for number in self._qr_test_queue:
+                self.table.item(number - 1, QR_COLUMN).setText(NOT_SCANNED)
+            self._qr_test_queue = []
+        self._end_qr_scanning()
+
+    def _end_qr_scanning(self) -> None:
+        mode = self._qr_mode
+        if mode == "run" and self._run is not None:
+            run = self._ctx.runner.complete_qr(self._run, on_update=self._apply_update)
+            self._leave_qr_mode()
+            self._set_qr_prompt("QR scanning complete.", "#166534")
+            self._report_run(run)
+        elif mode == "test":
+            scans = dict(self._qr_test_scans)
+            self._leave_qr_mode()
+            if scans:
+                csv_path = self._ctx.runner.write_qr_test(scans)
+                self.status_label.setText(f"Scanner test: {len(scans)} QR(s) read. Saved to {csv_path}")
+            else:
+                self.status_label.setText("Scanner test: no QR read")
+            self._set_qr_prompt("Scanner test complete.", "#166534")
+        else:
+            self._leave_qr_mode()
 
     def _clear_rows(self, slots: dict[int, str]) -> None:
         for row in range(self.table.rowCount()):
             number = row + 1
-            for column in (3, 5, 6, 7, 8):
+            for column in TEXT_COLUMNS:
                 item = self.table.item(row, column)
                 item.setText("" if number in slots else "")
                 item.setBackground(QColor("white"))
@@ -615,6 +849,7 @@ class BenchWindow(QMainWindow):
             6: slot.readback + (f" ({slot.readback_mac})" if slot.readback_mac and slot.readback != "MATCH" else ""),
             7: slot.rf + (f" - {slot.rf_detail}" if slot.rf_detail and slot.rf not in {"-", "SKIPPED"} else ""),
             8: slot.verdict,
+            QR_COLUMN: slot.qr + (f" ({slot.qr_note})" if slot.qr_note else ""),
         }
         for column, text in values.items():
             item = self.table.item(row, column)
@@ -674,7 +909,17 @@ class BenchWindow(QMainWindow):
                 event.ignore()
                 return
             self._ctx.runner.finish_without_rf(self._run)
+        elif self._qr_mode == "run" and self._run is not None:
+            if QMessageBox.question(
+                self, "QR scanning not finished",
+                "Some modules have no QR yet. Close and record them as NOT SCANNED?",
+            ) is not QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            self._ctx.runner.complete_qr(self._run)
         self._save_preferences()
+        if self._pos_scanner is not None:
+            self._pos_scanner.stop()
         event.accept()
 
 

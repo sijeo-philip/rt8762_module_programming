@@ -106,7 +106,7 @@ def test_partial_jig_with_independent_slot_failures(session_factory):
     assert batch.slots[1].pricol_mac is not None
     assert batch.slots[2].pricol_mac is None
 
-    # Ascending eligible order, skipping held slots.
+    # Every module in ascending slot order, held (failed) ones included.
     assert batch.next_qr_slot == 1
     assert controller.scan_qr("QR-0001") == 1
 
@@ -116,8 +116,11 @@ def test_partial_jig_with_independent_slot_failures(session_factory):
     with pytest.raises(ProductionError, match="Invalid QR"):
         controller.scan_qr("  ")
 
+    assert controller.scan_qr("QR-0002") == 2                      # held: still recorded
+    assert controller.scan_qr("QR-0004") == 4
     assert controller.scan_qr("QR-0007") == 7
     assert batch.state is BatchState.QR_BOUND
+    assert batch.slots[2].module_qr == "QR-0002"
 
     with pytest.raises(ProductionError, match="not active"):
         controller.scan_qr("QR-0099")
@@ -299,22 +302,32 @@ def test_cannot_start_second_batch_until_first_completes(session_factory):
 
 
 @pytest.mark.integration
-def test_held_batch_requires_supervisor_abort(session_factory):
-    controller = make_controller(session_factory, failures="stock_program:1")
-    controller.start_batch(occupied=(1,), ports=ports(1), mode=ProgrammingMode.STOCK_ONLY)
+def test_all_failed_batch_still_scans_and_records_every_qr(session_factory):
+    from stationapp.services.production import build_batch_record
+
+    controller = make_controller(session_factory, failures="stock_program:1,stock_program:2")
+    controller.start_batch(occupied=(1, 2), ports=ports(1, 2), mode=ProgrammingMode.STOCK_ONLY)
 
     controller.advance()
     controller.advance()
 
-    assert controller.batch.state is BatchState.HOLD
-    assert controller.snapshot().workflow.requires_supervisor
+    # Nothing can be tested further, but the QRs are still scanned.
+    batch = controller.batch
+    assert batch.state is BatchState.QR_SCANNING
+    workflow = controller.snapshot().workflow
+    assert workflow.expected_slot == 1 and not workflow.requires_supervisor
+    assert "FAILED module in SLOT 1" in workflow.instruction
 
-    with pytest.raises(ProductionError):
-        controller.advance()
+    controller.scan_qr("QR-F1")
+    controller.scan_qr("QR-F2")
+    controller.advance()                                          # COMPLETE BATCH
 
-    controller.abort_batch(reason="All DUTs failed programming", actor_id="SUP-1")
-    assert controller.batch.state is BatchState.ABORTED
-    controller.release_batch()
+    assert batch.state is BatchState.UPLOAD_PENDING
+    assert batch.dispositions[1] is SlotDisposition.HOLD
+    record = build_batch_record(batch)
+    assert [slot["module_qr"] for slot in record["slots"] if slot["module_qr"]] == ["QR-F1", "QR-F2"]
+    with session_factory() as session:
+        assert session.get(BatchModel, batch.batch_id).state == BatchState.UPLOAD_PENDING.value
 
 
 @pytest.mark.integration
@@ -360,6 +373,7 @@ def test_pricol_functional_test_over_uart_records_evidence(session_factory):
 
     controller.scan_qr("QR-P1")
     controller.scan_qr("QR-P2")
+    controller.scan_qr("QR-P3")                                   # held slot: QR still recorded
     controller.advance()
     assert batch.dispositions[1] is SlotDisposition.PASS
     assert batch.dispositions[2] is SlotDisposition.FAIL

@@ -71,11 +71,11 @@ STEP_TEXT = {
     ),
     PricolStep.APP: (
         "SWITCH MODULES TO APPLICATION MODE - switch the module(s) in slot {slots} from boot mode to "
-        "application mode and power-cycle them, then press RUN APP TEST.",
+        "application mode, then press RUN APP TEST and reset (power-cycle) them when told.",
         "RUN APP TEST", "Stop here (no tests)",
     ),
     PricolStep.DFU: (
-        "RESET MODULES - reset the module(s) in slot {slots} again, then press RUN DFU TEST.",
+        "READY FOR DFU TEST - press RUN DFU TEST, then reset the module(s) in slot {slots} again when told.",
         "RUN DFU TEST", "Stop here (no DFU test)",
     ),
 }
@@ -111,6 +111,8 @@ class BenchContext:
     # Stock + Pricol: separate test MAC range and the Pricol firmware.
     pricol_mac_pool: BenchMacPool | None = None
     pricol_firmware: Path | None = None
+    # Chip erase before every flash: full (-E) / keep_first_4k (-C) / none
+    chip_erase: str = "full"
 
 
 class ManualRfDialog(QDialog):
@@ -229,6 +231,15 @@ class BenchWindow(QMainWindow):
         sequence.addWidget(self.two_step_radio)
         sequence.addWidget(self.combined_radio)
         form.addRow("Sequence", sequence)
+        self.erase_combo = QComboBox()
+        for label, mode in (
+            ("Full chip erase (-E) before every flash", "full"),
+            ("Erase all but the first 4 KB (-C)", "keep_first_4k"),
+            ("No erase", "none"),
+        ):
+            self.erase_combo.addItem(label, mode)
+        self.erase_combo.setToolTip("Run as a separate MPCLI command before the Stock and the Pricol firmware are flashed")
+        form.addRow("Chip erase", self.erase_combo)
         top.addWidget(config, 3)
 
         right = QVBoxLayout()
@@ -461,6 +472,8 @@ class BenchWindow(QMainWindow):
         self.mpcli_input.setText(prefs.value("mpcli", str(ctx.mpcli_path or "")))
         self.firmware_input.setText(prefs.value("firmware", str(ctx.firmware or "")))
         self.combined_radio.setChecked(prefs.value("combined", "false") == "true")
+        index = self.erase_combo.findData(prefs.value("chip_erase", ctx.chip_erase))
+        self.erase_combo.setCurrentIndex(index if index >= 0 else 0)
         self.pricol_firmware_input.setText(prefs.value("pricol_firmware", str(ctx.pricol_firmware or "")))
         if ctx.mac_pool.start is not None:
             self.mac_start_input.setText(str(ctx.mac_pool.start))
@@ -490,6 +503,7 @@ class BenchWindow(QMainWindow):
         prefs.setValue("pricol_firmware", self.pricol_firmware_input.text())
         prefs.setValue("pricol", "true" if self.stock_pricol_radio.isChecked() else "false")
         prefs.setValue("combined", "true" if self.combined_radio.isChecked() else "false")
+        prefs.setValue("chip_erase", self.erase_combo.currentData())
         for number, check in self.use_checks.items():
             prefs.setValue(f"use/{number}", "true" if check.isChecked() else "false")
             prefs.setValue(f"port/{number}", self.port_combos[number].currentText())
@@ -577,6 +591,7 @@ class BenchWindow(QMainWindow):
             mpcli_path=Path(self.mpcli_input.text().strip()),
             firmware=Path(self.firmware_input.text().strip()),
             two_step=self.two_step_radio.isChecked(),
+            chip_erase=self.erase_combo.currentData(),
         )
         pricol_settings = None
         if self.stock_pricol_radio.isChecked():
@@ -584,6 +599,7 @@ class BenchWindow(QMainWindow):
                 mpcli_path=settings.mpcli_path,
                 firmware=Path(self.pricol_firmware_input.text().strip()),
                 two_step=settings.two_step,
+                chip_erase=settings.chip_erase,
             )
         mode = self._rf_mode()
         scan_qr = self.scan_qr_check.isChecked()
@@ -822,8 +838,18 @@ class BenchWindow(QMainWindow):
             return
         self.step_button.setEnabled(False)
         self.stop_step_button.setEnabled(False)
-        self.status_label.setStyleSheet("")
-        self.status_label.setText(f"{button.capitalize()}: running...")
+        if step in (PricolStep.APP, PricolStep.DFU):
+            # The station is listening: the modules must be reset now.
+            slots = ", ".join(str(slot.slot_number) for slot in self._waiting_slots())
+            command = "PRICOLAPP" if step is PricolStep.APP else "PRICOLDFU"
+            self.status_label.setStyleSheet("color:#b45309;font-weight:800;font-size:16px;")
+            self.status_label.setText(
+                f"RESET (POWER-CYCLE) THE MODULE(S) IN SLOT {slots} NOW - waiting for each module's "
+                f"start-up message, then sending {command}."
+            )
+        else:
+            self.status_label.setStyleSheet("")
+            self.status_label.setText(f"{button.capitalize()}: running...")
 
     # ------------------------------------------------------- restart
 
@@ -1059,8 +1085,14 @@ class BenchWindow(QMainWindow):
             pricol_readback = slot.pricol_readback + (
                 f" ({slot.pricol_readback_mac})" if slot.pricol_readback_mac and slot.pricol_readback != "MATCH" else ""
             )
+        elif slot.pricol_flash in {"-", "NOT RUN"}:
+            pricol_readback = "" if slot.pricol_flash == "-" else "not run"
+        elif slot.pricol_flash != "SUCCESS":
+            pricol_readback = f"not read (Pricol flash {slot.pricol_flash})"
+        elif slot.pricol_mac_write not in {"-", "SUCCESS"}:
+            pricol_readback = f"not read (Pricol MAC write {slot.pricol_mac_write})"
         else:
-            pricol_readback = "" if slot.pricol_flash == "-" else slot.pricol_flash
+            pricol_readback = "not read"
         functional = ""
         if slot.app != "-":
             functional = f"APP {slot.app} / DFU {slot.dfu if slot.dfu != '-' else '...'}"

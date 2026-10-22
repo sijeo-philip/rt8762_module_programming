@@ -408,6 +408,10 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         functional = PricolFunctionalTester(
             baudrate=settings.pricol_uart_baudrate,
             response_timeout_seconds=settings.pricol_response_timeout_seconds,
+            reset_wait_seconds=settings.pricol_reset_wait_seconds,
+            start_message=settings.pricol_start_message,
+            dtr=settings.pricol_uart_dtr,
+            rts=settings.pricol_uart_rts,
         )
         programmer_factory = _mpcli_programmer_factory(settings)
         golden_rig_check = approved_golden_rig_check(rig_bindings, settings.golden_rig_ca_certificate)
@@ -464,7 +468,7 @@ def _mpcli_programmer_factory(settings: Settings):
     def profile(image: Path) -> MpCliProgrammingProfile:
         if not Path(image).is_file():
             raise ValueError(f"Firmware image not found: {image}")
-        return MpCliProgrammingProfile(image_packet=Path(image))
+        return MpCliProgrammingProfile(image_packet=Path(image), chip_erase=settings.mpcli_chip_erase)
 
     def factory(stock: Path | None, pricol: Path | None) -> ProgrammingService:
         if stock is None:

@@ -16,7 +16,7 @@ The operator interface can therefore remain simple and deterministic.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 from stationapp.domain.batch import (
@@ -74,6 +74,9 @@ class OperatorWorkflow:
     allow_cancel_button: bool = False
     scanner_enabled: bool = False
     automatic_operation: bool = False
+    # The station is working but needs the operator to act now (e.g.
+    # reset the modules while it listens for their start-up message).
+    operator_action_now: bool = False
     completed: bool = False
     requires_supervisor: bool = False
     button_label: str = "CONTINUE"
@@ -268,21 +271,27 @@ class WorkflowService:
                 headline="SWITCH MODULES TO APPLICATION MODE",
                 instruction=(
                     "Pricol firmware and MAC verified. Switch every "
-                    "module from boot mode to application mode and "
-                    "power-cycle it, then press RUN APP TEST. The "
-                    "station sends PRICOLAPP to each module."
+                    "module from boot mode to application mode, then "
+                    "press RUN APP TEST. When told, reset (power-cycle) "
+                    "the modules: the station waits for each module's "
+                    "start-up message, then sends PRICOLAPP."
                 ),
                 allow_start_button=True,
                 button_label="RUN APP TEST",
             )
 
         if state is BatchState.PRICOLAPP_TESTING:
-            return self._automatic(
-                batch,
-                headline="RUNNING APPLICATION TEST",
-                instruction=(
-                    "Functional test in progress."
+            return replace(
+                self._automatic(
+                    batch,
+                    headline="RESET ALL MODULES NOW",
+                    instruction=(
+                        "Reset (power-cycle) every module now. The station "
+                        "waits for each module's start-up message, then "
+                        "sends PRICOLAPP."
+                    ),
                 ),
+                operator_action_now=True,
             )
 
         if state is BatchState.AWAITING_PRICOLDFU_RESET:
@@ -290,23 +299,28 @@ class WorkflowService:
                 batch_id=batch.batch_id,
                 batch_state=state,
                 action=OperatorAction.RESET_FOR_PRICOL_DFU,
-                headline="RESET MODULES",
+                headline="READY FOR DFU TEST",
                 instruction=(
-                    "Reset all modules in the jig again, then press "
-                    "RUN DFU TEST. The station sends PRICOLDFU to each "
-                    "module and checks it enters DFU mode."
+                    "Press RUN DFU TEST, then reset all modules again "
+                    "when told. The station waits for each module's "
+                    "start-up message, then sends PRICOLDFU."
                 ),
                 allow_start_button=True,
                 button_label="RUN DFU TEST",
             )
 
         if state is BatchState.PRICOLDFU_TESTING:
-            return self._automatic(
-                batch,
-                headline="RUNNING DFU TEST",
-                instruction=(
-                    "DFU functional test in progress."
+            return replace(
+                self._automatic(
+                    batch,
+                    headline="RESET ALL MODULES NOW",
+                    instruction=(
+                        "Reset (power-cycle) every module now. The station "
+                        "waits for each module's start-up message, then "
+                        "sends PRICOLDFU."
+                    ),
                 ),
+                operator_action_now=True,
             )
 
         if state is BatchState.FUNCTIONAL_TEST_COMPLETE:

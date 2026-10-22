@@ -84,12 +84,32 @@ def build_set_mac_command( *, com_port: str, mac: MacAddress, profile: MpCliProg
 
     return tuple(command)
 
-def build_read_mac_command(*, com_port: str, baud: int = 1_000_000) -> tuple[str, ...]:
-    """Build MPCLI EUID/MAC read-back command."""
-    port = normalize_com_port(com_port)
-    _validate_baud(baud) 
-    return ("-c", port, "-b", str(baud), "-I")
+def build_read_mac_command(*, com_port: str, baud: int = 1_000_000, reboot: bool = True) -> tuple[str, ...]:
+    """Build MPCLI EUID/MAC read-back command.
 
+    -r resets the module after the read, as the flash and MAC-write
+    commands do, so no stage leaves the module running MPCLI's RAM loader
+    (verified on the bench: mpcli -c COM8 -I -r).
+    """
+    port = normalize_com_port(com_port)
+    _validate_baud(baud)
+    command = ["-c", port, "-b", str(baud), "-I"]
+    if reboot:
+        command.append("-r")
+    return tuple(command)
+
+
+
+def build_chip_erase_command(*, com_port: str, baud: int = 1_000_000, keep_first_4k: bool = False) -> tuple[str, ...]:
+    """Build the chip erase run before flashing firmware.
+
+    -E erases the whole flash; -C keeps 0x800000-0x801000. Run as its own
+    MPCLI call so the erase is certain to happen before -P programs the
+    image. -r resets the module afterwards, as every other stage does.
+    """
+    port = normalize_com_port(com_port)
+    _validate_baud(baud)
+    return ("-c", port, "-b", str(baud), "-C" if keep_first_4k else "-E", "-r")
 
 
 def build_reboot_command(*, com_port: str, baud: int = 1_000_000) -> tuple[str, ...]:

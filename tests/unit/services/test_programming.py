@@ -75,6 +75,7 @@ class FakeDriver:
         profile,
         timeout_seconds,
         cancellation_token=None,
+        on_phase=None,
     ):
 
         self.program_calls.append(
@@ -455,6 +456,7 @@ class UncertainDriver(FakeDriver):
         profile,
         timeout_seconds,
         cancellation_token=None,
+        on_phase=None,
     ):
 
         process = ProcessResult(

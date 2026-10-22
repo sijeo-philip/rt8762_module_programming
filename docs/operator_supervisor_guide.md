@@ -398,7 +398,7 @@ The Operator screen shows a large coloured **headline**, an **instruction** unde
 | Headline | What you do |
 |---|---|
 | **PREPARE FOR STOCK PROGRAMMING** / **STOCK PROGRAM MODE** | Set the jig to *program* mode as shown, then press **CONTINUE**. |
-| **PROGRAMMING MODULES** | Wait. **Do not remove modules.** |
+| **PROGRAMMING MODULES** | Wait. Each module's chip is fully erased first, then the Stock firmware is flashed. **Do not remove modules.** |
 | **VERIFYING STOCK MACS** | Wait. **Do not remove modules.** |
 | **RESET MODULES FOR RF TEST** | The modules are still in boot mode after programming. Switch **every** module to **application mode** and **reset** it, then press **RUN RF TEST**. The RF test does not start until you press it. A module that was not reset will fail the RF test. |
 | **TESTING MODULES** | Wait. The Golden Rig is checking each module. |
@@ -411,13 +411,14 @@ Each of these steps needs you to switch or reset the modules by hand. Nothing st
 | Headline | What you do |
 |---|---|
 | **SWITCH MODULES TO BOOT MODE** | After the RF test the modules are running the application. Switch **every** module back to **boot (download) mode** and **reset** it, then press **PROGRAM PRICOL FIRMWARE**. |
-| **FINAL PROGRAMMING**, **VERIFYING MAC ADDRESSES** | Wait. The Pricol firmware and Pricol MAC are written and read back. **Do not remove modules.** |
-| **SWITCH MODULES TO APPLICATION MODE** | Switch **every** module from boot mode to **application mode** and **power-cycle** it (switch its power off and on), then press **RUN APP TEST**. The station sends *PRICOLAPP* to each module. |
-| **RUNNING APPLICATION TEST** | Wait. |
-| **RESET MODULES** | **Reset** all modules again, then press **RUN DFU TEST**. The station sends *PRICOLDFU* to each module. |
-| **RUNNING DFU TEST**, **TESTS COMPLETE** | Wait. |
+| **FINAL PROGRAMMING**, **VERIFYING MAC ADDRESSES** | Wait. Each chip is fully erased again, then the Pricol firmware and Pricol MAC are written and read back. **Do not remove modules.** |
+| **SWITCH MODULES TO APPLICATION MODE** | Switch **every** module from boot mode to **application mode**, then press **RUN APP TEST**. **Do not reset yet.** |
+| **RESET ALL MODULES NOW** | Now **reset / power-cycle** every module (within 30 seconds). Each module prints a start-up message; the station waits for it and then sends *PRICOLAPP*. |
+| **READY FOR DFU TEST** | Press **RUN DFU TEST**. **Do not reset yet.** |
+| **RESET ALL MODULES NOW** | **Reset** every module again. The station waits for each start-up message, then sends *PRICOLDFU*. |
+| **TESTS COMPLETE** | Wait. |
 
-> If you press a button before switching or resetting the modules, those modules fail that step and cannot be retested in the same batch. Always switch or reset first, then press the button.
+> **Order matters.** For **PROGRAM PRICOL FIRMWARE**: switch and reset first, then press. For **RUN APP TEST** and **RUN DFU TEST**: press first, then reset when the screen says **RESET ALL MODULES NOW**. The module accepts the test command only right after it starts. A module reset too early, or not at all, fails with *"no start-up message"* and cannot be retested in the same batch.
 
 ### QR scan and finish
 
@@ -501,7 +502,8 @@ Use the table in [B3](#b3-changes-to-the-rig-that-need-re-approval) to decide wh
 | **JIG NOT READY** (Operator screen) | A slot or the jig is not detected. | Supervisor checks [C3](#c3-bind-jig-slots-to-com-ports-supervisor) and [C6](#c6-start-of-every-shift--open-the-session-supervisor). |
 | An adapter does not appear in **Detected interface** | It has no USB identity the station can use (some cheap adapters), or its driver is not installed. | Try another adapter. Ask the technician to check Windows Device Manager. |
 | Slot fails with **ERR: 6** (or another number) | Programming error from the module. 6 = the module did not answer (not in program mode, poorly seated, or no power). | Press **Error codes** for the meaning. Re-seat the module and check the jig mode switch. If one slot keeps failing, call the Supervisor. |
-| Every module fails Pricol programming, the APP test or the RF test at once | The button was pressed before the modules were switched: Pricol programming needs **boot mode**, the RF / APP tests need **application mode** after a reset or power cycle. | Follow the instruction on screen **before** pressing the button. The affected modules cannot be retested in the same batch; set them aside for the Supervisor. |
+| Every module fails Pricol programming or the RF test at once | The button was pressed before the modules were switched: Pricol programming needs **boot mode**, the RF test needs **application mode** after a reset. | Switch and reset as the screen says **before** pressing the button. The affected modules cannot be retested in the same batch; set them aside for the Supervisor. |
+| APP / DFU test fails with *"no start-up message"* | The modules were reset **before** RUN APP TEST / RUN DFU TEST was pressed, not reset at all, or are still in boot mode. | Put the modules in application mode, press the button **first**, then reset them when the screen says **RESET ALL MODULES NOW**. |
 
 ### Login
 
@@ -576,11 +578,11 @@ Press **START**. The steps follow, and a large blue instruction above the button
 
 | # | Instruction / button | What happens |
 |---|---|---|
-| 1 | *(automatic after START)* | Stock firmware flashed, Stock MAC written and read back. |
+| 1 | *(automatic after START)* | Chip erased (per **Chip erase**, full by default), Stock firmware flashed, Stock MAC written and read back. |
 | 2 | **RESET MODULES FOR RF TEST** → **RUN RF TEST** | Golden Rig only: switch the modules to application mode and reset them, then press. *(Manual RF opens a check list instead; Skip RF goes straight on.)* |
 | 3 | **SWITCH MODULES TO BOOT MODE** → **PROGRAM PRICOL FIRMWARE** | Stock + Pricol only: switch the modules to boot mode and reset them, then press. Pricol firmware is flashed, and the Pricol MAC (from the Pricol range) written and read back. |
-| 4 | **SWITCH MODULES TO APPLICATION MODE** → **RUN APP TEST** | Switch the modules to application mode and power-cycle them, then press. *PRICOLAPP* is sent on each slot's COM port. |
-| 5 | **RESET MODULES** → **RUN DFU TEST** | Reset the modules again, then press. *PRICOLDFU* is sent. |
+| 4 | **SWITCH MODULES TO APPLICATION MODE** → **RUN APP TEST** | Switch the modules to application mode, press, **then** reset (power-cycle) them when the orange *RESET … NOW* line appears. Each module's start-up message is awaited, then *PRICOLAPP* is sent on its COM port. |
+| 5 | **READY FOR DFU TEST** → **RUN DFU TEST** | Press, **then** reset the modules again when told. *PRICOLDFU* is sent after each start-up message. |
 | 6 | **SCAN QR of module in SLOT n** | If ticked: scan every module's QR, failed ones included. |
 
 Only modules that passed a step go on to the next one. The others keep their result. While a run waits for you, **START** stays disabled.

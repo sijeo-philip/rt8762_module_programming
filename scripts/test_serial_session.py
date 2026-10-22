@@ -17,7 +17,7 @@ def main() -> None:
     parser.add_argument("port", help="COM port, e.g. COM7")
     parser.add_argument("--baud", type=int, default=115200)
     args = parser.parse_args()
-    config = SerialSessionConfig(port=args.port, baudrate=args.baud)
+    config = SerialSessionConfig(port=args.port, baudrate=args.baud)   # 8N1, no flow control, DTR/RTS off
     print(f"Opening {config.port} at {config.baudrate} baud...")
 
     with SerialSession(config=config) as session:

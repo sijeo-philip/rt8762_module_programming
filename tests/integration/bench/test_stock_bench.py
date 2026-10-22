@@ -314,3 +314,36 @@ def test_pricol_needs_a_separate_mac_range(bench):
     pricol_pool.set_range("02:5A:00:00:00:08", "02:5A:00:00:00:20")    # overlaps the Stock range
     with pytest.raises(ValueError, match="overlap"):
         runner.run(bench["settings"], {1: "COM11"}, RfMode.SKIP, pricol_settings=pricol_settings)
+
+
+# ---------------------------------------------------------------------------
+# Chip erase before every firmware flash
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_chip_erase_runs_before_stock_and_pricol_flash(bench, monkeypatch):
+    log = bench["tmp"] / "mpcli_commands.log"
+    monkeypatch.setenv("STUB_MPCLI_LOG", str(log))
+    runner, pricol_settings, _pool = pricol_runner(bench, FakeFunctional())
+
+    run = runner.run(bench["settings"], {1: "COM11"}, RfMode.SKIP, pricol_settings=pricol_settings)
+    run = runner.program_pricol(run)
+
+    steps = []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        args = line.split()
+        steps.append("ERASE" if "-E" in args else "FLASH" if "-P" in args else "MAC" if "-x" in args else "READ" if "-I" in args else line)
+    assert steps == ["ERASE", "FLASH", "MAC", "READ", "ERASE", "FLASH", "MAC", "READ"]
+    assert run.slots[1].readback == "MATCH" and run.slots[1].pricol_readback == "MATCH"
+    assert "CHIP ERASE" in run.slots[1].log[0] and "PRICOL CHIP ERASE" in "".join(run.slots[1].log)
+
+
+@pytest.mark.integration
+def test_failed_chip_erase_stops_the_slot(bench, monkeypatch):
+    monkeypatch.setenv("STUB_MPCLI_FAIL_ERASE_PORTS", "COM12")
+    run = bench["make"]().run(bench["settings"], {1: "COM11", 2: "COM12"}, RfMode.SKIP)
+
+    assert run.slots[1].verdict == "PASS (no RF)"
+    assert run.slots[2].flash == "NOT RUN" and run.slots[2].verdict == "FAIL"
+    assert run.slots[2].message.startswith("Chip erase failed")

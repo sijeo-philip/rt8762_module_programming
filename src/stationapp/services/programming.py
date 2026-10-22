@@ -222,6 +222,7 @@ class ProgrammingService:
             profile=profile,
             timeout_seconds=self._programming_timeout_seconds,
             cancellation_token=cancellation_token,
+            on_phase=on_phase,
         )
 
     def _require_pricol_profile(self) -> MpCliProgrammingProfile:

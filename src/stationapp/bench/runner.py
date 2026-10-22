@@ -34,7 +34,7 @@ from stationapp.concurrency.cancellation import CancellationToken
 from stationapp.domain.golden_rig import GoldenRigOutcome, GoldenRigTarget
 from stationapp.domain.mac import MacAddress
 from stationapp.drivers.mpcli.commands import sanitise_command
-from stationapp.drivers.mpcli.configuration import MpCliProgrammingProfile
+from stationapp.drivers.mpcli.configuration import ERASE_FULL, ERASE_NONE, MpCliProgrammingProfile
 from stationapp.drivers.mpcli.driver import MpCliDriver
 from stationapp.drivers.mpcli.parsers import compare_readback, parse_programming_result
 from stationapp.drivers.mpcli.process import MpCliProcessRunner
@@ -77,6 +77,8 @@ class BenchSettings:
     mac_timeout_s: float = 15.0
     readback_timeout_s: float = 10.0
     settle_s: float = 2.0
+    chip_erase: str = ERASE_FULL       # before every flash: full / keep_first_4k / none
+    erase_timeout_s: float = 60.0
 
 
 @dataclass(slots=True)
@@ -208,6 +210,7 @@ CSV_HEADER = [
 
 
 class BenchHardware(Protocol):
+    def erase(self, com_port: str, token: CancellationToken) -> ProgrammingResult: ...
     def flash(self, com_port: str, token: CancellationToken) -> ProgrammingResult: ...
     def write_mac(self, com_port: str, mac: MacAddress, token: CancellationToken) -> ProgrammingResult: ...
     def flash_with_mac(self, com_port: str, mac: MacAddress, token: CancellationToken) -> ProgrammingResult: ...
@@ -223,7 +226,11 @@ class MpCliBenchHardware:
         self._profile = MpCliProgrammingProfile(
             image_packet=Path(settings.firmware),
             baud=settings.baud,
+            chip_erase=settings.chip_erase,
         )
+
+    def erase(self, com_port, token):
+        return self._driver.erase_chip(com_port=com_port, profile=self._profile, timeout_seconds=self._settings.erase_timeout_s, cancellation_token=token)
 
     def flash(self, com_port, token):
         raw = self._driver.flash(com_port=com_port, profile=self._profile, timeout_seconds=self._settings.flash_timeout_s, cancellation_token=token)
@@ -501,7 +508,7 @@ class StockBenchRunner:
         label = "PRICOLDFU" if dfu else "PRICOLAPP"
 
         def test(slot: SlotRun) -> None:
-            slot.stage, slot.progress = f"{label} test", 97
+            slot.stage, slot.progress = f"Reset now - waiting for start-up, then {label}", 97
             notify(replace(slot, log=[]))
             try:
                 call = tester.run_dfu_test if dfu else tester.run_app_test
@@ -511,7 +518,16 @@ class StockBenchRunner:
                 response = (getattr(outcome, "response", "") or "").strip()
                 if response:
                     detail = f"{detail} | response: {response[:120]}" if detail else f"response: {response[:120]}"
-                    slot.log.append(f"=== {label} | {slot.com_port}\n{getattr(outcome, 'response', '')}\n")
+                # Always log the exchange, including silence, for diagnosis.
+                slot.log.append(
+                    f"=== {label} TEST | {slot.com_port} | {'PASS' if passed is True else 'FAIL' if passed is False else 'ERROR'}"
+                    f" | {getattr(outcome, 'duration_seconds', '?')}s\n"
+                    f"start-up : {getattr(outcome, 'start_message', '')!r}\n"
+                    f"sent     : {label!r} + CR LF\n"
+                    f"expected : a line exactly {label!r}\n"
+                    f"received : {getattr(outcome, 'response', '')!r}\n"
+                    f"detail   : {detail}\n"
+                )
             except Exception as exc:  # noqa: BLE001 - one slot must not stop the others
                 logger.exception("Bench %s slot %s failed", label, slot.slot_number)
                 passed, detail = None, f"{type(exc).__name__}: {exc}"
@@ -615,6 +631,16 @@ class StockBenchRunner:
         """Flash, write the MAC and read it back; never raises."""
         out = _Programmed()
         try:
+            if settings.chip_erase != ERASE_NONE:
+                step("Erasing chip", 5)
+                erase = hardware.erase(slot.com_port, token)
+                self._record(slot, f"{label}CHIP ERASE", erase.process)
+                if not erase.succeeded:
+                    out.flash = "NOT RUN"
+                    out.message = erase.message
+                    return out
+                _sleep(settings.settle_s, token)
+
             if settings.two_step:
                 step("Flashing firmware", 10)
                 result = hardware.flash(slot.com_port, token)

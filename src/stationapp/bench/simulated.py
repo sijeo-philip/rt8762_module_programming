@@ -25,6 +25,12 @@ class SimulatedBenchHardware:
         self._fail = {port.upper() for port in fail_ports}
         self._written: dict[str, MacAddress] = {}
 
+    def erase(self, com_port: str, token: CancellationToken) -> ProgrammingResult:
+        self._wait(token, 0.5)
+        self._written.pop(com_port.upper(), None)
+        process = ProcessResult(("-c", com_port, "-E", "-r"), ProcessOutcome.COMPLETED, 0, "chip erase -OK-", "", self._delay * 0.5)
+        return parse_programming_result(process)
+
     def flash(self, com_port: str, token: CancellationToken) -> ProgrammingResult:
         self._wait(token, 2.0)
         failed = com_port.upper() in self._fail

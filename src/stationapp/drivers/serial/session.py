@@ -39,6 +39,13 @@ class SerialSessionConfig:
 
     newline: bytes = b"\r\n"
 
+    # Flow control is always off (8N1, no XON/XOFF, no RTS/CTS, no DSR/DTR).
+    # dtr / rts: the modem-control line levels while the port is open.
+    # Off by default: on the jig these lines must not drive the module's
+    # reset / boot pins. None keeps the driver default (pyserial: on).
+    dtr: bool | None = False
+    rts: bool | None = False
+
     def __post_init__(self) -> None:
         port = self.port.strip()
 
@@ -98,8 +105,16 @@ def create_pyserial_backend(config: SerialSessionConfig) -> serial.Serial:
     backend.bytesize = config.bytesize
     backend.parity = config.parity
     backend.stopbits = config.stopbits
+    backend.xonxoff = False
+    backend.rtscts = False
+    backend.dsrdtr = False
     backend.timeout = (config.read_timeout_seconds)
     backend.write_timeout = (config.write_timeout_seconds)
+    # Set before open(): pyserial applies these levels when it opens.
+    if config.dtr is not None:
+        backend.dtr = config.dtr
+    if config.rts is not None:
+        backend.rts = config.rts
     return backend
 
 

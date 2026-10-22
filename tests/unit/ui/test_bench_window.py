@@ -101,7 +101,7 @@ def rig_result(ok: bool):
 
 
 @pytest.fixture
-def rig_window(qtbot, tmp_path: Path):
+def rig_window(qtbot, tmp_path: Path, monkeypatch):
     from stationapp.services.simulation import SimulatedGoldenRig
 
     firmware = tmp_path / "stock.bin"
@@ -138,6 +138,10 @@ def rig_window(qtbot, tmp_path: Path):
     yield win, pool, state
     win._operations.cancel_all()
     win._operations.wait_for_all(5_000)
+    from PyQt6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    win.close()
 
 
 @pytest.mark.unit
@@ -339,7 +343,7 @@ def test_hid_pos_scanner_reads_fill_the_qr_column(window, qtbot):
 
 
 @pytest.fixture
-def pricol_window(qtbot, tmp_path: Path):
+def pricol_window(qtbot, tmp_path: Path, monkeypatch):
     from stationapp.services.simulation import SimulatedFunctionalTester, parse_failures
 
     stock_fw, pricol_fw = tmp_path / "stock.bin", tmp_path / "pricol.bin"
@@ -373,6 +377,11 @@ def pricol_window(qtbot, tmp_path: Path):
     yield win
     win._operations.cancel_all()
     win._operations.wait_for_all(5_000)
+    # A failed test may leave the run waiting: never block teardown on a dialog.
+    from PyQt6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    win.close()
 
 
 def press_step(qtbot, window, label, next_text):
@@ -405,7 +414,7 @@ def test_stock_and_pricol_run_is_driven_by_operator_buttons(pricol_window, qtbot
     assert window.table.item(0, COL_PRICOL_READBACK).text() == "MATCH"
     assert window.table.item(0, COL_FUNCTIONAL).text() == ""          # not tested yet
 
-    press_step(qtbot, window, "RUN APP TEST", "RESET MODULES - reset")
+    press_step(qtbot, window, "RUN APP TEST", "READY FOR DFU TEST")
     assert window.table.item(1, COL_FUNCTIONAL).text().startswith("APP FAIL")
 
     press_step(qtbot, window, "RUN DFU TEST", "SCAN QR of module in SLOT 1")
@@ -527,3 +536,39 @@ def test_restart_after_a_finished_run_repeats_the_workflow(pricol_window, qtbot,
     rows = csv_rows(window)
     assert len(rows) == 4 and all(row["verdict"] == "PASS (no RF)" for row in rows)
     assert len({row["mac"] for row in rows}) == 4
+
+
+@pytest.mark.unit
+def test_pricol_readback_column_says_why_nothing_was_read(pricol_window):
+    from stationapp.bench.runner import SlotRun
+    from stationapp.bench.window import COL_PRICOL_READBACK
+
+    slot = SlotRun(1, "COM101", pricol_mac="02:5B:00:00:01:00", pricol_flash="FAILED")
+    pricol_window._apply_update(slot)
+    assert pricol_window.table.item(0, COL_PRICOL_READBACK).text() == "not read (Pricol flash FAILED)"
+
+    slot = SlotRun(1, "COM101", pricol_flash="SUCCESS", pricol_mac_write="FAILED")
+    pricol_window._apply_update(slot)
+    assert pricol_window.table.item(0, COL_PRICOL_READBACK).text() == "not read (Pricol MAC write FAILED)"
+
+
+@pytest.mark.unit
+def test_chip_erase_choice_reaches_the_run(pricol_window, qtbot):
+    window = pricol_window
+    assert window.erase_combo.currentData() == "full"               # default: full chip erase
+    seen = []
+    runner = window._ctx.runner
+    original = runner.run
+
+    def run(settings, *args, **kwargs):
+        seen.append((settings.chip_erase, kwargs["pricol_settings"].chip_erase if kwargs.get("pricol_settings") else None))
+        return original(settings, *args, **kwargs)
+
+    runner.run = run
+    window.stock_pricol_radio.setChecked(True)
+    window.use_checks[1].setChecked(True)
+    window.erase_combo.setCurrentIndex(window.erase_combo.findData("keep_first_4k"))
+    window.start_button.click()
+    qtbot.waitUntil(lambda: bool(seen), timeout=5_000)
+    assert seen[0] == ("keep_first_4k", "keep_first_4k")
+    qtbot.waitUntil(lambda: "SWITCH MODULES TO BOOT MODE" in window.status_label.text(), timeout=10_000)

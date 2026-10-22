@@ -45,11 +45,24 @@ class Settings(BaseSettings):
     # Validated flash -> settle -> write-MAC sequence (see
     # scripts/program_one_real_dut.py) instead of the combined command.
     mpcli_two_step: bool = True
+    # Chip erase before every firmware flash (Stock and Pricol):
+    # full (-E, whole flash) | keep_first_4k (-C) | none
+    mpcli_chip_erase: str = "full"
     mpcli_programming_timeout_seconds: float = Field(90.0, gt=0)
 
     # --- Pricol functional test (PRICOLAPP / PRICOLDFU over the DUT UART) ---
     pricol_uart_baudrate: int = Field(115200, gt=0)
     pricol_response_timeout_seconds: float = Field(3.0, gt=0)
+    # After pressing RUN APP / RUN DFU TEST the operator resets the modules;
+    # each module's start-up line is awaited this long, then the command
+    # is sent.
+    pricol_reset_wait_seconds: float = Field(30.0, gt=0, le=600)
+    pricol_start_message: str = "### Uart demo interrupt read uart data ###"
+    # DTR / RTS levels on the slot's COM port during the functional test:
+    # off (the jig requires it). Blank = driver default (pyserial asserts
+    # both), only for diagnosis with scripts/uart_monitor.py.
+    pricol_uart_dtr: bool | None = False
+    pricol_uart_rts: bool | None = False
 
     # --- Firmware (defaults offered in batch setup) ---
     stock_firmware_path: Path | None = None
@@ -118,6 +131,24 @@ class Settings(BaseSettings):
 
     # --- Runtime ---
     log_level: str = "INFO"
+
+    @field_validator("mpcli_chip_erase")
+    @classmethod
+    def _check_chip_erase(cls, value: str) -> str:
+        from stationapp.drivers.mpcli.configuration import ERASE_MODES
+
+        value = value.strip().lower()
+        if value not in ERASE_MODES:
+            raise ValueError(f"MPCLI_CHIP_ERASE must be one of {', '.join(ERASE_MODES)}")
+        return value
+
+    @field_validator("pricol_uart_dtr", "pricol_uart_rts", mode="before")
+    @classmethod
+    def _blank_is_default(cls, value):
+        """A blank DTR / RTS entry means "driver default" (on), not an error."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("jig_positions", mode="before")
     @classmethod

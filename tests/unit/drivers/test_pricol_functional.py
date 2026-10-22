@@ -14,11 +14,19 @@ from stationapp.drivers.pricol.functional import (
 from stationapp.drivers.serial.session import SerialSession
 
 
-class FakeDut:
-    """Scripted UART backend: replies to a written command."""
+START_LINE = b"### Uart demo interrupt read uart data ###\r\n"
 
-    def __init__(self, replies: dict[bytes, list[bytes]] | None = None, *, boot_noise: bytes = b"", fail_open: bool = False) -> None:
+
+class FakeDut:
+    """Scripted UART backend: replies to a written command.
+
+    Like the real module, it prints its start-up line after each reset;
+    the reset happens while the station listens (modelled as: after open).
+    """
+
+    def __init__(self, replies: dict[bytes, list[bytes]] | None = None, *, boot_noise: bytes = b"", fail_open: bool = False, start_line: bytes = START_LINE) -> None:
         self.replies = replies or {}
+        self.start_line = start_line
         self.fail_open = fail_open
         self.written: list[bytes] = []
         self._rx = bytearray(boot_noise)
@@ -36,6 +44,10 @@ class FakeDut:
         if self.fail_open:
             raise serial.SerialException("could not open port 'COM9': Access is denied")
         self.is_open = True
+        if self.start_line:
+            # Two chunks: the station must wait for the complete line.
+            half = len(self.start_line) // 2
+            self._pending.extend([self.start_line[:half], self.start_line[half:]])
 
     def close(self) -> None:
         self.is_open = False
@@ -57,9 +69,10 @@ class FakeDut:
         pass
 
 
-def make_tester(dut: FakeDut, timeout: float = 0.3) -> PricolFunctionalTester:
+def make_tester(dut: FakeDut, timeout: float = 0.3, reset_wait: float = 0.5) -> PricolFunctionalTester:
     return PricolFunctionalTester(
         response_timeout_seconds=timeout,
+        reset_wait_seconds=reset_wait,
         session_factory=lambda config: SerialSession(config=config, backend=dut),
         poll_seconds=0.001,
     )
@@ -156,3 +169,57 @@ def test_cancellation_propagates():
 @pytest.mark.unit
 def test_expected_line_matching_ignores_trailing_space():
     assert APP_RESPONSE in response_lines(b"  PRICOLAPP \r\n")
+
+
+@pytest.mark.unit
+def test_command_is_sent_only_after_the_start_up_line():
+    dut = FakeDut({b"PRICOLAPP\r\n": APP_OK})
+    unread_at_send = []
+    original_write = dut.write
+
+    def write(data):
+        unread_at_send.append(bytes(dut._rx) + b"".join(dut._pending))
+        return original_write(data)
+
+    dut.write = write
+    outcome = make_tester(dut).run_app_test(slot_number=1, com_port="COM9")
+
+    assert outcome.passed is True
+    assert unread_at_send == [b""]                              # whole start line read first
+    assert "Uart demo interrupt read uart data" in outcome.start_message
+
+
+@pytest.mark.unit
+def test_no_start_up_line_means_module_was_not_reset():
+    dut = FakeDut({b"PRICOLAPP\r\n": APP_OK}, start_line=b"")
+
+    outcome = make_tester(dut, reset_wait=0.2).run_app_test(slot_number=1, com_port="COM9")
+
+    assert outcome.passed is False
+    assert dut.written == []                                    # nothing sent
+    assert "no start-up message" in outcome.detail and "reset the module" in outcome.detail
+
+
+@pytest.mark.unit
+def test_response_on_the_same_line_as_the_start_up_text_passes():
+    dut = FakeDut({b"PRICOLAPP\r\n": [b"PRICOLAPP### Uart demo interrupt read uart data ###\r\n"]})
+    assert make_tester(dut).run_app_test(slot_number=1, com_port="COM9").passed is True
+
+
+@pytest.mark.unit
+def test_start_up_text_alone_is_not_a_response():
+    dut = FakeDut({b"PRICOLDFU\r\n": [START_LINE]})
+    outcome = make_tester(dut).run_dfu_test(slot_number=1, com_port="COM9")
+    assert outcome.passed is False and outcome.detail == "unexpected response"
+
+
+@pytest.mark.unit
+def test_old_behaviour_without_waiting_is_still_available():
+    dut = FakeDut({b"PRICOLAPP\r\n": APP_OK}, start_line=b"")
+    tester = PricolFunctionalTester(
+        response_timeout_seconds=0.3,
+        wait_for_start=False,
+        session_factory=lambda config: SerialSession(config=config, backend=dut),
+        poll_seconds=0.001,
+    )
+    assert tester.run_app_test(slot_number=1, com_port="COM9").passed is True

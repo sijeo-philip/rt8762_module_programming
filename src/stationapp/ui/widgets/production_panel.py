@@ -656,7 +656,8 @@ class ProductionPanel(QWidget):
         self._set_banner(
             headline,
             instruction,
-            RED if workflow.requires_supervisor else GREEN if workflow.completed else GREY if workflow.automatic_operation else BLUE,
+            RED if workflow.requires_supervisor else GREEN if workflow.completed
+            else BLUE if workflow.operator_action_now else GREY if workflow.automatic_operation else BLUE,
         )
 
         retry = workflow.automatic_operation and snapshot.last_error is not None

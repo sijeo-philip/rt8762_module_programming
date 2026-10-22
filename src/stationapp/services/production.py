@@ -43,7 +43,7 @@ from stationapp.domain.golden_rig import GoldenRigTarget
 from stationapp.domain.mac import AllocatedMac, MacPurpose
 from stationapp.domain.slot import DeviceState
 from stationapp.domain.users import AccessError, AuthenticatedUser
-from stationapp.drivers.mpcli.driver import PHASE_FLASHING, PHASE_WRITING_MAC
+from stationapp.drivers.mpcli.driver import PHASE_ERASING, PHASE_FLASHING, PHASE_WRITING_MAC
 from stationapp.drivers.mpcli.types import IdentityOutcome
 from stationapp.drivers.pricol.functional import FunctionalTestOutcome
 from stationapp.drivers.qr_scanner import InvalidScan, ScanFormat
@@ -703,7 +703,9 @@ class ProductionController:
             self._set_activity(number, "Programming firmware", None)
 
             def on_phase(phase: str) -> None:
-                if phase == PHASE_FLASHING:
+                if phase == PHASE_ERASING:
+                    self._set_activity(number, "Erasing chip", None)
+                elif phase == PHASE_FLASHING:
                     self._set_activity(number, "Programming firmware", None)
                 elif phase == PHASE_WRITING_MAC:
                     self._set_activity(number, "Writing MAC", None)
@@ -887,6 +889,7 @@ class ProductionController:
                         "expected": result.expected,
                         "response": result.response,
                         "detail": result.detail,
+                        "start_message": getattr(result, "start_message", ""),
                         "duration_seconds": result.duration_seconds,
                     }
                 else:

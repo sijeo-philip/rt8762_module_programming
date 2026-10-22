@@ -74,6 +74,7 @@ def test_read_mac_uses_readback_command() -> None:
         "-b",
         "1000000",
         "-I",
+        "-r",
     )
 
     assert result.succeeded is True

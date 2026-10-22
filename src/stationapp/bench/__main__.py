@@ -167,6 +167,11 @@ def main(argv: list[str] | None = None) -> int:
         functional = PricolFunctionalTester(
             baudrate=settings.pricol_uart_baudrate if settings else 115200,
             response_timeout_seconds=settings.pricol_response_timeout_seconds if settings else 3.0,
+            reset_wait_seconds=settings.pricol_reset_wait_seconds if settings else 30.0,
+            **(
+                {"start_message": settings.pricol_start_message, "dtr": settings.pricol_uart_dtr, "rts": settings.pricol_uart_rts}
+                if settings else {}
+            ),
         )
 
     runner = StockBenchRunner(
@@ -187,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         mpcli_path=Path(settings.mpcli_path) if settings else None,
         firmware=placeholder if args.simulate else (settings.stock_firmware_path if settings else None),
         pricol_mac_pool=pricol_pool,
+        chip_erase=settings.mpcli_chip_erase if settings else "full",
         pricol_firmware=pricol_placeholder if args.simulate else (settings.pricol_firmware_path if settings else None),
         golden_rig_status=rig_status,
         rig_check=rig_check,

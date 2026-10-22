@@ -131,7 +131,9 @@ def test_read_mac_command() -> None:
         "-b",
         "1000000",
         "-I",
+        "-r",
     )
+    assert build_read_mac_command(com_port="com12", reboot=False)[-1] == "-I"
 
 
 def test_reboot_command() -> None:

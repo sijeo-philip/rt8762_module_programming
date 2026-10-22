@@ -31,6 +31,14 @@ Environment variables:
         Optional comma-separated ports (e.g. COM12) whose programming
         commands fail.
 
+    STUB_MPCLI_FAIL_ERASE_PORTS
+
+        Optional comma-separated ports whose chip erase (-E / -C) fails.
+
+    STUB_MPCLI_LOG
+
+        Optional file; every command line is appended to it.
+
 The stub intentionally behaves as an external process.
 """
 
@@ -63,6 +71,25 @@ def main() -> int:
     state_file = None
     if state_dir and port_arg:
         state_file = os.path.join(state_dir, f"{port_arg.upper()}.mac")
+
+    log_file = os.getenv("STUB_MPCLI_LOG")
+    if log_file:
+        with open(log_file, "a", encoding="utf-8") as handle:
+            handle.write(" ".join(args) + "\n")
+
+    # ----------------------------------------------------------
+    # Chip erase (-E whole flash, -C all but the first 4 KB)
+    # ----------------------------------------------------------
+
+    if "-E" in args or "-C" in args:
+        fail_erase = {item.strip().upper() for item in os.getenv("STUB_MPCLI_FAIL_ERASE_PORTS", "").split(",") if item.strip()}
+        if port_arg and port_arg.upper() in fail_erase:
+            print("-ERR: 6-", file=sys.stderr)
+            return 6
+        if state_file and os.path.exists(state_file):
+            os.remove(state_file)              # the erase wipes the MAC
+        print("chiperase -OK-")
+        return 0
 
     if port_arg and port_arg.upper() in fail_ports and "-I" not in args:
         print(f"ERROR: programming failed on {port_arg}", file=sys.stderr)

@@ -20,10 +20,12 @@ from stationapp.drivers.mpcli.types import (
 class SimulatedBenchHardware:
     """Pretends to be MPCLI. Ports listed in fail_ports fail to flash."""
 
-    def __init__(self, *, delay_s: float = 1.0, fail_ports: frozenset[str] = frozenset()) -> None:
+    def __init__(self, *, delay_s: float = 1.0, fail_ports: frozenset[str] = frozenset(), reference_macs: dict[str, str] | None = None) -> None:
         self._delay = delay_s
         self._fail = {port.upper() for port in fail_ports}
         self._written: dict[str, MacAddress] = {}
+        # MAC a port reports before anything is programmed (reference modules).
+        self._reference = {port.upper(): MacAddress.parse(mac) for port, mac in (reference_macs or {}).items()}
 
     def erase(self, com_port: str, token: CancellationToken) -> ProgrammingResult:
         self._wait(token, 0.5)
@@ -49,7 +51,7 @@ class SimulatedBenchHardware:
 
     def read_mac(self, com_port: str, token: CancellationToken) -> MacReadbackResult:
         self._wait(token, 0.3)
-        mac = self._written.get(com_port.upper())
+        mac = self._written.get(com_port.upper()) or self._reference.get(com_port.upper())
         process = ProcessResult(("-c", com_port, "-I"), ProcessOutcome.COMPLETED, 0, f"BT Address: {mac.compact if mac else ''}", "", self._delay * 0.3)
         if mac is None:
             return MacReadbackResult(MacReadbackOutcome.NOT_FOUND, process, None, "No MAC in simulated output")

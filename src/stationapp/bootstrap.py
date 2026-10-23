@@ -278,6 +278,8 @@ def _build_access(settings: Settings, session_factory, binding_service: SlotBind
         binding_service=binding_service,
         access=access,
         session_factory=session_factory,
+        mac_reader=_reference_mac_reader(settings),
+        reference_prefix=settings.slot_reference_mac_prefix,
     )
 
     if access.session is not None:
@@ -457,6 +459,21 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
     )
 
     return production, readiness, mac_cache
+
+
+def _reference_mac_reader(settings: Settings):
+    """MPCLI MAC read (-I -r) for binding slots by reference modules.
+
+    None in simulation or when MPCLI is not installed: the button is then
+    disabled.
+    """
+    if settings.simulation_mode or not Path(settings.mpcli_path).is_file():
+        return None
+    from stationapp.drivers.mpcli.driver import MpCliDriver
+    from stationapp.drivers.mpcli.process import MpCliProcessRunner
+
+    driver = MpCliDriver(MpCliProcessRunner(Path(settings.mpcli_path)))
+    return lambda com_port: driver.read_mac_structured(com_port=com_port, timeout_seconds=20.0)
 
 
 def _mpcli_programmer_factory(settings: Settings):

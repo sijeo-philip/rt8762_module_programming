@@ -282,7 +282,27 @@ The Supervisor login lapses on its own after 15 minutes of no Supervisor use. Af
 - No batch may be running.
 - Have a list of which adapter or cable goes to which slot. If you are not sure, label each cable with its slot number first.
 
-**Steps**
+### Recommended: bind all slots at once with reference modules
+
+**Reference modules** are modules programmed with a MAC that names their slot: **22:22:22:22:22:01** belongs in slot 1, **22:22:22:22:22:02** in slot 2, and so on to **22:22:22:22:22:08** in slot 8. Keep this set labelled and stored with the jig.
+
+1. Put each reference module in **its own slot**: the module ending **:01** in slot 1, **:02** in slot 2, and so on. Put them in **boot (download) mode**.
+2. Log in as Supervisor. Open **Station configuration → Jig slot binding**.
+3. Press **Bind from reference modules** and confirm. The station reads the MAC through every detected COM port. This takes a few seconds.
+4. A review window shows, per slot: the **COM port** found, the **MAC read**, the **USB identity**, and the **change** (*new binding*, *unchanged*, *changes from …*, or *not found*). Anything that could not be used is listed in red, for example:
+
+   | Message | Meaning / what to do |
+   |---|---|
+   | *COMx: no MAC read …* | No module on that port, or it is not in boot mode. Check it and scan again. |
+   | *COMx: MAC … is not a reference MAC* | A production module is in the jig. Replace it with the reference module. |
+   | *Slot n: reference MAC read on COMa and COMb* | Two modules carry the same reference MAC. Check the reference set. That slot is left out. |
+
+5. Check the table against the physical jig, then press **Apply bindings** and give a reason (e.g. `Jig commissioning`). Only the slots found are changed. A USB interface that moved to another slot is released from its old slot. Every change is recorded in the audit trail.
+6. Remove the reference modules.
+
+Nothing is saved if you press **Cancel**. Slots marked *not found* keep their previous binding.
+
+### By hand: one slot at a time
 
 1. Log in as Supervisor. Open **Station configuration → Jig slot binding**.
 2. The table shows every slot:
@@ -570,7 +590,7 @@ It reads the MPCLI path, firmware files, jig size, slot-to-COM bindings and QR s
    - **Golden Rig**: only if this PC's station app has an approved rig. Use **Check connection** to test the rig first.
    - **Manual**: you check each module with a BLE phone app.
 5. **QR code scanner:** tick **Scan module QRs after each run** to scan every module's QR at the end. **Scanner test** checks the scanner without programming anything.
-6. In the table, tick **Use** for each slot that holds a module and check its **COM port**.
+6. In the table, tick **Use** for each slot that holds a module and check its **COM port**. To find the COM ports automatically, put the **reference modules** (22:22:22:22:22:01 in slot 1 … :08 in slot 8) in their slots in boot mode and press **Auto-assign COM ports**. The bench reads each port's MAC, shows the same review window as the station app, and on **Use these COM ports** fills in each slot's COM port and ticks **Use**. This sets only the bench's own selection. It does not change the station's slot bindings, which a Supervisor makes in the station app (C3).
 
 ### F3. Run it
 

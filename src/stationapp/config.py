@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     # Validated flash -> settle -> write-MAC sequence (see
     # scripts/program_one_real_dut.py) instead of the combined command.
     mpcli_two_step: bool = True
+    # Binding slots by reference modules: a module with MAC <prefix>:NN
+    # placed in slot NN identifies that slot's COM port.
+    slot_reference_mac_prefix: str = "22:22:22:22:22"
     # Chip erase before every firmware flash (Stock and Pricol):
     # full (-E, whole flash) | keep_first_4k (-C) | none
     mpcli_chip_erase: str = "full"
@@ -131,6 +134,13 @@ class Settings(BaseSettings):
 
     # --- Runtime ---
     log_level: str = "INFO"
+
+    @field_validator("slot_reference_mac_prefix")
+    @classmethod
+    def _check_reference_prefix(cls, value: str) -> str:
+        from stationapp.services.slot_autobind import normalise_prefix
+
+        return normalise_prefix(value)
 
     @field_validator("mpcli_chip_erase")
     @classmethod

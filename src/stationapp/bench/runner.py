@@ -268,6 +268,10 @@ class StockBenchRunner:
     def golden_rig_available(self) -> bool:
         return self._rf_tester is not None
 
+    def hardware(self, settings: BenchSettings) -> BenchHardware:
+        """MPCLI access for one-off reads (e.g. auto-assigning COM ports)."""
+        return self._hardware_factory(settings)
+
     @property
     def pricol_available(self) -> bool:
         return self._pricol_mac_pool is not None and self._functional_tester is not None

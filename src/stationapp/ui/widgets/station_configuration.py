@@ -293,9 +293,11 @@ class SessionPage(_Page):
 
 
 class SlotBindingPage(_Page):
-    def __init__(self, service: JigConfigurationService, jig_positions: int, *, simulation: bool, parent: QWidget | None = None) -> None:
+    def __init__(self, service: JigConfigurationService, jig_positions: int, *, simulation: bool, operations: OperationManager | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._service = service
+        self._operations = operations
+        self._jig_positions = jig_positions
         self._ports = ()
 
         if simulation:
@@ -329,6 +331,25 @@ class SlotBindingPage(_Page):
         hint = QLabel("Tip: connect one slot's adapter at a time, rescan, then bind it to its physical slot.")
         hint.setStyleSheet(f"color: {GREY};")
         self.layout_.addWidget(hint)
+
+        reference = QGroupBox("Bind from reference modules")
+        reference_layout = QVBoxLayout(reference)
+        prefix = service.reference_prefix
+        last = f"{jig_positions:02X}"
+        explanation = QLabel(
+            f"Place the reference modules in their slots - MAC {prefix}:01 in slot 1 ... {prefix}:{last} in slot "
+            f"{jig_positions} - in boot (download) mode, then press the button. The station reads the MAC through "
+            "every detected COM port and shows the slot bindings it found for your approval."
+        )
+        explanation.setWordWrap(True)
+        reference_layout.addWidget(explanation)
+        self.reference_button = QPushButton("Bind from reference modules")
+        self.reference_button.clicked.connect(self._scan_reference)
+        if not service.reference_binding_available or operations is None:
+            self.reference_button.setEnabled(False)
+            self.reference_button.setToolTip("Needs MPCLI (MPCLI_PATH) and is not available in simulation mode")
+        reference_layout.addWidget(self.reference_button, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.layout_.addWidget(reference)
         self.finish()
 
     def refresh(self) -> None:
@@ -358,6 +379,58 @@ class SlotBindingPage(_Page):
             suffix = f"  [slot {owner}]" if owner else ""
             self.port_combo.addItem(f"{port.device} - {port.description or ''} - {port.stable_key}{suffix}", port.stable_key)
         self.bind_button.setEnabled(bool(self._ports))
+
+    def _scan_reference(self) -> None:
+        prefix, last = self._service.reference_prefix, f"{self._jig_positions:02X}"
+        if QMessageBox.question(
+            self,
+            "Bind from reference modules",
+            f"Are the reference modules ({prefix}:01 ... {prefix}:{last}) in their slots and in boot (download) mode?\n\n"
+            "The station now reads the MAC on every detected COM port (MPCLI). Nothing is saved until you approve.",
+        ) is not QMessageBox.StandardButton.Yes:
+            return
+        service = self._service
+
+        def operation(_id, _token, _progress):
+            try:
+                return service.scan_reference_modules()
+            except _EXPECTED_ERRORS as exc:
+                return exc
+
+        def finished(value) -> None:
+            self.reference_button.setEnabled(True)
+            if isinstance(value, Exception):
+                self.notice(str(value), error=True)
+            else:
+                self._review_reference(value)
+
+        def configure(worker) -> None:
+            worker.succeeded.connect(lambda result: finished(result.value))
+            worker.failed.connect(lambda failure: (self.reference_button.setEnabled(True), self.notice(failure.user_message, error=True)))
+
+        try:
+            self._operations.start(operation, operation_id="reference-slot-scan", configure=configure)
+        except Exception as exc:  # noqa: BLE001
+            self.notice(str(exc), error=True)
+            return
+        self.reference_button.setEnabled(False)
+        self.notice("Reading the MAC on every detected COM port...")
+
+    def _review_reference(self, plan) -> None:
+        from stationapp.ui.dialogs.reference_binding_dialog import ReferenceBindingDialog
+
+        configuration = self._service.load()
+        current = {binding.slot_number: binding.stable_key for binding in configuration.bindings}
+        dialog = ReferenceBindingDialog(plan, current=current, apply_label="Apply bindings", parent=self)
+        if not dialog.exec():
+            self.notice("Reference binding cancelled; nothing was changed.")
+            return
+        reason = ask_reason(self, "Bind slots from reference modules")
+        if reason and self.guarded(
+            lambda: self._service.apply_reference_plan(plan, reason=reason),
+            f"Bound from reference modules: {plan.summary()}.",
+        ):
+            self.refresh()
 
     def _bind(self) -> None:
         key = self.port_combo.currentData()
@@ -847,7 +920,7 @@ class StationConfigurationWidget(QWidget):
 
         self.tabs = QTabWidget()
         self.session_page = SessionPage(access, None if simulation else topology_service, sync_scheduler=sync_scheduler)
-        self.slot_page = SlotBindingPage(jig_configuration, jig_positions, simulation=simulation)
+        self.slot_page = SlotBindingPage(jig_configuration, jig_positions, simulation=simulation, operations=operations)
         self.rig_page = GoldenRigPage(golden_rig, operations, simulation=simulation)
         if users is not None:
             self.users_page = UsersPage(users, access)

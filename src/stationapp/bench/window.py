@@ -113,6 +113,8 @@ class BenchContext:
     pricol_firmware: Path | None = None
     # Chip erase before every flash: full (-E) / keep_first_4k (-C) / none
     chip_erase: str = "full"
+    # Auto-assign COM ports: reference module MAC <prefix>:NN sits in slot NN.
+    reference_prefix: str = "22:22:22:22:22"
 
 
 class ManualRfDialog(QDialog):
@@ -330,6 +332,13 @@ class BenchWindow(QMainWindow):
         self.rescan_button = QPushButton("Rescan COM ports")
         self.rescan_button.clicked.connect(self._refresh_ports)
         buttons.addWidget(self.rescan_button)
+        self.autobind_button = QPushButton("Auto-assign COM ports")
+        self.autobind_button.setToolTip(
+            f"Read the MAC on every COM port; a reference module {self._ctx.reference_prefix}:NN "
+            "assigns its port to slot NN"
+        )
+        self.autobind_button.clicked.connect(self._auto_assign_ports)
+        buttons.addWidget(self.autobind_button)
         self.start_button = QPushButton("START")
         self.start_button.setMinimumHeight(44)
         self.start_button.setMinimumWidth(200)
@@ -529,6 +538,73 @@ class BenchWindow(QMainWindow):
                 combo.setItemData(combo.count() - 1, description, Qt.ItemDataRole.ToolTipRole)
             combo.setCurrentText(current)
 
+    # ------------------------------------------- auto-assign COM ports
+
+    def _auto_assign_ports(self) -> None:
+        from stationapp.services.slot_autobind import read_reference_modules
+
+        prefix, positions = self._ctx.reference_prefix, self._ctx.jig_positions
+        if QMessageBox.question(
+            self,
+            "Auto-assign COM ports",
+            f"Place the reference modules - MAC {prefix}:01 in slot 1 ... {prefix}:{positions:02X} in slot {positions} - "
+            "in boot (download) mode, then press Yes.\n\nThe bench reads the MAC on every COM port (MPCLI -I -r).",
+        ) is not QMessageBox.StandardButton.Yes:
+            return
+        try:
+            devices = [device for device, _description in (self._ctx.port_lister() if self._ctx.port_lister else [])]
+        except Exception as exc:  # noqa: BLE001
+            self.status_label.setText(f"Port scan failed: {exc}")
+            return
+        if not devices:
+            self.status_label.setText("No COM ports detected")
+            return
+        settings = BenchSettings(
+            mpcli_path=Path(self.mpcli_input.text().strip()),
+            firmware=Path(self.firmware_input.text().strip() or "."),
+        )
+        runner = self._ctx.runner
+
+        def operation(_id, token, _progress):
+            hardware = runner.hardware(settings)
+            return read_reference_modules(
+                [(device, None) for device in devices],
+                lambda device: hardware.read_mac(device, token),
+                jig_positions=positions,
+                prefix=prefix,
+            )
+
+        def configure(worker) -> None:
+            worker.succeeded.connect(lambda result: self._review_assignment(result.value))
+            worker.failed.connect(lambda failure: self.status_label.setText(f"Auto-assign failed: {failure.user_message}"))
+            worker.finished.connect(lambda _id: self._set_running(False))
+
+        try:
+            self._operations.start(operation, operation_id="bench-autobind", configure=configure)
+        except Exception as exc:  # noqa: BLE001
+            self.status_label.setText(f"Could not start: {exc}")
+            return
+        self._set_running(True)
+        self.cancel_button.setEnabled(False)
+        self.status_label.setStyleSheet("")
+        self.status_label.setText(f"Reading the MAC on {len(devices)} COM port(s): {', '.join(devices)}...")
+
+    def _review_assignment(self, plan) -> None:
+        from stationapp.ui.dialogs.reference_binding_dialog import ReferenceBindingDialog
+
+        current = {number: combo.currentText() for number, combo in self.port_combos.items() if combo.currentText()}
+        self._last_reference_plan = plan
+        dialog = ReferenceBindingDialog(plan, current=current, apply_label="Use these COM ports", parent=self)
+        if not dialog.exec():
+            self.status_label.setText(f"Auto-assign: {plan.summary()} - not applied")
+            return
+        for slot, reading in plan.assignments.items():
+            self.port_combos[slot].setCurrentText(reading.device)
+            self.use_checks[slot].setChecked(True)
+        assigned = ", ".join(f"slot {slot} = {reading.device}" for slot, reading in sorted(plan.assignments.items()))
+        self.status_label.setText(f"Auto-assigned ({plan.summary()}): {assigned}")
+        self._save_preferences()
+
     def _apply_range(self) -> None:
         try:
             self._ctx.mac_pool.set_range(self.mac_start_input.text(), self.mac_end_input.text())
@@ -690,6 +766,7 @@ class BenchWindow(QMainWindow):
         self.qr_test_button.setEnabled(not running and not waiting)
         self.cancel_button.setEnabled(running)
         self.rescan_button.setEnabled(not running)
+        self.autobind_button.setEnabled(not running and not waiting)
         self.rig_check_button.setEnabled(not running and self._ctx.rig_check is not None)
         for check in self.use_checks.values():
             check.setEnabled(not running)

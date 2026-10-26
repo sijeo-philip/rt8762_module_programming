@@ -810,9 +810,12 @@ class BenchWindow(QMainWindow):
         self._report_run(run)
 
     def _report_run(self, run: BenchRun) -> None:
-        passed = sum(1 for slot in run.slots.values() if slot.verdict.startswith("PASS"))
+        detected = run.detected_slots
+        passed = sum(1 for slot in detected if slot.verdict.startswith("PASS"))
+        absent = len(run.slots) - len(detected)
+        skipped = f" ({absent} slot(s) had no module - skipped, MAC not used)" if absent else ""
         self.status_label.setText(
-            f"Run {run.run_id}: {passed}/{len(run.slots)} passed. Results: {run.csv_path} "
+            f"Run {run.run_id}: {passed}/{len(detected)} passed{skipped}. Results: {run.csv_path} "
             "(double-click a row for its MPCLI log)"
         )
 

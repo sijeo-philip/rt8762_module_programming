@@ -409,7 +409,9 @@ The Operator screen shows a large coloured **headline**, an **instruction** unde
 2. If the headline says **CHECK STATION**, press **Check station / refill MAC cache**. The station checks the jig, the Golden Rig and the MAC addresses.
    - **JIG READY - LOAD MODULES** (blue): continue.
    - **JIG NOT READY** or **STATION NOT READY** (red): call the Supervisor. The reason is shown in brackets.
-3. **Load modules** into the jig. You can load only some slots: empty slots are simply skipped.
+3. **Load modules** into the jig. You can load only some slots: empty slots are simply skipped. A batch does not have to be a full jig.
+   - If a slot you tapped has no module, or the module is not seated or not in boot mode, the station cannot detect it (MPCLI **ERR 6**). That slot shows **NOT DETECTED - skipped**: it gets **no MAC address**, no tests, and **no QR scan**, and the MAC goes back for the next batch. The other slots carry on.
+   - If no slot has a detectable module, the batch ends as **BATCH ABORTED** without using any MAC. Check the modules, then press **PREPARE NEXT BATCH**.
 4. **Tap each slot on screen that holds a module.** The headline becomes **JIG READY - PRESS START** (green) and lists the loaded slots.
 5. Press **START**.
 
@@ -521,7 +523,8 @@ Use the table in [B3](#b3-changes-to-the-rig-that-need-re-approval) to decide wh
 | Slot shows **NOT DETECTED** | The adapter is unplugged, faulty, or moved to another USB socket. | Re-plug it into the same socket and press **Rescan ports**. If it was replaced or moved, re-bind the slot ([C3](#c3-bind-jig-slots-to-com-ports-supervisor)). |
 | **JIG NOT READY** (Operator screen) | A slot or the jig is not detected. | Supervisor checks [C3](#c3-bind-jig-slots-to-com-ports-supervisor) and [C6](#c6-start-of-every-shift--open-the-session-supervisor). |
 | An adapter does not appear in **Detected interface** | It has no USB identity the station can use (some cheap adapters), or its driver is not installed. | Try another adapter. Ask the technician to check Windows Device Manager. |
-| Slot fails with **ERR: 6** (or another number) | Programming error from the module. 6 = the module did not answer (not in program mode, poorly seated, or no power). | Press **Error codes** for the meaning. Re-seat the module and check the jig mode switch. If one slot keeps failing, call the Supervisor. |
+| Slot shows **NOT DETECTED - skipped** (ERR 6 at the start) | MPCLI found no module on that slot's port: empty slot, module not seated, no power, or not in boot mode. Nothing was written and the slot's MAC was not used. | Nothing to record: the slot is left out of the batch (no QR). If a module *is* in that slot, re-seat it, check boot mode, and run it in the next batch. If one slot is always NOT DETECTED, call the Supervisor (wiring / binding). |
+| Slot fails with **ERR: 6** after programming started, or another number | Programming error from the module once MPCLI was talking to it. | Press **Error codes** for the meaning. The module is held and its QR is scanned. If one slot keeps failing, call the Supervisor. |
 | Every module fails Pricol programming or the RF test at once | The button was pressed before the modules were switched: Pricol programming needs **boot mode**, the RF test needs **application mode** after a reset. | Switch and reset as the screen says **before** pressing the button. The affected modules cannot be retested in the same batch; set them aside for the Supervisor. |
 | APP / DFU test fails with *"no start-up message"* | The modules were reset **before** RUN APP TEST / RUN DFU TEST was pressed, not reset at all, or are still in boot mode. | Put the modules in application mode, press the button **first**, then reset them when the screen says **RESET ALL MODULES NOW**. |
 
@@ -624,7 +627,7 @@ Only modules that passed a step go on to the next one. The others keep their res
 | **MAC / Readback / RF** | Stock MAC, its readback (MATCH or the MAC actually read), RF result. |
 | **Pricol MAC / Pricol readback** | Stock + Pricol only. |
 | **APP / DFU** | Functional test results, e.g. *APP PASS / DFU PASS*. Hover for the module's response. |
-| **Result** | **PASS** / **PASS (no RF)** (green); **FAIL**, **RF FAIL**, **PRICOL FAIL**, **FUNCTIONAL FAIL** (red); pending or not run (amber). |
+| **Result** | **PASS** / **PASS (no RF)** (green); **FAIL**, **RF FAIL**, **PRICOL FAIL**, **FUNCTIONAL FAIL** (red); pending or not run (amber); **NOT DETECTED** (amber): no module answered on that slot (MPCLI ERR 6). The slot is skipped for every later step, including the QR scan, and its test MAC goes back to the range. |
 | **QR** | The scanned QR, or NOT SCANNED. |
 
 - **Results folder:** **Open results folder** opens `logs\bench`, which holds `stock_bench_results.csv` (one row per module per run) and one folder of MPCLI logs per run.

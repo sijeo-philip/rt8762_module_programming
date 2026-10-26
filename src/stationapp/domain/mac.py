@@ -90,10 +90,12 @@ _ALLOWED_MAC_TRANSITIONS: dict[MacStatus, frozenset[MacStatus]] = {
     MacStatus.RESERVED: frozenset({
         MacStatus.PROGRAMMING,
         MacStatus.HOLD,
+        MacStatus.AVAILABLE,          # release_unused: never written
     }),
     MacStatus.PROGRAMMING: frozenset({
         MacStatus.ISSUED,
         MacStatus.HOLD,
+        MacStatus.AVAILABLE,          # release_unused: module was not detected
     }),
     MacStatus.ISSUED: frozenset({
         MacStatus.CONFIRMED,
@@ -153,6 +155,19 @@ class AllocatedMac:
         
     def begin_programming(self) -> None:
         self._transition(MacStatus.PROGRAMMING)
+
+    def release_unused(self) -> None:
+        """Return the MAC to the cache: it was never written to a module.
+
+        Only for a module MPCLI could not detect (nothing was written);
+        any other uncertain outcome must go to HOLD instead.
+        """
+        if self.status not in {MacStatus.RESERVED, MacStatus.PROGRAMMING}:
+            raise InvalidMacTransition(f"MAC {self.address} cannot be released from {self.status.value}")
+        self._transition(MacStatus.AVAILABLE)
+        self.batch_id = None
+        self.slot_number = None
+        self.hold_reason = None
         
     def mark_issued(self) -> None:
         self._transition(MacStatus.ISSUED)

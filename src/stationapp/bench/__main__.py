@@ -115,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m stationapp.bench", description="Production bench tool (Stock only or Stock + Pricol, no LAN server)")
     parser.add_argument("--simulate", action="store_true", help="no MPCLI or jig; simulated programming and Golden Rig")
     parser.add_argument("--fail-ports", default="", help="simulation: comma-separated ports that fail to flash")
+    parser.add_argument("--absent-ports", default="", help="simulation: comma-separated ports with no module (MPCLI ERR 6)")
     parser.add_argument("--slots", type=int, choices=(4, 8), help="override jig size")
     args = parser.parse_args(argv)
 
@@ -136,7 +137,8 @@ def main(argv: list[str] | None = None) -> int:
         # Reference modules for "Auto-assign COM ports": deliberately not in
         # port order (COM101 holds slot 2's module, ...) to show the matching.
         reference = {f"COM{100 + n}": f"22:22:22:22:22:{n % jig_positions + 1:02X}" for n in range(1, jig_positions + 1)}
-        hardware_factory = lambda _settings: SimulatedBenchHardware(delay_s=0.6, fail_ports=fail, reference_macs=reference)  # noqa: E731
+        absent = frozenset(port.strip().upper() for port in args.absent_ports.split(",") if port.strip())
+        hardware_factory = lambda _settings: SimulatedBenchHardware(delay_s=0.6, fail_ports=fail, reference_macs=reference, absent_ports=absent)  # noqa: E731
         rf_tester, rig_status = SimulatedGoldenRig(delay_seconds=0.5, failures=frozenset()), "simulated"
         from stationapp.services.golden_rig_check import simulated_rig_check
 

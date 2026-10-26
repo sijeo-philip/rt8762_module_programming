@@ -46,6 +46,9 @@ class ProgrammingOutcome(str, Enum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     UNCERTAIN = "UNCERTAIN"
+    # MPCLI could not detect a module on the port before its loader ran:
+    # nothing was written (not mounted, not seated, or not in boot mode).
+    NOT_DETECTED = "NOT_DETECTED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +71,10 @@ class ProgrammingResult:
             self.outcome
             is ProgrammingOutcome.SUCCESS
         )
+
+    @property
+    def module_not_detected(self) -> bool:
+        return self.outcome is ProgrammingOutcome.NOT_DETECTED
 
     @property
     def uncertain(self) -> bool:

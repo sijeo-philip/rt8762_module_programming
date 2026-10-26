@@ -20,20 +20,32 @@ from stationapp.drivers.mpcli.types import (
 class SimulatedBenchHardware:
     """Pretends to be MPCLI. Ports listed in fail_ports fail to flash."""
 
-    def __init__(self, *, delay_s: float = 1.0, fail_ports: frozenset[str] = frozenset(), reference_macs: dict[str, str] | None = None) -> None:
+    def __init__(self, *, delay_s: float = 1.0, fail_ports: frozenset[str] = frozenset(), reference_macs: dict[str, str] | None = None, absent_ports: frozenset[str] = frozenset()) -> None:
         self._delay = delay_s
         self._fail = {port.upper() for port in fail_ports}
+        # No module on these ports: MPCLI ERR 6 before its loader runs.
+        self._absent = {port.upper() for port in absent_ports}
         self._written: dict[str, MacAddress] = {}
         # MAC a port reports before anything is programmed (reference modules).
         self._reference = {port.upper(): MacAddress.parse(mac) for port, mac in (reference_macs or {}).items()}
 
+    def _absent_result(self, com_port: str) -> ProgrammingResult:
+        output = "CMD[2] loadfw --autodetect\n-ERR: 6-\nrecv hci evt Fail!\nDetect FW Fail"
+        return parse_programming_result(ProcessResult(("-c", com_port), ProcessOutcome.COMPLETED, 6, output, "", self._delay * 0.3))
+
     def erase(self, com_port: str, token: CancellationToken) -> ProgrammingResult:
+        if com_port.upper() in self._absent:
+            self._wait(token, 0.3)
+            return self._absent_result(com_port)
         self._wait(token, 0.5)
         self._written.pop(com_port.upper(), None)
         process = ProcessResult(("-c", com_port, "-E", "-r"), ProcessOutcome.COMPLETED, 0, "chip erase -OK-", "", self._delay * 0.5)
         return parse_programming_result(process)
 
     def flash(self, com_port: str, token: CancellationToken) -> ProgrammingResult:
+        if com_port.upper() in self._absent:
+            self._wait(token, 0.3)
+            return self._absent_result(com_port)
         self._wait(token, 2.0)
         failed = com_port.upper() in self._fail
         return self._result(("-P", "<image>", "-c", com_port), failed, "Simulated flash")

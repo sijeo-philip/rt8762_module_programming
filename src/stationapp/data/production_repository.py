@@ -96,6 +96,10 @@ class ProductionStateRepository:
                 if record is not None:
                     self.sync_mac(record)
 
+        # MACs of modules that were not detected: back to AVAILABLE.
+        for record in batch.released_macs:
+            self.sync_mac(record)
+
         self._session.flush()
 
     def sync_mac(self, record: AllocatedMac) -> None:

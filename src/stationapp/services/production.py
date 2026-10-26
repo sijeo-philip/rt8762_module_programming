@@ -714,6 +714,7 @@ class ProductionController:
                 program = programmer.program_stock if stock else programmer.program_pricol
                 result = program(target, cancellation_token=token, on_phase=on_phase)
                 succeeded = result.programming.succeeded
+                not_detected = result.programming.module_not_detected
                 detail = {
                     "outcome": result.programming.outcome.value,
                     "message": result.programming.message,
@@ -722,9 +723,27 @@ class ProductionController:
             except Exception as exc:  # noqa: BLE001 - per-slot isolation
                 logger.exception("Programming raised | slot=%s", number)
                 succeeded = False
+                not_detected = False
                 detail = {"outcome": "UNCERTAIN", "message": f"{type(exc).__name__}: {exc}"}
 
             with self._lock:
+                if not_detected:
+                    # Nothing was written: release the MAC. A Stock slot
+                    # leaves the batch (no tests, no QR).
+                    if stock:
+                        batch.record_stock_module_not_detected(number, reason=detail["message"])
+                    else:
+                        batch.record_pricol_module_not_detected(number, reason=detail["message"])
+                    self._store.save(batch, [self._event(
+                        batch, EventType.MODULE_NOT_DETECTED, slot=number, released_mac=str(target.mac),
+                        stage="STOCK" if stock else "PRICOL", **detail,
+                    )])
+                    self._activity.pop(number, None)
+                    if stock:
+                        self._ports.pop(number, None)
+                    self._notify()
+                    return
+
                 if stock:
                     batch.record_stock_programming(number, succeeded=succeeded, reason=None if succeeded else detail.get("message"))
                 else:

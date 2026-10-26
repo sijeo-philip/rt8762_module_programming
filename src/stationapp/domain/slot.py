@@ -248,6 +248,29 @@ class JigSlot:
         self.stock_mac_record.begin_programming()
         self.state = DeviceState.STOCK_PROGRAMMING
         
+    def release_not_detected(self) -> AllocatedMac:
+        """No module in this slot: release its Stock MAC and empty the slot."""
+        self._require_state(DeviceState.STOCK_PROGRAMMING)
+        record = self.stock_mac_record
+        assert record is not None
+        record.release_unused()
+        self.stock_mac_record = None
+        self.port_identity = None
+        self.hold_reason = None
+        self.state = DeviceState.EMPTY
+        return record
+
+    def release_pricol_not_detected(self, reason: str) -> AllocatedMac:
+        """Module no longer answers at Pricol programming: release the
+        Pricol MAC (never written) and hold the module."""
+        self._require_state(DeviceState.PRICOL_PROGRAMMING)
+        record = self.pricol_mac_record
+        assert record is not None
+        record.release_unused()
+        self.pricol_mac_record = None
+        self.place_on_hold(f"Module not detected for Pricol programming: {reason}")
+        return record
+
     def complete_stock_programming(self, succeeded: bool, reason: str | None = None) -> None:
         self._require_state(DeviceState.STOCK_PROGRAMMING)
         assert self.stock_mac_record is not None

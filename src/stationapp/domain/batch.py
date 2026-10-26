@@ -109,6 +109,12 @@ class Batch:
     batch_label: str | None = None
     operator_id: str | None = None
     session_id: str | None = None
+
+    # Slots where MPCLI found no module (slot -> reason). They leave the
+    # batch: no MAC, no test, no QR. Their MACs return to the cache
+    # (released_macs is persisted with the batch).
+    not_detected_slots: dict[int, str] = field(default_factory=dict)
+    released_macs: list[AllocatedMac] = field(default_factory=list)
     
     def __post_init__(self) -> None:
         if self.slot_count not in (4, 8):
@@ -297,7 +303,26 @@ class Batch:
         slot = self._get_slot(slot_number)
 
         slot.complete_stock_programming(succeeded, reason)
+        self._complete_stock_programming_stage()
 
+    def record_stock_module_not_detected(self, slot_number: int, *, reason: str) -> None:
+        """MPCLI found no module in this slot (e.g. ERR 6 before its loader
+        ran): nothing was written. The slot leaves the batch - its MAC is
+        released and it gets no test and no QR - so batches need not be
+        full jigs."""
+        self._require_state(BatchState.STOCK_PROGRAMMING)
+        if slot_number not in self.occupied_slot_numbers:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not populated")
+        slot = self._get_slot(slot_number)
+        self.released_macs.append(slot.release_not_detected())
+        self.not_detected_slots[slot_number] = reason.strip() or "module not detected"
+        self.occupied_slot_numbers = tuple(number for number in self.occupied_slot_numbers if number != slot_number)
+        if not self.occupied_slot_numbers:
+            self.abort("No module was detected in any loaded slot - check that modules are mounted, seated and in boot mode")
+            return
+        self._complete_stock_programming_stage()
+
+    def _complete_stock_programming_stage(self) -> None:
         # Wait until all occupied slots have reported an outcome.
         if any(item.state is DeviceState.STOCK_PROGRAMMING for item in self.occupied_slots):
             return
@@ -486,6 +511,22 @@ class Batch:
         if slot.state is not DeviceState.PRICOL_PROGRAMMING:
             raise InvalidBatchTransition(f"Slot {slot_number} is not programming Pricol")
         slot.complete_pricol_programming(succeeded, reason)
+        self._complete_pricol_programming_stage()
+
+    def record_pricol_module_not_detected(self, slot_number: int, *, reason: str) -> None:
+        """The module (present for Stock) does not answer for Pricol: its
+        Pricol MAC was never written and is released; the module is held
+        (it has a Stock record, so its QR is still scanned)."""
+        self._require_state(BatchState.PRICOL_PROGRAMMING)
+        if slot_number not in self.occupied_slot_numbers:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not occupied")
+        slot = self._get_slot(slot_number)
+        if slot.state is not DeviceState.PRICOL_PROGRAMMING:
+            raise InvalidBatchTransition(f"Slot {slot_number} is not programming Pricol")
+        self.released_macs.append(slot.release_pricol_not_detected(reason))
+        self._complete_pricol_programming_stage()
+
+    def _complete_pricol_programming_stage(self) -> None:
         if any(item.state is DeviceState.PRICOL_PROGRAMMING for item in self.occupied_slots):
             return
         if any(item.state is DeviceState.PRICOL_PROGRAMMED for item in self.occupied_slots):

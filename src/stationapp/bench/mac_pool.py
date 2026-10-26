@@ -80,6 +80,13 @@ class BenchMacPool:
             self._save()
             return allocated
 
+    def release(self, mac: MacAddress | str) -> None:
+        """Give back a MAC that was never written to a module (the slot had
+        no module), so the next run can use it."""
+        with self._lock:
+            self._used.discard(MacAddress.parse(mac).value)
+            self._save()
+
     def _next_unused(self) -> MacAddress | None:
         if self._start is None or self._end is None:
             return None

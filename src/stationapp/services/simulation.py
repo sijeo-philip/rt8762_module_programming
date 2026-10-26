@@ -52,6 +52,7 @@ from stationapp.services.programming import (
 SIMULATED_RIG_ID = "SIMULATED-GOLDEN-RIG"
 
 FAILURE_STAGES = frozenset({
+    "absent",            # no module in the slot (MPCLI ERR 6)
     "stock_program",
     "stock_readback",
     "rf",
@@ -135,6 +136,15 @@ class SimulatedProgrammer(_Simulator):
         if on_phase is not None:
             on_phase(PHASE_WRITING_MAC)
         self._wait(token, 0.4)
+
+        # "absent:N" (SIMULATION_FAILURES): no module in slot N.
+        if self._fails("absent", target.slot_number):
+            result = ProgrammingResult(
+                outcome=ProgrammingOutcome.NOT_DETECTED,
+                process=_process(self._delay * 0.5, return_code=6),
+                message="No module detected - MPCLI ERR 6 (hci event error), simulated empty slot",
+            )
+            return SlotProgrammingResult(target=target, stage=stage, programming=result)
 
         failed = self._fails(failure_key, target.slot_number)
         result = ProgrammingResult(

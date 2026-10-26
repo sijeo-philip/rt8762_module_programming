@@ -109,12 +109,19 @@ class SlotRun:
     app_detail: str = ""
     dfu: str = "-"
     dfu_detail: str = ""
+    # MPCLI found no module on the port (not mounted / not seated / not in
+    # boot mode): MAC released, no RF, Pricol, tests or QR.
+    not_detected: bool = False
     aborted: bool = False            # workflow restarted before this module finished
     log: list[str] = field(default_factory=list)
 
     @property
     def readback_ok(self) -> bool:
         return self.readback == "MATCH"
+
+    @property
+    def present(self) -> bool:
+        return not self.not_detected
 
     @property
     def pricol_ok(self) -> bool:
@@ -182,8 +189,13 @@ class BenchRun:
     @property
     def qr_slots(self) -> list[SlotRun]:
         """Every module in the run, in slot order: each QR is scanned and
-        recorded whatever the module's test result."""
-        return [slot for _, slot in sorted(self.slots.items())]
+        recorded whatever the module's test result - but not slots where
+        no module was detected."""
+        return [slot for _, slot in sorted(self.slots.items()) if slot.present]
+
+    @property
+    def detected_slots(self) -> list[SlotRun]:
+        return [slot for _, slot in sorted(self.slots.items()) if slot.present]
 
     @property
     def awaiting_qr(self) -> bool:
@@ -434,6 +446,12 @@ class StockBenchRunner:
                 notify(replace(slot, log=[]))
 
             outcome = self._flash_write_verify(hardware, settings, slot, MacAddress.parse(slot.pricol_mac), token, step, "PRICOL ")
+            if outcome.not_detected:
+                # The Pricol MAC was never written: give it back. The module
+                # was there for Stock, so it fails (and its QR is scanned).
+                self._pricol_mac_pool.release(slot.pricol_mac)
+                slot.pricol_mac = ""
+                outcome.flash = "NOT DETECTED"
             slot.pricol_flash, slot.pricol_mac_write = outcome.flash, outcome.mac_write
             slot.pricol_readback_mac, slot.pricol_readback = outcome.readback_mac, outcome.readback
             if outcome.message:
@@ -627,6 +645,15 @@ class StockBenchRunner:
         slot.readback_mac, slot.readback = outcome.readback_mac, outcome.readback
         slot.message = outcome.message
         slot.seconds = round(time.monotonic() - started, 1)
+        if outcome.not_detected:
+            # Nothing was written: the MAC goes back for the next run and
+            # the slot is skipped from here on (no RF, Pricol, tests, QR).
+            self._mac_pool.release(slot.mac)
+            slot.not_detected = True
+            slot.mac, slot.flash = "", "NOT DETECTED"
+            slot.stage, slot.progress = "NOT DETECTED - skipped (MAC not used)", 100
+            notify(replace(slot, log=[]))
+            return
         slot.stage = "Programmed" if slot.readback_ok else "Stopped"
         slot.progress = 90 if slot.readback_ok else 100
         notify(replace(slot, log=[]))
@@ -642,6 +669,7 @@ class StockBenchRunner:
                 if not erase.succeeded:
                     out.flash = "NOT RUN"
                     out.message = erase.message
+                    out.not_detected = erase.module_not_detected
                     return out
                 _sleep(settings.settle_s, token)
 
@@ -652,6 +680,8 @@ class StockBenchRunner:
                 out.flash = result.outcome.value
                 if not result.succeeded:
                     out.message = result.message
+                    # Without a chip erase the flash is the first contact.
+                    out.not_detected = result.module_not_detected and settings.chip_erase == ERASE_NONE
                     return out
 
                 step("Settling after reset", 45)
@@ -691,7 +721,7 @@ class StockBenchRunner:
     def _rf(self, run: BenchRun, token: CancellationToken, notify: Listener) -> None:
         verified = [slot for slot in run.slots.values() if slot.readback_ok]
         for slot in run.slots.values():
-            if not slot.readback_ok:
+            if not slot.readback_ok and slot.present:
                 slot.rf = "NOT TESTED"
 
         if run.rf_mode is RfMode.SKIP or not verified:
@@ -818,6 +848,7 @@ class _Programmed:
     readback_mac: str = ""
     readback: str = "-"
     message: str = ""
+    not_detected: bool = False
 
 
 def _overlap(a_start: MacAddress, a_end: MacAddress, b_start: MacAddress, b_end: MacAddress) -> bool:
@@ -848,6 +879,8 @@ def _verdict(slot: SlotRun, run: BenchRun) -> str:
 
 
 def _stock_verdict(slot: SlotRun, run: BenchRun) -> str:
+    if slot.not_detected:
+        return "NOT DETECTED"
     if run.cancelled and not slot.readback_ok:
         return "CANCELLED"
     if not slot.readback_ok:

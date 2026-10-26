@@ -185,7 +185,17 @@ class JigStatusProjection:
         views = []
 
         for slot in batch.ordered_slots:
-            if slot.number not in occupied:
+            if slot.number in batch.not_detected_slots:
+                # MPCLI found no module: skipped, MAC released, no QR.
+                views.append(
+                    SlotView(
+                        number=slot.number,
+                        status=SlotVisualStatus.EMPTY,
+                        stage="NOT DETECTED - skipped",
+                        detail=f"No module detected (not mounted / not seated / not in boot mode); MAC not used. {batch.not_detected_slots[slot.number]}",
+                    )
+                )
+            elif slot.number not in occupied:
                 views.append(
                     SlotView(
                         number=slot.number,

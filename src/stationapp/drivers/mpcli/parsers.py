@@ -95,6 +95,22 @@ _MAC_LABEL_PATTERN = re.compile(
 )
 
 
+_NOT_DETECTED_MARKERS = ("detect fw fail", "recv hci evt fail", "vendor read fail")
+
+
+def module_not_detected(output: str) -> bool:
+    """MPCLI failed while looking for the module, before anything was written.
+
+    Seen on the bench as ERR 6 during "loadfw --autodetect" ("recv hci evt
+    Fail! / Detect FW Fail" with no module in the slot or badly seated,
+    "Vendor Read Fail!" when not in boot mode). Once MPCLI reports
+    "Download FW success" its loader is running, so later failures are
+    real programming failures, not an absent module.
+    """
+    text = output.lower()
+    return any(marker in text for marker in _NOT_DETECTED_MARKERS) and "download fw success" not in text
+
+
 def parse_programming_result(process: ProcessResult) -> ProgrammingResult:
     """Interpret one MPCLI programming subprocess result.
 
@@ -155,6 +171,15 @@ def parse_programming_result(process: ProcessResult) -> ProgrammingResult:
         )
 
     if process.return_code != 0:
+        if module_not_detected(_combined_output(process)):
+            return ProgrammingResult(
+                outcome=ProgrammingOutcome.NOT_DETECTED,
+                process=process,
+                message=(
+                    describe(process.return_code, _combined_output(process)).rstrip(". ")
+                    + ". NO MODULE DETECTED: not mounted, not seated or not in boot mode - nothing was written."
+                ),
+            )
         return ProgrammingResult(
             outcome=ProgrammingOutcome.FAILED,
             process=process,

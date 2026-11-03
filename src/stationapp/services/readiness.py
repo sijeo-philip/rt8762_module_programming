@@ -1,4 +1,4 @@
-"""Station READY gate: jig detection, configuration validation, MAC cache.
+"""Station READY gate: jig detection, configuration validation, MAC blocks.
 
 Implements workflow steps 3-7. A batch may start only when every
 mandatory check passes for the selected programming mode and the slots
@@ -16,10 +16,10 @@ from pathlib import Path
 
 from stationapp.config import Settings
 from stationapp.domain.batch import ProgrammingMode
-from stationapp.domain.mac import MacPurpose
+from stationapp.domain.mac import TEMPORARY_STOCK_MACS, MacPurpose
+from stationapp.drivers.box.gateway import box_url_problem
 from stationapp.infrastructure.golden_rig.resolver import DEFAULT_RESOLVER
 from stationapp.services.health import HealthCheck, Severity
-from stationapp.services.mac_cache import MacCacheService
 from stationapp.services.production import SlotPort
 from stationapp.services.serial_topology import SerialTopology
 from stationapp.services.slot_eligibility import JigEligibility, SlotEligibilityService
@@ -55,8 +55,10 @@ class ReadinessReport:
 class StationReadinessService:
     """Evaluate whether the station may start a batch."""
 
-    def __init__(self, *, settings: Settings, topology_service, eligibility_service: SlotEligibilityService, mac_cache: MacCacheService | None, golden_rig_check: GoldenRigCheck, simulation: bool = False, functional_test_available: bool = False, session_check: Callable[[], HealthCheck] | None = None, sync_check: Callable[[], HealthCheck] | None = None, firmware_provider: Callable[[], tuple[Path | None, Path | None]] | None = None) -> None:
-        """firmware_provider returns the (Stock, Pricol) images the
+    def __init__(self, *, settings: Settings, topology_service, eligibility_service: SlotEligibilityService, mac_cache, golden_rig_check: GoldenRigCheck, simulation: bool = False, functional_test_available: bool = False, session_check: Callable[[], HealthCheck] | None = None, sync_check: Callable[[], HealthCheck] | None = None, hold_check: Callable[[], HealthCheck] | None = None, firmware_provider: Callable[[], tuple[Path | None, Path | None]] | None = None) -> None:
+        """mac_cache is the BoxBlockService (or a MacCacheService in tests).
+        hold_check fails while the box has the station on hold (R14).
+        firmware_provider returns the (Stock, Pricol) images the
         Supervisor configured; defaults to the .env paths."""
         self._settings = settings
         self._topology = topology_service
@@ -67,6 +69,7 @@ class StationReadinessService:
         self._functional_test_available = functional_test_available or simulation
         self._session_check = session_check
         self._sync_check = sync_check
+        self._hold_check = hold_check
         self._firmware_provider = firmware_provider or (lambda: (settings.stock_firmware_path, settings.pricol_firmware_path))
 
     def evaluate(self, mode: ProgrammingMode, occupied: tuple[int, ...] | None = None, *, top_up_macs: bool = False) -> ReadinessReport:
@@ -74,6 +77,8 @@ class StationReadinessService:
 
         if self._session_check is not None:
             checks.append(self._session_check())
+        if self._hold_check is not None:
+            checks.append(self._hold_check())
 
         ports, eligibility, jig_checks = self._jig(occupied)
         checks.extend(jig_checks)
@@ -85,8 +90,8 @@ class StationReadinessService:
             try:
                 checks.append(self._sync_check())
             except Exception as exc:  # noqa: BLE001 - sync never blocks production
-                logger.exception("Sync status check failed")
-                checks.append(HealthCheck("Server sync", Severity.WARN, f"Sync status unavailable: {exc}"))
+                logger.exception("Box report status check failed")
+                checks.append(HealthCheck("Box reports", Severity.WARN, f"Report status unavailable: {exc}"))
 
         return ReadinessReport(checks=tuple(checks), ports=ports, eligibility=eligibility)
 
@@ -162,12 +167,22 @@ class StationReadinessService:
         if self._mac_cache is None:
             return [HealthCheck("MAC cache", Severity.FAIL, "Local MAC cache unavailable")]
 
-        purposes = [MacPurpose.STOCK_RF_TEST]
+        # The final MAC comes from a box block: the Stock MAC in Stock
+        # Only mode, the Pricol MAC in Stock + Pricol mode, where the
+        # Stock stages use the per-slot temporary MACs.
+        checks = []
         if mode is ProgrammingMode.STOCK_AND_PRICOL:
-            purposes.append(MacPurpose.PRICOL_PRODUCTION)
+            purposes = [MacPurpose.PRICOL_PRODUCTION]
+            base = self._settings.temp_stock_mac_base
+            checks.append(HealthCheck(
+                "Temporary Stock MACs",
+                Severity.OK,
+                f"slot N uses {base} + N - 1" if base else f"built-in list, slot 1 = {TEMPORARY_STOCK_MACS[0]}",
+            ))
+        else:
+            purposes = [MacPurpose.STOCK_RF_TEST]
 
         needed = len(occupied) if occupied else self._settings.jig_positions
-        checks = []
         for purpose in purposes:
             label = "Stock MACs" if purpose is MacPurpose.STOCK_RF_TEST else "Pricol MACs"
             try:
@@ -176,7 +191,7 @@ class StationReadinessService:
                     available, message = status.available, status.message
                 else:
                     available = self._mac_cache.available(purpose)
-                    message = f"{available} authorized MACs cached"
+                    message = f"{available} MACs in box blocks"
             except Exception as exc:  # noqa: BLE001
                 logger.exception("MAC cache check failed")
                 checks.append(HealthCheck(label, Severity.FAIL, f"MAC cache check failed: {exc}"))
@@ -198,9 +213,15 @@ class StationReadinessService:
             return HealthCheck("Golden Rig", Severity.FAIL, f"Golden Rig check failed: {exc}")
 
     def _lan(self) -> HealthCheck:
-        if self._settings.is_stage_two:
-            return HealthCheck("LAN server", Severity.OK, str(self._settings.lan_server_url))
-        return HealthCheck("LAN server", Severity.WARN, "Not configured - offline production; uploads stay queued")
+        # The same choice as bootstrap._build_box.
+        if self._settings.auth_mode == "test" or (self._simulation and not self._settings.is_stage_two):
+            return HealthCheck("Box", Severity.WARN, "DEMO BOX in memory - not for production")
+        if not self._settings.is_stage_two:
+            return HealthCheck("Box", Severity.FAIL, "BOX_URL / BOX_STATION_KEY not configured")
+        problem = box_url_problem(str(self._settings.box_url))
+        if problem:
+            return HealthCheck("Box", Severity.FAIL, problem)
+        return HealthCheck("Box", Severity.OK, str(self._settings.box_url))
 
 
 def _file_check(name: str, path: Path | None) -> HealthCheck:

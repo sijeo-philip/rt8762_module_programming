@@ -40,14 +40,13 @@ from stationapp.domain.batch import Batch, BatchState, ProgrammingMode, SlotDisp
 from stationapp.domain.errors import DomainError, DuplicateModuleQr, VerificationMismatch
 from stationapp.domain.events import EventType, ManufacturingEvent
 from stationapp.domain.golden_rig import GoldenRigTarget
-from stationapp.domain.mac import AllocatedMac, MacPurpose
+from stationapp.domain.mac import TEMPORARY_ALLOCATION_ID, AllocatedMac, MacAddress, MacPurpose, temporary_stock_mac
 from stationapp.domain.slot import DeviceState
 from stationapp.domain.users import AccessError, AuthenticatedUser
 from stationapp.drivers.mpcli.driver import PHASE_ERASING, PHASE_FLASHING, PHASE_WRITING_MAC
 from stationapp.drivers.mpcli.types import IdentityOutcome
 from stationapp.drivers.pricol.functional import FunctionalTestOutcome
 from stationapp.drivers.qr_scanner import InvalidScan, ScanFormat
-from stationapp.services.qr_registry import DuplicateQrError, ModuleQrClaimService
 from stationapp.services.golden_rig_eligibility import GoldenRigEligibilityService
 from stationapp.services.golden_rig_result_processor import GoldenRigResultProcessor
 from stationapp.services.golden_rig_service import GoldenRigTestReport
@@ -115,6 +114,18 @@ class ProductionAccess(Protocol):
         ...
 
 
+class QrReuseGate(Protocol):
+    """BoxReportService: the station hold for a QR scanned again."""
+
+    def scanning_stopped(self) -> bool: ...
+
+    def hold_for_reused_qr(self, qr: str, previous: str, batch_id: str) -> None: ...
+
+    def reuse_approved(self, qr: str) -> bool: ...
+
+    def reuse_bound(self, qr: str) -> None: ...
+
+
 class ProductionStore(Protocol):
     """SqlProductionStore, or an in-memory double in tests."""
 
@@ -160,6 +171,7 @@ class ProductionSnapshot:
     programming_mode: ProgrammingMode | None = None
     batch_label: str | None = None
     occupied_slots: tuple[int, ...] = ()
+    restarts: int = 0
 
     @property
     def has_batch(self) -> bool:
@@ -193,9 +205,18 @@ _FINISHED_STATES = frozenset({
 class ProductionController:
     """Owns the active batch and executes the production workflow."""
 
-    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, qr_claims: ModuleQrClaimService | None = None, enabled_slots: Callable[[], tuple[int, ...]] | None = None, qr_format: ScanFormat | None = None) -> None:
+    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, temporary_stock_mac_base: MacAddress | None = None, enabled_slots: Callable[[], tuple[int, ...]] | None = None, qr_format: ScanFormat | None = None, qr_reuse: QrReuseGate | None = None) -> None:
         """programmer_factory builds a programmer for the firmware images
-        chosen at batch setup; programmer is a fixed alternative."""
+        chosen at batch setup; programmer is a fixed alternative.
+
+        temporary_stock_mac_base: Stock + Pricol batches program slot N
+        with base + N - 1 for the Stock stages, or with the built-in
+        TEMPORARY_STOCK_MACS when None; only the Pricol MAC comes from a
+        box block.
+
+        qr_reuse: with it, a QR already bound on this station puts the
+        station on hold instead of being refused, and is bound again (a
+        re-worked module) once a supervisor has cleared the hold."""
         if slot_count not in (4, 8):
             raise ValueError("slot_count must be 4 or 8")
         if (programmer is None) == (programmer_factory is None):
@@ -209,7 +230,8 @@ class ProductionController:
         self._programmer_factory = programmer_factory
         self._require_firmware = require_firmware
         self._access = access
-        self._qr_claims = qr_claims
+        self._temporary_stock_mac_base = temporary_stock_mac_base
+        self._qr_reuse = qr_reuse
         self._enabled_slots = enabled_slots
         self._qr_format = qr_format
         self._commit_listeners: list[Callable[[Batch], None]] = []
@@ -221,6 +243,8 @@ class ProductionController:
         self._lock = threading.RLock()
         self._batch: Batch | None = None
         self._ports: dict[int, SlotPort] = {}
+        # Every loaded slot's port: a restart binds them all again.
+        self._tray_ports: dict[int, SlotPort] = {}
         self._activity: dict[int, SlotActivity] = {}
         self._last_error: str | None = None
         self._running = False
@@ -281,6 +305,7 @@ class ProductionController:
                 programming_mode=batch.programming_mode,
                 batch_label=batch.batch_label,
                 occupied_slots=tuple(batch.occupied_slot_numbers or ()),
+                restarts=batch.restart_count,
             )
 
     def _overlay(self, slot_view):
@@ -366,6 +391,7 @@ class ProductionController:
 
             self._batch = batch
             self._ports = {number: ports[number] for number in occupied}
+            self._tray_ports = dict(self._ports)
             self._activity = {}
             self._last_error = None
 
@@ -378,7 +404,10 @@ class ProductionController:
             self._store.save(batch, events)
 
             try:
-                records = self._store.reserve_macs(batch, MacPurpose.STOCK_RF_TEST, occupied)
+                if mode is ProgrammingMode.STOCK_AND_PRICOL:
+                    records = self._temporary_stock_macs(batch, occupied)
+                else:
+                    records = self._store.reserve_macs(batch, MacPurpose.STOCK_RF_TEST, occupied)
             except Exception as exc:
                 # Reservation is atomic in the repository: nothing was consumed.
                 batch.abort(f"Stock MAC reservation failed: {exc}")
@@ -456,6 +485,9 @@ class ProductionController:
             if self._access is not None:
                 self._require_access()
 
+            if self._qr_reuse is not None and self._qr_reuse.scanning_stopped():
+                raise ProductionError("STATION ON HOLD: a QR was scanned again. A Supervisor must check the module and clear the hold.")
+
             qr = raw.strip()
             if self._qr_format is not None:
                 # Same normalisation as the scanner field (hex only, last N),
@@ -467,44 +499,66 @@ class ProductionController:
             if not self._qr_pattern.fullmatch(qr):
                 raise ProductionError(f"Invalid QR data: {qr!r}")
 
-            owner = self._qr_owner(qr)
-            if owner is not None:
+            owner = self._qr_owner(qr, batch.batch_id)
+            rework_of = None
+            if owner is not None and not any(slot.module_qr == qr for slot in batch.slots.values()) and self._qr_reuse is not None:
+                # Same QR, new MAC: a re-worked module, or a wrong label.
+                if not self._qr_reuse.reuse_approved(qr):
+                    self._qr_reuse.hold_for_reused_qr(qr, owner, batch.batch_id)
+                    self._last_error = f"Station on hold: QR {qr} is already bound at {owner}"
+                    self._notify()
+                    raise ProductionError(
+                        f"STATION ON HOLD: QR {qr} is already bound at {owner}. "
+                        "A Supervisor must check the module and clear the hold; then scan it again."
+                    )
+                rework_of = owner
+            elif owner is not None:
                 raise ProductionError(f"Duplicate QR: {qr} is already bound at {owner}")
 
             expected_slot = batch.next_qr_slot
             if expected_slot is None:
                 raise ProductionError("All module QRs have been scanned")
 
-            # Claim the QR line-wide before binding it. Offline, the
-            # binding proceeds UNCONFIRMED and is checked at the next sync.
-            server_status, claim_detail = "UNCONFIRMED", "no LAN claim service"
-            if self._qr_claims is not None:
-                try:
-                    decision = self._qr_claims.claim(qr, batch_id=batch.batch_id, slot_number=expected_slot)
-                except DuplicateQrError as exc:
-                    raise ProductionError(str(exc)) from exc
-                server_status, claim_detail = decision.server_status, decision.detail
+            # The box checks the QR when the finished tray is reported.
+            server_status = "UNCONFIRMED"
 
             try:
                 slot_number = batch.scan_module_qr(qr)
             except (DuplicateModuleQr, DomainError) as exc:
                 raise ProductionError(str(exc)) from exc
 
-            events = [self._event(batch, EventType.MODULE_QR_BOUND, slot=slot_number, module_qr=qr, server_status=server_status, claim_detail=claim_detail, module_failed=batch.slots[slot_number].is_held)]
+            payload = {"rework_of": rework_of} if rework_of else {}
+            events = [self._event(batch, EventType.MODULE_QR_BOUND, slot=slot_number, module_qr=qr, server_status=server_status, module_failed=batch.slots[slot_number].is_held, **payload)]
             bind = getattr(self._store, "bind_module_qr", None)
             if bind is not None:
-                bind(batch, events, module_qr=qr, slot_number=slot_number, server_status=server_status)
+                bind(batch, events, module_qr=qr, slot_number=slot_number, server_status=server_status, rework_of=rework_of)
             else:
                 self._store.save(batch, events)
+            if rework_of and self._qr_reuse is not None:
+                self._qr_reuse.reuse_bound(qr)
             self._last_error = None
 
         self._notify()
         return slot_number
 
-    def _qr_owner(self, qr: str) -> str | None:
+    def _temporary_stock_macs(self, batch: Batch, slots: tuple[int, ...]) -> tuple[AllocatedMac, ...]:
+        """Per-slot temporary Stock MACs of a Stock + Pricol batch."""
+        records = []
+        for number in slots:
+            record = AllocatedMac(
+                allocation_id=TEMPORARY_ALLOCATION_ID,
+                address=temporary_stock_mac(self._temporary_stock_mac_base, number),
+                purpose=MacPurpose.STOCK_RF_TEST,
+            )
+            record.reserve(batch_id=batch.batch_id, slot_number=number)
+            records.append(record)
+        return tuple(records)
+
+    def _qr_owner(self, qr: str, batch_id: str) -> str | None:
         lookup = getattr(self._store, "module_qr_owner", None)
         if lookup is not None:
-            return lookup(qr)
+            # A QR bound in this tray before a restart is not reused.
+            return lookup(qr, ignore_batch=batch_id)
         return "another module" if self._store.module_qr_in_use(qr) else None
 
     def add_commit_listener(self, callback: Callable[[Batch], None]) -> None:
@@ -538,6 +592,81 @@ class ProductionController:
             events.extend(self._disposition_events(batch))
             self._store.save(batch, events)
             self._last_error = None
+
+        self._notify()
+
+    def restart_batch(self, *, actor_id: str | None = None, supervisor: AuthenticatedUser | None = None) -> None:
+        """Send the tray back to its first step, keeping its MAC addresses.
+
+        Allowed at any step until the tray is committed (QR scanning
+        included, e.g. for a label that cannot be read): every loaded
+        module is programmed and tested again with the same MACs, and
+        every QR is scanned again. A tray on HOLD needs a Supervisor.
+        """
+        with self._lock:
+            batch = self._require_batch()
+            if self._running:
+                raise ProductionError("Stop the running step before restarting the tray")
+            if batch.state in _FINISHED_STATES:
+                raise ProductionError("This tray is finished and cannot be restarted")
+            if supervisor is not None:
+                if not supervisor.is_supervisor:
+                    raise ProductionError("Supervisor authorization is required")
+                actor_id = supervisor.user_id
+            elif self._access is not None:
+                _session_id, operator_id = self._require_access()
+                actor_id = actor_id or operator_id
+                if batch.state is BatchState.HOLD:
+                    raise ProductionError("The tray is on HOLD: a Supervisor must authorize the restart")
+
+            ports = self._tray_ports
+            loaded = tuple(batch.loaded_slot_numbers or batch.occupied_slot_numbers)
+            stock_only = batch.programming_mode is ProgrammingMode.STOCK_ONLY
+            # A slot without a Stock MAC (module not detected) gets a new
+            # one first; if that fails, the tray is left as it was.
+            missing = tuple(number for number in loaded if batch.slots[number].stock_mac_record is None)
+            fresh: tuple[AllocatedMac, ...] = ()
+            if stock_only and missing:
+                try:
+                    fresh = self._store.reserve_macs(batch, MacPurpose.STOCK_RF_TEST, missing)
+                except Exception as exc:
+                    raise ProductionError(
+                        "Restart refused: no Stock MAC for slot(s) " + ", ".join(map(str, missing)) + f": {exc}"
+                    ) from exc
+
+            previous_state = batch.state
+            try:
+                kept = batch.restart()
+            except DomainError as exc:
+                raise ProductionError(str(exc)) from exc
+
+            batch.begin_port_binding()
+            for number in loaded:
+                batch.bind_port(number, ports[number].port_identity)
+            if stock_only:
+                records = tuple(kept[number] for number in loaded if number in kept) + fresh
+            else:
+                records = self._temporary_stock_macs(batch, loaded)
+            batch.accept_stock_reservations(records)
+
+            self._ports = dict(ports)
+            self._activity = {}
+            self._last_error = None
+            events = [self._event(
+                batch,
+                EventType.BATCH_RESTARTED,
+                actor_id=actor_id,
+                attempt=batch.restart_count + 1,
+                from_state=previous_state.value,
+                stock_macs={str(record.slot_number): str(record.address) for record in records},
+                pricol_macs={str(number): str(record.address) for number, record in batch.carried_pricol_macs.items()},
+            )]
+            restart = getattr(self._store, "restart", None)
+            if restart is not None:
+                restart(batch, events)
+            else:
+                self._store.save(batch, events)
+            logger.info("Tray restarted | batch_id=%s from=%s attempt=%d", batch.batch_id, previous_state.value, batch.restart_count + 1)
 
         self._notify()
 
@@ -874,17 +1003,22 @@ class ProductionController:
                 return
 
             eligible = tuple(slot.number for slot in batch.pricol_eligible_slots)
-            try:
-                records = self._store.reserve_macs(batch, MacPurpose.PRICOL_PRODUCTION, eligible)
-            except Exception as exc:
-                raise ProductionError(
-                    f"Pricol MAC reservation failed: {exc}. Refill the authorized MAC cache, then press RETRY."
-                ) from exc
+            # A restarted tray programs each slot's earlier Pricol MAC again.
+            carried = tuple(batch.carried_pricol_macs[number] for number in eligible if number in batch.carried_pricol_macs)
+            needed = tuple(number for number in eligible if number not in batch.carried_pricol_macs)
+            records: tuple[AllocatedMac, ...] = ()
+            if needed:
+                try:
+                    records = self._store.reserve_macs(batch, MacPurpose.PRICOL_PRODUCTION, needed)
+                except Exception as exc:
+                    raise ProductionError(
+                        f"Pricol MAC reservation failed: {exc}. Wait until the box has issued a Pricol block (Station status), then press RETRY."
+                    ) from exc
 
-            batch.accept_pricol_reservations(records)
+            batch.accept_pricol_reservations(carried + records)
             self._store.save(batch, [
-                self._event(batch, EventType.PRICOL_MAC_RESERVED, slot=record.slot_number, mac=str(record.address), allocation_id=record.allocation_id)
-                for record in records
+                self._event(batch, EventType.PRICOL_MAC_RESERVED, slot=record.slot_number, mac=str(record.address), allocation_id=record.allocation_id, reused=record in carried)
+                for record in carried + records
             ])
 
     def _functional_stage(self, batch: Batch, *, dfu: bool, token: CancellationToken | None) -> None:

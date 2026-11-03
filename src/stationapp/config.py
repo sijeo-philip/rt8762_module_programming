@@ -72,10 +72,16 @@ class Settings(BaseSettings):
     pricol_firmware_path: Path | None = None
 
     # --- Authorized MAC cache ---
-    # Below this many AVAILABLE MACs per purpose, the station requests
-    # another block from the LAN server.
+    # Low water: below this many addresses left in the current box block
+    # the station fetches the reserve block.
     mac_cache_threshold: int = Field(64, ge=8)
-    mac_request_size: int = Field(200, ge=8)
+
+    # --- Temporary Stock MACs (Stock + Pricol mode) ---
+    # Slot N is programmed with TEMP_STOCK_MAC_BASE + N - 1 for the Stock
+    # firmware and RF test, on every tray; unset, with the built-in
+    # TEMPORARY_STOCK_MACS. The box never sees these addresses: the Pricol
+    # MAC from a box block replaces them.
+    temp_stock_mac_base: str | None = None
 
     # --- Production ---
     # Accepted module QR content. Tighten once the label format is fixed.
@@ -112,25 +118,25 @@ class Settings(BaseSettings):
     simulation_failures: str = ""
     simulation_delay_seconds: float = Field(1.0, ge=0)
 
-    # --- Stage 2 ---
-    lan_server_url: str | None = None
-    lan_server_api_key: str | None = None
-
-    # --- LAN server synchronization ---
-    # Completed modules waiting for upload that trigger an automatic sync.
-    sync_module_threshold: int = Field(1000, ge=1)
-    sync_retry_minutes: float = Field(5.0, gt=0)
-    lan_server_timeout_seconds: float = Field(10.0, gt=0)
+    # --- UnisemBLE box (LAN server), docs/box_integration.md ---
+    # BOX_URL is the "Workstation app (SDK base_url)" line on the box
+    # installer's finish page; the station key is issued on the box
+    # console (Stations page).
+    box_url: str | None = None
+    box_station_key: str | None = None
+    # Master range (box console -> Pools) each final MAC is drawn from:
+    # Stock Only modules keep their Stock MAC, Stock + Pricol modules
+    # their Pricol MAC.
+    box_master_range_stock: str | None = None
+    box_master_range_pricol: str | None = None
+    box_block_size: int = Field(5000, ge=100, le=20000)
+    # Unreported modules are re-sent this often while the box is away.
+    box_report_retry_seconds: float = Field(60.0, gt=0)
 
     # --- Login ---
-    # server: every login is verified by the LAN server (production).
-    # test:   hardcoded test users (services/test_users.py) - TESTING ONLY.
+    # server: phone + PIN verified by the box (production).
+    # test:   an in-memory demo box with demo users - TESTING ONLY.
     auth_mode: Literal["server", "test"] = "server"
-
-    # --- Duplicate QR prevention ---
-    # Claim each scanned QR on the LAN server before binding it.
-    qr_online_claim: bool = True
-    qr_claim_timeout_seconds: float = Field(2.0, gt=0)
 
     # --- Runtime ---
     log_level: str = "INFO"
@@ -184,16 +190,25 @@ class Settings(BaseSettings):
            raise ValueError(f"log_level much be one of {sorted(allowed)}")
         return upper
 
+    @field_validator("temp_stock_mac_base", mode="before")
+    @classmethod
+    def _check_temp_stock_mac_base(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        from stationapp.domain.mac import MacAddress, temporary_stock_mac
+
+        base = MacAddress.parse(value)
+        temporary_stock_mac(base, 8)  # every slot of an 8-up jig must fit
+        return base.colon
+
     @property
     def is_stage_two(self) -> bool:
-        """ True once the LAN Server is configured.
+        """True once the box URL and station key are configured.
 
-        This poperty is read by services to decide whether to attempt server call
-        at all. The stage 1 it is always False, so the offline path is normal path
-        which is the correct way round: the RFQ requires the staqtion to keep working
-        without the server, so offline much be the well-tested default.
+        The station keeps producing while the box is unreachable, for as
+        long as its blocks last; reports queue until the box answers.
         """
-        return bool(self.lan_server_url)
+        return bool(self.box_url and self.box_station_key)
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

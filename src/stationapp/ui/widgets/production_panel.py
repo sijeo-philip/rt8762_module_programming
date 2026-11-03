@@ -74,6 +74,9 @@ STEPS = (
 )
 PRICOL_STEPS = frozenset({"PRICOL PROGRAM", "PRICOL READBACK", "FUNCTIONAL TEST"})
 
+# A tray in these states cannot be restarted.
+_FINISHED = frozenset({BatchState.COMMITTED, BatchState.UPLOAD_PENDING, BatchState.UPLOADED, BatchState.ABORTED})
+
 _STEP_FOR_STATE = {
     BatchState.CREATED: "LOAD & READY",
     BatchState.PORT_BINDING: "LOAD & READY",
@@ -183,6 +186,9 @@ class ProductionPanel(QWidget):
         self._scan_debounce_ms = scan_debounce_ms
         self._settings_service = settings_service
         self._browse_buttons: list[QPushButton] = []
+        # RESTART TRAY pressed while a step runs: (supervisor,) until the
+        # step has stopped and the tray restarts.
+        self._restart_request: tuple | None = None
 
         self._build(default_stock_firmware, default_pricol_firmware)
 
@@ -209,12 +215,14 @@ class ProductionPanel(QWidget):
         jig_grid.slot_clicked.connect(self._on_slot_clicked)
 
         # The advance worker is only gone once its thread is cleaned up.
-        operations.operation_removed.connect(lambda _operation_id: self._schedule_render())
+        operations.operation_removed.connect(self._on_operation_removed)
 
         self._readiness_timer = QTimer(self)
         self._readiness_timer.setSingleShot(True)
         self._readiness_timer.setInterval(400)
-        self._readiness_timer.timeout.connect(lambda: self.check_station(top_up=False))
+        # Top up too: a new mode may need blocks from another master range.
+        # The box is asked only when a block is missing or running low.
+        self._readiness_timer.timeout.connect(lambda: self.check_station(top_up=True))
 
         self.render()
 
@@ -277,6 +285,13 @@ class ProductionPanel(QWidget):
         self.abort_button.clicked.connect(self._on_abort)
         self.abort_button.hide()
         actions.addWidget(self.abort_button)
+
+        self.restart_button = QPushButton("RESTART TRAY")
+        self.restart_button.setToolTip("Start this tray again from the first step. Every module keeps its MAC address.")
+        self.restart_button.setMinimumHeight(44)
+        self.restart_button.clicked.connect(self._on_restart)
+        self.restart_button.hide()
+        actions.addWidget(self.restart_button)
         layout.addLayout(actions)
 
         self.setup_box = self._build_setup(stock_fw, pricol_fw)
@@ -342,7 +357,7 @@ class ProductionPanel(QWidget):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         right.addWidget(self.readiness_table)
 
-        self.check_button = QPushButton("Check station / refill MAC cache")
+        self.check_button = QPushButton("Check station / fetch MAC blocks")
         self.check_button.clicked.connect(lambda: self.check_station(top_up=True))
         right.addWidget(self.check_button)
         outer.addLayout(right, 4)
@@ -385,7 +400,7 @@ class ProductionPanel(QWidget):
         self.render()
 
     def check_station(self, *, top_up: bool = False) -> None:
-        """Evaluate READY on a worker; contacts the LAN server if top_up."""
+        """Evaluate READY on a worker; asks the box for MAC blocks if top_up."""
         if self._shut_down:
             return
         if self._readiness_pending:
@@ -580,6 +595,57 @@ class ProductionPanel(QWidget):
         self._local_error = None
         self.render()
 
+    def _on_restart(self) -> None:
+        snapshot = self._controller.snapshot()
+        if not snapshot.has_batch or snapshot.workflow is None:
+            return
+        supervisor = None
+        if snapshot.workflow.batch_state is BatchState.HOLD and self._access is not None:
+            dialog = SupervisorAuthorizationDialog(self._access, "restart this tray", self)
+            if not dialog.exec() or dialog.result_user is None:
+                return
+            supervisor = dialog.result_user
+        running = snapshot.running or self._operations.get(ADVANCE_OPERATION) is not None
+        text = (
+            "Start this tray again from the first step?\n\n"
+            "Every module is programmed and tested again and keeps the MAC "
+            "address it has now. Every QR is scanned again.\n\n"
+            "You may replace a module or its QR label now. A module you take "
+            "out must not be used until it has been through the station again."
+        )
+        if running:
+            text += "\n\nThe step running now is stopped first."
+        answer = QMessageBox.question(self, "Restart tray", text)
+        if answer is not QMessageBox.StandardButton.Yes:
+            return
+        if running:
+            self._restart_request = (supervisor,)
+            self._operations.cancel(ADVANCE_OPERATION)
+            self.render()
+            return
+        self._restart(supervisor)
+
+    def _on_operation_removed(self, operation_id: str) -> None:
+        if operation_id == ADVANCE_OPERATION and self._restart_request is not None:
+            (supervisor,) = self._restart_request
+            self._restart(supervisor)
+            return
+        self._schedule_render()
+
+    def _restart(self, supervisor) -> None:
+        self._restart_request = None
+        try:
+            self._controller.restart_batch(supervisor=supervisor)
+        except ProductionError as exc:
+            self._action_error(str(exc))
+            self.render()
+            return
+        logger.info("Tray restarted from the panel")
+        self._local_error = None
+        # The same labels are scanned again.
+        self.qr_input.forget_last_scan()
+        self.render()
+
     def _on_access_changed(self) -> None:
         if self._snapshot is None or not self._snapshot.has_batch:
             self._readiness_timer.start()
@@ -653,6 +719,10 @@ class ProductionPanel(QWidget):
         if workflow.batch_state is BatchState.ABORTED:
             headline = "BATCH ABORTED"
             instruction = "Remove the modules, then prepare the next batch. " + (workflow.instruction or "")
+        elif snapshot.restarts:
+            instruction = (instruction or "") + f"  (Tray restarted {snapshot.restarts}x: the MAC addresses are unchanged.)"
+        if self._restart_request is not None:
+            headline, instruction = "STOPPING...", "The running step is being stopped; then the tray starts again from the first step."
         self._set_banner(
             headline,
             instruction,
@@ -673,6 +743,10 @@ class ProductionPanel(QWidget):
         self.primary_button.setEnabled(enabled)
 
         self.abort_button.setVisible(workflow.requires_supervisor and workflow.batch_state is not BatchState.ABORTED and not running)
+
+        finished = workflow.completed or workflow.batch_state in _FINISHED
+        self.restart_button.setVisible(not finished)
+        self.restart_button.setEnabled(self._restart_request is None)
 
         scanning = workflow.scanner_enabled and not running
         self.qr_input.setEnabled(scanning)
@@ -695,6 +769,7 @@ class ProductionPanel(QWidget):
         self.setup_box.setVisible(self._supervisor_view)
         self.setup_box.setEnabled(True)
         self.abort_button.hide()
+        self.restart_button.hide()
         self.qr_input.setEnabled(False)
         self.qr_input.setPlaceholderText("Scanner disabled")
         self._render_load_grid()

@@ -12,10 +12,16 @@ Each step says who does it:
 
 > **Rule of thumb:** if the screen says **"Call the Supervisor"**, or shows something red that this guide does not explain, stop and call the Supervisor. Never unplug cables or move modules while the screen says *"Do not remove modules"*.
 
+**New to the station?** Read [How the station works](#how-the-station-works) and [Words used in this guide](#words-used-in-this-guide) first. Then:
+- **Operator:** read [C2 Logging in](#c2-logging-in) and [C7 Running a batch](#c7-normal-production--running-a-batch-operator). Practise on a training station first ([C0](#c0-practise-first-training-mode)).
+- **Supervisor:** also read C3–C6, C9 and [D. Problems](#d-problems-and-what-to-do).
+- **Technician setting up a new line:** follow the checklist in [E](#e-checklists) from the top.
+
 ---
 
 ## Contents
 
+- [How the station works](#how-the-station-works)
 - [Words used in this guide](#words-used-in-this-guide)
 - **Part A — One-time certificate setup (Technician)**
   - [A1. What the certificates are for](#a1-what-the-certificates-are-for)
@@ -26,6 +32,7 @@ Each step says who does it:
   - [B2. Every day on the rig (Operator / Supervisor)](#b2-every-day-on-the-rig-operator--supervisor)
   - [B3. Changes to the rig that need re-approval](#b3-changes-to-the-rig-that-need-re-approval)
 - **Part C — Station app**
+  - [C0. Practise first: training mode](#c0-practise-first-training-mode)
   - [C1. First-time station setup (Technician)](#c1-first-time-station-setup-technician)
   - [C2. Logging in](#c2-logging-in)
   - [C3. Bind jig slots to COM ports (Supervisor)](#c3-bind-jig-slots-to-com-ports-supervisor)
@@ -35,9 +42,29 @@ Each step says who does it:
   - [C7. Normal production — running a batch (Operator)](#c7-normal-production--running-a-batch-operator)
   - [C8. Golden Rig — after the first time (Supervisor)](#c8-golden-rig--after-the-first-time-supervisor)
   - [C9. End of shift (Supervisor)](#c9-end-of-shift-supervisor)
+  - [C10. Line stopped: holds (Operator / Supervisor)](#c10-line-stopped-holds-operator--supervisor)
 - [D. Problems and what to do](#d-problems-and-what-to-do)
 - [E. Checklists](#e-checklists)
-- [F. Bench tool: test the whole flow without the LAN server](#f-bench-tool-test-the-whole-flow-without-the-lan-server)
+- [F. Bench tool: test the whole flow without the Box](#f-bench-tool-test-the-whole-flow-without-the-box)
+
+---
+
+## How the station works
+
+```
+   Box (site server)                       Station PC + jig (4 or 8 slots)            Golden Rig
+   - checks phone + PIN          login     - programs each module                  RF test  - reference
+   - gives blocks of MAC  ─────────────►   - writes its MAC address  ◄──────────────────►    Bluetooth
+     addresses                  blocks     - runs the RF test and, in Stock + Pricol,         module
+   - records which module  ◄─────────────    the Pricol app and DFU tests
+     got which MAC            report       - links each module's QR label to its MAC
+```
+
+1. A person logs in with their **phone number and 6-digit PIN**. The **Box** checks them and says whether the person is an Operator or a Supervisor.
+2. The station gets its **MAC addresses** from the Box in **blocks** (thousands at a time) and keeps them on the PC. If the Box is briefly unreachable, production continues from the addresses already held.
+3. An Operator runs one **batch** at a time: the modules in the jig go through programming, the RF test and, in Stock + Pricol mode, Pricol programming and the functional tests. At the end every module's **QR label** is scanned. If something goes wrong on the way, the Operator can **restart the tray** from the first step at any time; the modules keep their MAC addresses ([C7](#restart-the-tray)).
+4. When the batch is complete, the station **reports** each module's QR, MAC and pass/fail to the Box in the background. The Operator never waits for it.
+5. If the Box finds a problem (for example the same MAC on two modules), or the station sees a QR label that is already used, the **line stops** ("hold") until a Supervisor checks it and clears the hold ([C10](#c10-line-stopped-holds-operator--supervisor)).
 
 ---
 
@@ -55,6 +82,15 @@ Each step says who does it:
 | **Certificate** | A digital ID card for the Golden Rig. The station uses it to make sure it is talking to the real, approved rig. |
 | **Fingerprint (SHA-256)** | A long code of letters and digits that is unique to one certificate. If the rig's certificate changes, its fingerprint changes. |
 | **Session** | The Supervisor opens a production session at the start of a shift. Operators can run batches only while a session is open. |
+| **Box** | The site's server for MAC addresses and logins (also called the LAN server). Each station is registered on it with a **station key**. |
+| **PIN** | Your 6-digit secret number. Together with your phone number it is your login on every station. Never tell it to anyone, and never type it for someone else. |
+| **Batch** (the Box calls it a **tray**) | The modules in the jig that go through one complete run, from START to BATCH COMPLETE. It can be fewer than all slots. |
+| **MAC address** | A module's unique Bluetooth address, for example `0A:00:00:00:12:34`. Two shipped modules must never share one. |
+| **Block** | A run of MAC addresses the Box gives this station. The station holds a **current** block and, when it runs low, a **reserve** block. |
+| **Programming mode** | **Stock only**: the module gets the Stock firmware and keeps its Stock MAC. **Stock + Pricol**: the module first gets the Stock firmware with a **temporary** MAC for the RF test, then the Pricol firmware with its final **Pricol MAC**. |
+| **Temporary Stock MAC** | In Stock + Pricol mode only: the same short list of addresses (one per slot) used on every batch, only until the Pricol MAC is written. It is never reported to the Box. |
+| **RESTART TRAY** | Starts the batch again from the first step with the same modules and the **same MAC addresses**. Possible at any step until **COMPLETE BATCH** is pressed. |
+| **Hold / LINE STOPPED** | The station refuses to continue until a Supervisor checks a problem and clears it with their phone number and PIN ([C10](#c10-line-stopped-holds-operator--supervisor)). |
 
 ---
 
@@ -217,6 +253,29 @@ There is nothing to do on the rig itself in normal production.
 
 # Part C — Station app
 
+## C0. Practise first: training mode
+
+Before using a real line, learn the screens on a training PC where nothing is real:
+
+| Setting in `.env` | Value |
+|---|---|
+| `SIMULATION_MODE` | `true`: no jig, Golden Rig or MPCLI is needed; every step is simulated. |
+| `AUTH_MODE` | `test`: a **demo Box** inside the app replaces the real Box. |
+| `DATABASE_URL` | A separate file, e.g. `sqlite:///./data/training.db`, so training batches never mix with production. |
+
+The login screen then says **DEMO BOX** and shows these demo logins:
+
+| Phone number | PIN | Role |
+|---|---|---|
+| `9000000001` | `123456` | Operator |
+| `9000000002` | `000000` | Operator who must choose a new PIN at first login |
+| `9000000003` | `246810` | Supervisor |
+| `9000000004` | `135790` | Admin (same rights as a Supervisor) |
+
+Practise in this order: Supervisor opens the session ([C6](#c6-start-of-every-shift--open-the-session-supervisor)) → Operator runs a batch ([C7](#c7-normal-production--running-a-batch-operator)) → scan a QR from an earlier batch again to see a hold, and clear it as Supervisor ([C10](#c10-line-stopped-holds-operator--supervisor)). Failures can be simulated with `SIMULATION_FAILURES` (see `.env.example`).
+
+> **Never** use training settings on a production station. A yellow **SIMULATION MODE** banner or **DEMO BOX** on the login screen means: not for production.
+
 ## C1. First-time station setup (Technician)
 
 Do this once per station PC.
@@ -230,33 +289,36 @@ Do this once per station PC.
    | `STATION_ID`, `JIG_ID` | `STN-01`, `JIG-01` | Unique per station / jig. Never reuse them. |
    | `JIG_POSITIONS` | `8` | 4 or 8 slots. |
    | `MPCLI_PATH` | path to `mpcli.exe` | Programming tool. |
-   | `LAN_SERVER_URL`, `LAN_SERVER_API_KEY` | from IT | Logins, MAC addresses and uploads. |
-   | `AUTH_MODE` | `server` | **Must be `server` in production.** `test` is for testing only. |
+   | `BOX_URL` | `http://box-host:3001` | The "Workstation app (SDK base_url)" line on the Box installer's finish page. It must start with `http://` or `https://`. A wrong format is shown at once as **Box: BOX_URL … must look like http://&lt;box-host&gt;:&lt;port&gt;**. |
+   | `BOX_STATION_KEY` | from the Box | Shown **once** when the station is created on the Box console (**Stations**). Copy it exactly. |
+   | `BOX_MASTER_RANGE_STOCK`, `BOX_MASTER_RANGE_PRICOL` | from the Box console (**Pools**) | Where the final MACs come from: Stock Only modules keep their Stock MAC, Stock + Pricol modules their Pricol MAC. |
+   | `BOX_BLOCK_SIZE` | `5000` | Addresses per block. Smaller blocks waste fewer addresses when the programming mode is changed often ([C5](#c5-production-settings-supervisor)). |
+   | `TEMP_STOCK_MAC_BASE` | *(empty)* | Stock + Pricol only. Empty = the built-in temporary addresses `0A:FF:00:00:00:01` (slot 1) to `…:08` (slot 8). Set an address only if engineering asks for other temporary MACs; slot N then uses that address + N - 1. |
+   | `AUTH_MODE` | `server` | **Must be `server` in production.** `test` uses a demo box in memory, for testing only. |
    | `GOLDEN_RIG_CA_CERTIFICATE` | `./config/certificates/golden_rig_ca.pem` | The CA file from step 2. |
    | `GOLDEN_RIG_INVENTORY` | `GOLDEN-RIG-01,GOLDEN-RIG-02` | Optional. Only these rig IDs can be approved. Empty = any rig signed by your CA. |
    | `GOLDEN_RIG_CANDIDATES` | `golden-rig-01.local:8762` | Optional. Rigs listed under *Discover rigs*, so Supervisors do not have to type them. |
    | `SIMULATION_MODE` | `false` | **Must be `false` in production.** |
 
-4. Plug the USB QR / badge scanner into the station PC. Both scanner modes work:
+4. Plug the USB QR scanner into the station PC. Both scanner modes work:
    - **HID POS mode:** Device Manager shows *POS HID Barcode scanner*. The app reads it through Windows. Install the requirements with `pip install -r requirements.txt` (this includes the `winrt-…` packages), and keep `QR_SCANNER_HID_POS=true`.
    - **Keyboard mode:** the scanner types the code. The cursor must be in the scan box.
-5. Make sure the Operator and Supervisor accounts are **enrolled on the LAN server**. Accounts are not created on the station: anyone enrolled can log in on any station.
+5. Make sure every Operator and Supervisor is **registered at head office** with a phone number and the right role (*user* = Operator; *supervisor* or *admin* = Supervisor). Accounts are not created on the station, and anyone registered can log in on any station.
+6. Use a separate `DATABASE_URL` for simulation or training. Blocks from the demo Box are never used with the real Box, but batches made in simulation would be reported to it and rejected.
+7. Start the app and log in as Supervisor. **Station configuration → Box** must show the Box address, and **Check station** (Production tab) must show **Box** in green and a MAC block received.
 
-> If the app shows a yellow **SIMULATION MODE** banner, or the login screen says it is using **test users**, the station is **not** set up for production. Do not produce; call the technician.
+> If the app shows a yellow **SIMULATION MODE** banner, or the login screen says **DEMO BOX**, the station is **not** set up for production. Do not produce; call the technician.
 
 ## C2. Logging in
 
 When the app starts, it shows the **login screen** with the station name.
 
-**To log in with a badge** 🟢🔵
-1. Click in the **"Scan your badge"** box (it is usually selected already).
-2. Scan your badge.
-   - **Operators** are logged in straight away.
-   - **Supervisors** are asked for their password as well.
+**To log in** 🟢🔵
+1. Type your **Phone number** and your 6-digit **PIN**.
+2. Press **LOG IN**. The box checks them and tells the station whether you are an Operator or a Supervisor.
 
-**To log in with your user ID** 🟢🔵
-1. Type your **User ID** and **Password**.
-2. Press **LOG IN**.
+**First login, or a new PIN from head office** 🟢🔵
+The screen asks for a **New PIN**. Type a new 6-digit PIN twice and press **SET NEW PIN AND LOG IN**.
 
 **What you see afterwards**
 - **Operator:** a simple production screen with the jig slots, progress and results only.
@@ -264,9 +326,13 @@ When the app starts, it shows the **login screen** with the station name.
 
 **Supervisor help while an Operator is logged in** 🔵
 1. Press **Supervisor** in the top bar and log in. The full screen opens.
-2. When finished, press **Log out Supervisor**. The Operator stays logged in.
+2. When finished, press **Log out Supervisor**.
+3. The box allows one person logged in per station, so the **Operator must log in again** afterwards. Finished trays are kept and reported after that login.
 
-The Supervisor login lapses on its own after 15 minutes of no Supervisor use. After 5 wrong passwords an account is locked for 5 minutes.
+The Supervisor login lapses on its own after 15 minutes of no Supervisor use. Too many wrong PINs lock the phone number for a while; the screen says how long.
+
+**Red LINE STOPPED button in the top bar** 🟢🔵
+The line is on hold. See [C10](#c10-line-stopped-holds-operator--supervisor).
 
 ## C3. Bind jig slots to COM ports (Supervisor)
 
@@ -375,6 +441,8 @@ Open the **Production settings** tab. These settings are kept until a Supervisor
 4. **Enabled jig slots:** tick the slots that may be used. Each one shows its COM port. Untick a slot whose fixture is damaged; Operators will then not be able to use it.
 5. Press **Save settings** (or **Discard changes**).
 
+> **Changing the programming mode** (Stock only ↔ Stock + Pricol) changes where the final MACs come from. The Box lets a station hold blocks for one mode at a time, so the station gives up the remaining addresses of the old mode's blocks and fetches a new block at the next **Check station**. That needs the Box to be reachable. Plan mode changes, and do not switch back and forth during a shift.
+
 ## C6. Start of every shift — open the session (Supervisor)
 
 Operators can run batches only while a production session is open. Open one at the start of every shift.
@@ -406,7 +474,7 @@ The Operator screen shows a large coloured **headline**, an **instruction** unde
 ### Getting ready
 
 1. Log in ([C2](#c2-logging-in)).
-2. If the headline says **CHECK STATION**, press **Check station / refill MAC cache**. The station checks the jig, the Golden Rig and the MAC addresses.
+2. If the headline says **CHECK STATION**, press **Check station / fetch MAC blocks**. The station checks the jig, the Golden Rig, the Box and the MAC addresses.
    - **JIG READY - LOAD MODULES** (blue): continue.
    - **JIG NOT READY** or **STATION NOT READY** (red): call the Supervisor. The reason is shown in brackets.
 3. **Load modules** into the jig. You can load only some slots: empty slots are simply skipped. A batch does not have to be a full jig.
@@ -440,7 +508,7 @@ Each of these steps needs you to switch or reset the modules by hand. Nothing st
 | **RESET ALL MODULES NOW** | **Reset** every module again. The station waits for each start-up message, then sends *PRICOLDFU*. |
 | **TESTS COMPLETE** | Wait. |
 
-> **Order matters.** For **PROGRAM PRICOL FIRMWARE**: switch and reset first, then press. For **RUN APP TEST** and **RUN DFU TEST**: press first, then reset when the screen says **RESET ALL MODULES NOW**. The module accepts the test command only right after it starts. A module reset too early, or not at all, fails with *"no start-up message"* and cannot be retested in the same batch.
+> **Order matters.** For **PROGRAM PRICOL FIRMWARE**: switch and reset first, then press. For **RUN APP TEST** and **RUN DFU TEST**: press first, then reset when the screen says **RESET ALL MODULES NOW**. The module accepts the test command only right after it starts. A module reset too early, or not at all, fails with *"no start-up message"*. To test it again, press **RESTART TRAY** ([below](#restart-the-tray)).
 
 ### QR scan and finish
 
@@ -453,11 +521,34 @@ Each of these steps needs you to switch or reset the modules by hand. Nothing st
 **About QR scanning**
 - Scan **only the module in the slot that is asked for.**
 - If you scan the same label twice by mistake, the second read is ignored. You do not need to do anything.
-- If the station says **Duplicate QR: … is already bound at …**, the label is a duplicate somewhere on the line. Do not force it: call the Supervisor.
+- If the station says **STATION ON HOLD: QR … is already bound at …**, that label is already on a module made at this station: either the module is coming back for re-work, or the label is wrong. Scanning stops. Leave the module in its slot and call the Supervisor ([C10](#c10-line-stopped-holds-operator--supervisor)). After the Supervisor clears the hold, scan the label they tell you to.
 
 **Failed modules:** a failed slot is shown in red with the step that failed (and, for programming errors, an **ERR** number). The other slots carry on normally. Press **Error codes** in the top bar to see what each ERR number means. Put failed modules in the reject tray, or follow your Supervisor's instructions.
 
 **If the headline says SUPERVISOR REQUIRED** (or anything you do not understand): stop and call the Supervisor. Do not remove modules unless told to.
+
+### Restart the tray
+
+The **RESTART TRAY** button (next to the main button) is shown from **START** until you press **COMPLETE BATCH**. It sends the whole batch back to the first step (**PREPARE FOR STOCK PROGRAMMING**). Use it when:
+- a step was done wrongly, for example the modules were not switched or reset before a button was pressed, and the modules failed because of it;
+- a module's **QR label cannot be read** (damaged, smudged, missing);
+- a slot showed **NOT DETECTED - skipped** and you have re-seated the module.
+
+What happens:
+- **Every module keeps its MAC address.** The batch got its MAC addresses at START and keeps them until it is complete and reported to the Box. A restart does not use up new addresses.
+- Every slot you loaded runs again, including a slot that showed **NOT DETECTED**. All results of the earlier run are cleared.
+- **Every QR is scanned again**, including the ones already scanned. That never causes a hold.
+- If a step is still running (for example **PROGRAMMING MODULES**), it is stopped first. The headline shows **STOPPING...**, then the batch starts again.
+- The instruction shows *Tray restarted Nx*. Each restart is recorded with your name.
+
+**To restart**
+1. Press **RESTART TRAY** and answer **Yes**.
+2. If needed, now replace a damaged QR label, re-seat a module, or swap a module for another one.
+3. Follow the headline from **PREPARE FOR STOCK PROGRAMMING** as for a new batch.
+
+> **A module you take out of the jig after a restart must not be used** until it has been through the station again in a later batch. It may still carry a MAC address that the restarted batch now gives to the module in its slot.
+
+If the headline says **SUPERVISOR REQUIRED**, a Supervisor must type their phone number and PIN to restart the tray.
 
 ## C8. Golden Rig — after the first time (Supervisor)
 
@@ -491,11 +582,30 @@ Use the table in [B3](#b3-changes-to-the-rig-that-need-re-approval) to decide wh
 
 1. Let the running batch finish (**BATCH COMPLETE**). The Operator presses **Log out**.
 2. Log in as Supervisor. Open **Station configuration → Session**. Press **Close session** and give a reason (e.g. `Shift end`). Confirm with **Yes**.
-3. The station sends all records to the LAN server first.
-   - If the server cannot be reached, you are asked whether to close anyway. **Yes** is safe: records stay on the station and are uploaded automatically later.
-4. You can check uploads at any time:
-   - The top bar shows **Server:** with the number of modules waiting.
-   - **Station configuration → Server sync** has the details and a **Sync now** button.
+3. The station reports any finished trays still waiting to the box first.
+   - If the box cannot be reached, you are asked whether to close anyway. **Yes** is safe: the trays stay on the station and are reported after the next login.
+4. You can check reports at any time:
+   - The top bar shows **Box:** with the number of modules waiting.
+   - **Station configuration → Box** shows the MAC blocks, the hold, recent reports and a **Report now** button.
+
+## C10. Line stopped: holds (Operator / Supervisor)
+
+When the line is on hold, the top bar shows a red **LINE STOPPED - Clear hold** button, **Check station** shows **Station hold** in red, and no new batch can start. The hold stays after a restart. **Only a Supervisor (or Admin) can clear it**, with their own phone number and PIN; the Box checks the PIN, so the Box must be reachable.
+
+There are two kinds of hold:
+
+| Hold | Why | What the Operator does | What the Supervisor does |
+|---|---|---|---|
+| **Box hold** (window title *"Line stopped by the box"*) | After a report, the Box rejected a module: its MAC is already on another module, or the MAC was never given to this station. A hold can also be set from the Box console. | Take the listed modules out, keep them apart, call the Supervisor. | Read the reason and the list of rejected modules. Make sure they are set apart. What happens to them is decided on the Box console. Then clear the hold. |
+| **QR scanned again** (window title *"Line stopped: QR scanned again"*) | A QR label that is already linked to a module made at this station was scanned again in a new batch. The module would get a **new** MAC under the **same** QR. | Leave the module in its slot. Stop scanning and call the Supervisor. | Check the module. **Re-worked module:** clear the hold and tell the Operator to scan the same QR again. It is then linked to the module's new MAC, and the Box records the module as re-programmed. **Wrong label:** clear the hold, put the correct label on the module, and have that one scanned. |
+
+**To clear a hold** 🔵
+1. Press **LINE STOPPED - Clear hold** (top bar), or **Clear hold** in **Station configuration → Box**.
+2. Read the reason and the listed modules or QRs.
+3. Type **your own** phone number and PIN, then press **Clear hold**.
+4. The message **Hold cleared** appears and the red button disappears. Every clearing is recorded with your phone number.
+
+Clearing a hold does **not** log the Operator out.
 
 ---
 
@@ -525,16 +635,32 @@ Use the table in [B3](#b3-changes-to-the-rig-that-need-re-approval) to decide wh
 | An adapter does not appear in **Detected interface** | It has no USB identity the station can use (some cheap adapters), or its driver is not installed. | Try another adapter. Ask the technician to check Windows Device Manager. |
 | Slot shows **NOT DETECTED - skipped** (ERR 6 at the start) | MPCLI found no module on that slot's port: empty slot, module not seated, no power, or not in boot mode. Nothing was written and the slot's MAC was not used. | Nothing to record: the slot is left out of the batch (no QR). If a module *is* in that slot, re-seat it, check boot mode, and run it in the next batch. If one slot is always NOT DETECTED, call the Supervisor (wiring / binding). |
 | Slot fails with **ERR: 6** after programming started, or another number | Programming error from the module once MPCLI was talking to it. | Press **Error codes** for the meaning. The module is held and its QR is scanned. If one slot keeps failing, call the Supervisor. |
-| Every module fails Pricol programming or the RF test at once | The button was pressed before the modules were switched: Pricol programming needs **boot mode**, the RF test needs **application mode** after a reset. | Switch and reset as the screen says **before** pressing the button. The affected modules cannot be retested in the same batch; set them aside for the Supervisor. |
-| APP / DFU test fails with *"no start-up message"* | The modules were reset **before** RUN APP TEST / RUN DFU TEST was pressed, not reset at all, or are still in boot mode. | Put the modules in application mode, press the button **first**, then reset them when the screen says **RESET ALL MODULES NOW**. |
+| Every module fails Pricol programming or the RF test at once | The button was pressed before the modules were switched: Pricol programming needs **boot mode**, the RF test needs **application mode** after a reset. | Press **RESTART TRAY** ([C7](#restart-the-tray)) and this time switch and reset as the screen says **before** pressing the button. |
+| APP / DFU test fails with *"no start-up message"* | The modules were reset **before** RUN APP TEST / RUN DFU TEST was pressed, not reset at all, or are still in boot mode. | Press **RESTART TRAY**. At the test step put the modules in application mode, press the button **first**, then reset them when the screen says **RESET ALL MODULES NOW**. |
+| A QR label cannot be read | The label is damaged, smudged or missing. | Press **RESTART TRAY**, replace the label, and run the batch again ([C7](#restart-the-tray)). The MAC addresses stay the same. |
+| *Restart refused: no Stock MAC for slot(s) …* | Stock only: a slot that was NOT DETECTED needs an address again, and none is left. | Press **Check station** (the Box must be reachable), then restart again. |
+
+### Box and MAC addresses
+
+| Message on screen | Likely cause | What to do |
+|---|---|---|
+| **Box** red in Check station: *BOX_URL / BOX_STATION_KEY not configured* | The `.env` file has no Box settings. | Technician: [C1](#c1-first-time-station-setup-technician). |
+| *BOX_URL … must look like http://&lt;box-host&gt;:&lt;port&gt;* or *… is not a valid URL* | `BOX_URL` is mistyped (no `http://`, a letter in the port, …). | Technician corrects `BOX_URL` and restarts the app. |
+| *the box is not answering* | Network cable, Box switched off, or wrong `BOX_URL`. | Production continues while the station has MAC addresses left. Check the cable and call IT. Reports wait and go out by themselves later. |
+| *the box did not accept the station key* | `BOX_STATION_KEY` is wrong, or the station was removed on the Box console. | Technician gets a new key from the Box console (**Stations**). |
+| *the box has no master range of that name* | `BOX_MASTER_RANGE_STOCK` / `…_PRICOL` does not match the Box console (**Pools**). | Technician corrects the name. |
+| *every address in this master range has been handed out* | The pool is used up. | Head office must add addresses on the Box. |
+| *N Pricol/Stock MACs in box blocks …* is low or 0, and Check station fails | No block yet (first start, or the mode was just changed) and the Box was not reachable. | Get the Box reachable, then press **Check station** again. |
+| Top bar **Box: N modules wait for a login** | The Box ended the Operator's Box session (idle, end of shift, or a Supervisor logged in). | The Operator logs in again; the waiting modules are then reported. |
 
 ### Login
 
 | Message on screen | What to do |
 |---|---|
-| Wrong user ID or password | Try again carefully. After 5 failures, wait 5 minutes. |
-| Login server not reachable | Check the network cable. Call the Supervisor or IT: logins are checked by the LAN server. |
-| Badge not recognised | Your badge may not be enrolled. Log in with your user ID, and ask the Supervisor to have the badge enrolled on the server. |
+| Phone number or PIN not recognised | Try again carefully. Too many failures lock the phone number for a while. |
+| Too many wrong PINs. Try again in N minutes | Wait, or ask the Supervisor. |
+| Cannot verify the login: the box is not answering | Check the network cable. Call the Supervisor or IT: logins are checked by the box. |
+| Your session has ended - log in again | The box ended the session (idle, end of shift, or a Supervisor logged in). Log in again; finished trays are kept and reported. |
 
 ---
 
@@ -546,7 +672,7 @@ Use the table in [B3](#b3-changes-to-the-rig-that-need-re-approval) to decide wh
 |---|---|---|---|
 | 1 | 🟠 | Create the CA (once) and the rig certificate (per rig); note fingerprint, rig ID, rig name | [A2](#a2-create-the-certificates) |
 | 2 | 🟠 | Rename the rig PC, install the certificates, start the rig service, open the firewall | [B1](#b1-first-time-setup-of-the-rig-technician) |
-| 3 | 🟠 | Install StationApp, copy `golden_rig_ca.pem`, check `.env`; enrol users on the LAN server | [C1](#c1-first-time-station-setup-technician) |
+| 3 | 🟠 | Install StationApp, copy `golden_rig_ca.pem`, set `.env` (Box URL, station key, master ranges); register users at head office | [C1](#c1-first-time-station-setup-technician) |
 | 4 | 🔵 | Bind every jig slot to its adapter | [C3](#c3-bind-jig-slots-to-com-ports-supervisor) |
 | 5 | 🔵 | Bind and approve the Golden Rig (compare the fingerprint) | [C4](#c4-bind-the-golden-rig--first-time-supervisor) |
 | 6 | 🔵 | Set programming mode, firmware, lot, enabled slots | [C5](#c5-production-settings-supervisor) |
@@ -561,20 +687,22 @@ Use the table in [B3](#b3-changes-to-the-rig-that-need-re-approval) to decide wh
 | 2 | 🔵 | Log in → **Station configuration → Session** → **Review configuration** → tick both boxes → **Start production session**. |
 | 3 | 🔵 | Check **Production settings** (mode, firmware, lot). Log out. |
 | 4 | 🟢 | Log in → **Check station** → load modules → tap slots → **START** → follow the headline. |
-| 5 | 🔵 | End of shift: **Close session** (records are sent to the server). |
+| 5 | 🔵 | End of shift: **Close session** (waiting batches are reported to the Box first). |
 
 ### Needs a Supervisor (and maybe the technician)
 
 - An adapter, cable or USB hub was replaced or moved → re-bind slots ([C3](#c3-bind-jig-slots-to-com-ports-supervisor)).
 - The rig's certificate was renewed, or the rig was renamed or replaced → new certificate and re-approval on every station ([B3](#b3-changes-to-the-rig-that-need-re-approval), [C8.3](#c83-the-rigs-address-or-certificate-changed)).
 - The rig was bound **by IP** and the IP changed → re-bind, preferably by name.
-- A QR code is reported as already used, **SUPERVISOR REQUIRED** is shown, or a fingerprint does not match → stop and investigate.
+- **LINE STOPPED** (a hold) → [C10](#c10-line-stopped-holds-operator--supervisor).
+- **SUPERVISOR REQUIRED** is shown, or a fingerprint does not match → stop and investigate.
+- The programming mode must change → [C5](#c5-production-settings-supervisor) (needs the Box).
 
 ---
 
-## F. Bench tool: test the whole flow without the LAN server
+## F. Bench tool: test the whole flow without the Box
 
-🔵🟠 For Supervisors and engineers. The bench tool runs the same programming and test steps as production on one PC: Stock only, or Stock + Pricol. It needs **no LAN server, login or production session**. It uses its own **test MAC ranges** and writes nothing to the production database, so **never ship modules programmed on the bench as production modules.**
+🔵🟠 For Supervisors and engineers. The bench tool runs the same programming and test steps as production on one PC: Stock only, or Stock + Pricol. It needs **no Box, login or production session**. It uses its own **test MAC ranges** and writes nothing to the production database, so **never ship modules programmed on the bench as production modules.**
 
 ### F1. Start it
 

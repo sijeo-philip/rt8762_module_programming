@@ -29,13 +29,13 @@ from stationapp.services.slot_binding import (SlotBindingService)
 from stationapp.services.slot_eligibility import (SlotEligibilityService)
 
 from stationapp.services.health import HealthCheck, Severity
-from stationapp.services.mac_cache import MacCacheService
+from stationapp.services.box_blocks import BoxBlockService
 from stationapp.services.production import ProductionController
 from stationapp.services.readiness import StationReadinessService, approved_golden_rig_check
 from stationapp.services.access import StationAccessService, UserAdministrationService
 from stationapp.services.golden_rig_configuration import GoldenRigConfigurationService
 from stationapp.services.jig_configuration import JigConfigurationService
-from stationapp.services.server_sync import SyncScheduler
+from stationapp.services.box_reporting import BoxReportScheduler
 from stationapp.drivers.qr_scanner import ScanFormat
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ class AppContext:
     # Production services. None in UI tests that only exercise topology.
     production: ProductionController | None = None
     readiness: StationReadinessService | None = None
-    mac_cache: MacCacheService | None = None
+    mac_cache: BoxBlockService | None = None
     recovered_macs: int = 0
 
     # Access control and station configuration. None in UI tests.
@@ -66,9 +66,9 @@ class AppContext:
     users: UserAdministrationService | None = None
     jig_configuration: JigConfigurationService | None = None
     golden_rig_configuration: GoldenRigConfigurationService | None = None
-    sync_scheduler: SyncScheduler | None = None
+    box_reports: BoxReportScheduler | None = None
     production_settings: object | None = None       # ProductionSettingsService
-    authentication: object | None = None            # ServerAuthenticationService
+    authentication: object | None = None            # BoxAuthenticationService
 
 
     @property
@@ -102,8 +102,7 @@ def bootstrap() -> AppContext:
     app_logger.info(" Station App is %s starting | station=%s jig=%s position=%d",
     _app_version(), settings.station_id, settings.jig_id, settings.jig_positions)
     app_logger.info("Host: %s | Python %s", platform.node(), platform.python_version())
-    app_logger.info("Stage 2 (LAN SERVER) %s", "configured" if settings.is_stage_two else
-    "not configure -- offline mode")
+    app_logger.info("Box %s", settings.box_url if settings.is_stage_two else "not configured")
     if settings.simulation_mode:
         app_logger.warning("SIMULATION MODE: no hardware is used; records are not production evidence")
 
@@ -116,19 +115,16 @@ def bootstrap() -> AppContext:
     serial_topology_service = (StationSerialTopologyService(binding_service=binding_service))
 
     session_factory, recovered = _prepare_database(settings)
+    box = _build_box(settings, session_factory)
     access, users, jig_configuration, golden_rig_configuration = _build_access(
-        settings, session_factory, binding_service
+        settings, session_factory, binding_service, box
     )
-    lan_client, qr_claims, sync_scheduler = _build_lan(settings, session_factory)
     production_settings = _build_production_settings(settings, session_factory, access)
     production, readiness, mac_cache = _build_production(
-        settings, session_factory, serial_topology_service, slot_eligibility_service, access, qr_claims, sync_scheduler, production_settings
+        settings, session_factory, serial_topology_service, slot_eligibility_service, access, box, production_settings
     )
     access.set_batch_activity_probe(lambda: production.has_active_batch)
-    production.add_commit_listener(sync_scheduler.on_batch_committed)
-    if sync_scheduler.service.configured and sync_scheduler.service.threshold_reached():
-        # A backlog from an earlier run is uploaded straight away.
-        sync_scheduler.request("STARTUP")
+    _wire_box_reports(box, access, production)
 
     context = AppContext(
             settings=settings,
@@ -143,7 +139,7 @@ def bootstrap() -> AppContext:
             users=users,
             jig_configuration=jig_configuration,
             golden_rig_configuration=golden_rig_configuration,
-            sync_scheduler=sync_scheduler,
+            box_reports=box.reports,
             production_settings=production_settings,
             authentication=access.authentication,
         )
@@ -169,14 +165,13 @@ def _prepare_database(settings: Settings):
     return session_factory, recovered
 
 
-def _build_access(settings: Settings, session_factory, binding_service: SlotBindingService):
+def _build_access(settings: Settings, session_factory, binding_service: SlotBindingService, box: "BoxConnection"):
     """Authentication, sessions, and Supervisor station configuration."""
     from datetime import timedelta
 
     from stationapp.domain.session import StationConfiguration
     from stationapp.infrastructure.golden_rig.sqlite_binding_store import SqliteGoldenRigBindingStore
-    from stationapp.drivers.lan.client import LanServerClient
-    from stationapp.services.remote_auth import ServerAuthenticationService
+    from stationapp.services.box_auth import BoxAuthenticationService
     from stationapp.services.golden_rig_configuration import (
         GoldenRigIdentityProbe,
         live_rig_configuration,
@@ -213,34 +208,13 @@ def _build_access(settings: Settings, session_factory, binding_service: SlotBind
                 golden_rig_fingerprint=fingerprint,
             )
 
-    # Logins are verified by the LAN server; users are enrolled there.
-    if settings.auth_mode == "test" or (settings.simulation_mode and not settings.lan_server_url):
-        from stationapp.services.test_users import TestAuthServer
-
-        auth_client = LanServerClient(base_url="http://test-auth.local", api_key=None, station_id=station_id, transport=TestAuthServer().transport())
-        auth_description = "TEST USERS (hardcoded) - not for production"
-        test_users = True
-        logger.warning("AUTH: hardcoded test users are active - never use on a production station")
-    elif settings.lan_server_url:
-        auth_client = LanServerClient(
-            base_url=settings.lan_server_url,
-            api_key=settings.lan_server_api_key,
-            station_id=station_id,
-            timeout_seconds=settings.lan_server_timeout_seconds,
-        )
-        auth_description = f"Verified by LAN server {settings.lan_server_url}"
-        test_users = False
-    else:
-        auth_client = None
-        auth_description = "LAN server not configured - nobody can log in"
-        test_users = False
-    authentication = ServerAuthenticationService(
-        client=auth_client,
+    # Logins are verified by the box: phone number and PIN.
+    authentication = BoxAuthenticationService(
+        gateway=box.gateway,
         session_factory=session_factory,
         station_id=station_id,
-        jig_id=settings.jig_id,
-        mode_description=auth_description,
-        test_users=test_users,
+        mode_description=box.description,
+        test_users=box.demo,
     )
 
     golden_rig_holder: list[GoldenRigConfigurationService] = []
@@ -271,7 +245,7 @@ def _build_access(settings: Settings, session_factory, binding_service: SlotBind
     )
     golden_rig_holder.append(golden_rig)
 
-    # Enrolment happens on the LAN server; no local user administration.
+    # People are registered at head office; no local user administration.
     users = None
     jig = JigConfigurationService(
         station_id=station_id,
@@ -288,61 +262,105 @@ def _build_access(settings: Settings, session_factory, binding_service: SlotBind
     return access, users, jig, golden_rig
 
 
-def _build_lan(settings: Settings, session_factory):
-    """LAN server client, line-wide QR claims and threshold-driven sync."""
-    from stationapp.drivers.lan.client import LanServerClient
-    from stationapp.services.qr_registry import ModuleQrClaimService
-    from stationapp.services.server_sync import ServerSyncService
+@dataclass(frozen=True, slots=True)
+class BoxConnection:
+    """One box connection shared by logins, blocks and reports."""
 
-    client = None
-    if settings.lan_server_url:
-        client = LanServerClient(
-            base_url=settings.lan_server_url,
-            api_key=settings.lan_server_api_key,
-            station_id=settings.station_id,
-            timeout_seconds=settings.lan_server_timeout_seconds,
-        )
-    elif settings.simulation_mode:
-        from stationapp.services.simulation import InMemoryLanServer
+    gateway: object | None          # BoxGateway
+    description: str
+    demo: bool
+    blocks: BoxBlockService
+    reports: BoxReportScheduler
 
-        simulated = InMemoryLanServer()
-        client = LanServerClient(
-            base_url="http://simulated-lan-server",
-            api_key=None,
-            station_id=settings.station_id,
-            transport=simulated.transport(),
-        )
-        logger.warning("SIMULATION: using an in-memory LAN server")
 
-    claims = ModuleQrClaimService(
-        client=client,
-        jig_id=settings.jig_id,
-        claim_timeout_seconds=settings.qr_claim_timeout_seconds,
-        enabled=settings.qr_online_claim,
-    )
-    service = ServerSyncService(
+def _build_box(settings: Settings, session_factory) -> BoxConnection:
+    from stationapp.domain.mac import MacPurpose
+    from stationapp.drivers.box.gateway import BoxGateway, box_url_problem
+    from stationapp.services.box_reporting import BoxReportService
+
+    ranges = {
+        MacPurpose.STOCK_RF_TEST: settings.box_master_range_stock,
+        MacPurpose.PRICOL_PRODUCTION: settings.box_master_range_pricol,
+    }
+    demo = settings.auth_mode == "test" or (settings.simulation_mode and not settings.is_stage_two)
+    if demo:
+        from stationapp.drivers.box.demo import DEMO_PRICOL_RANGE, DEMO_STOCK_RANGE, DemoBox
+
+        gateway = DemoBox().gateway()
+        ranges = {MacPurpose.STOCK_RF_TEST: DEMO_STOCK_RANGE, MacPurpose.PRICOL_PRODUCTION: DEMO_PRICOL_RANGE}
+        description = "DEMO BOX in memory - not for production. Operator 9000000001 / PIN 123456, Supervisor 9000000003 / PIN 246810"
+        logger.warning("BOX: in-memory demo box with demo users - never use on a production station")
+    elif settings.is_stage_two and box_url_problem(settings.box_url):
+        gateway = None
+        description = f"{box_url_problem(settings.box_url)} - nobody can log in"
+        logger.error("BOX: %s", description)
+    elif settings.is_stage_two:
+        gateway = BoxGateway(box_url=settings.box_url, station_key=settings.box_station_key)
+        description = f"Phone number and PIN verified by the box at {settings.box_url}"
+    else:
+        gateway = None
+        description = "Box not configured (BOX_URL, BOX_STATION_KEY) - nobody can log in"
+
+    blocks = BoxBlockService(
         session_factory=session_factory,
+        gateway=gateway,
         station_id=settings.station_id,
         jig_id=settings.jig_id,
-        client=client,
-        threshold_modules=settings.sync_module_threshold,
+        master_ranges=ranges,
+        block_size=settings.box_block_size,
+        low_water=max(settings.mac_cache_threshold, settings.jig_positions),
     )
-    scheduler = SyncScheduler(service, retry_seconds=settings.sync_retry_minutes * 60)
-    return client, claims, scheduler
+    if gateway is not None:
+        # Blocks from the demo box (or a replaced box) are never used here.
+        blocks.bind_to_box("DEMO" if demo else f"{settings.box_url}")
+    service = BoxReportService(session_factory=session_factory, station_id=settings.station_id, gateway=gateway, blocks=blocks)
+    reports = BoxReportScheduler(service, retry_seconds=settings.box_report_retry_seconds)
+    return BoxConnection(gateway=gateway, description=description, demo=demo, blocks=blocks, reports=reports)
 
 
-def _sync_health(scheduler: SyncScheduler) -> HealthCheck:
-    status = scheduler.service.status()
+def _wire_box_reports(box: BoxConnection, access: StationAccessService, production: ProductionController) -> None:
+    """Each finished tray is reported once; queued trays go out when the
+    box answers again or an operator logs in again."""
+    reports = box.reports
+    service = reports.service
+    production.add_commit_listener(reports.on_batch_committed)
+    service.set_session_listener(access.box_session_ended)
+
+    def report_before_logout(_user) -> None:
+        status = service.status()
+        if status.pending_modules and not status.last_error:
+            reports.report_now("LOGOUT")
+
+    access.authentication.set_before_logout(report_before_logout)
+
+    def after_login() -> None:
+        gateway = box.gateway
+        if service.login_required and gateway is not None and gateway.holder is not None:
+            reports.request("LOGIN")
+
+    access.add_listener(after_login)
+    if service.status().pending_batches:
+        # Trays queued by an earlier run go out once someone logs in.
+        reports.request("STARTUP")
+
+
+def _report_health(reports: BoxReportScheduler) -> HealthCheck:
+    status = reports.service.status()
     if not status.configured:
-        return HealthCheck("Server sync", Severity.WARN, f"No LAN server; {status.pending_modules} modules waiting to upload")
-    if status.qr_conflicts:
-        return HealthCheck("Server sync", Severity.WARN, f"{status.qr_conflicts} duplicate QR conflict(s) reported by the LAN server - Supervisor review required")
-    if status.threshold_reached:
-        detail = f"{status.pending_modules} modules waiting (threshold {status.threshold})"
-        if status.last_error:
-            detail += f"; last sync failed: {status.last_error}"
-        return HealthCheck("Server sync", Severity.WARN, detail)
-    return HealthCheck("Server sync", Severity.OK, f"{status.pending_modules}/{status.threshold} modules until next sync")
+        return HealthCheck("Box reports", Severity.WARN, f"Box not configured; {status.pending_modules} modules waiting to report")
+    if status.login_required and status.pending_modules:
+        return HealthCheck("Box reports", Severity.WARN, f"{status.pending_modules} modules wait for an operator login to be reported")
+    if status.last_error and status.pending_modules:
+        return HealthCheck("Box reports", Severity.WARN, f"{status.pending_modules} modules waiting; last report failed: {status.last_error}")
+    return HealthCheck("Box reports", Severity.OK, f"{status.pending_modules} modules waiting to report")
+
+
+def _hold_health(reports: BoxReportScheduler) -> HealthCheck:
+    hold = reports.service.hold()
+    if hold.on_hold:
+        by = "the box" if hold.box_on_hold else "this station"
+        return HealthCheck("Station hold", Severity.FAIL, f"Line stopped by {by}: {hold.reason or 'on hold'}. A Supervisor must clear the hold.")
+    return HealthCheck("Station hold", Severity.OK, "No hold")
 
 
 def _build_production_settings(settings: Settings, session_factory, access: StationAccessService):
@@ -364,7 +382,7 @@ def _build_production_settings(settings: Settings, session_factory, access: Stat
     )
 
 
-def _build_production(settings: Settings, session_factory, topology_service, eligibility_service, access: StationAccessService, qr_claims, sync_scheduler: SyncScheduler, production_settings):
+def _build_production(settings: Settings, session_factory, topology_service, eligibility_service, access: StationAccessService, box: "BoxConnection", production_settings):
     from stationapp.data.production_repository import SqlProductionStore
 
     simulation = settings.simulation_mode
@@ -373,14 +391,12 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         from stationapp.services.simulation import (
             SimulatedFunctionalTester,
             SimulatedGoldenRig,
-            SimulatedMacAllocationGateway,
             SimulatedProgrammer,
             parse_failures,
         )
 
         failures = parse_failures(settings.simulation_failures)
         delay = settings.simulation_delay_seconds
-        gateway = SimulatedMacAllocationGateway()
         rf_tester = SimulatedGoldenRig(delay_seconds=delay, failures=failures)
         functional = SimulatedFunctionalTester(delay_seconds=delay, failures=failures)
 
@@ -395,9 +411,6 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         from stationapp.services.golden_rig_secure_binding import SecureGoldenRigBindingService
         from stationapp.services.golden_rig_service import GoldenRigService
 
-        # No LAN allocation client exists yet: the cache is filled by
-        # importing server-issued allocation documents.
-        gateway = None
         rig_bindings = SecureGoldenRigBindingService(
             settings.station_id,
             SqliteGoldenRigBindingStore(settings.database_url),
@@ -418,15 +431,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         programmer_factory = _mpcli_programmer_factory(settings)
         golden_rig_check = approved_golden_rig_check(rig_bindings, settings.golden_rig_ca_certificate)
 
-    mac_cache = MacCacheService(
-        session_factory=session_factory,
-        station_id=settings.station_id,
-        jig_id=settings.jig_id,
-        jig_positions=settings.jig_positions,
-        threshold=max(settings.mac_cache_threshold, settings.jig_positions),
-        gateway=gateway,
-        request_size=settings.mac_request_size,
-    )
+    mac_cache = box.blocks
 
     readiness = StationReadinessService(
         settings=settings,
@@ -437,7 +442,8 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         simulation=simulation,
         functional_test_available=True,
         session_check=access.session_health,
-        sync_check=lambda: _sync_health(sync_scheduler),
+        sync_check=lambda: _report_health(box.reports),
+        hold_check=lambda: _hold_health(box.reports),
         firmware_provider=lambda: (production_settings.current().stock_firmware, production_settings.current().pricol_firmware),
     )
 
@@ -453,12 +459,22 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         qr_pattern=settings.qr_pattern,
         require_firmware=not simulation,
         access=access,
-        qr_claims=qr_claims,
+        temporary_stock_mac_base=_temporary_stock_mac_base(settings),
         enabled_slots=lambda: production_settings.current().enabled_slots,
         qr_format=ScanFormat(length=settings.qr_code_length, hex_only=settings.qr_hex_only),
+        qr_reuse=box.reports.service,
     )
 
     return production, readiness, mac_cache
+
+
+def _temporary_stock_mac_base(settings: Settings):
+    from stationapp.domain.mac import MacAddress
+
+    # None: the built-in TEMPORARY_STOCK_MACS.
+    if settings.temp_stock_mac_base:
+        return MacAddress.parse(settings.temp_stock_mac_base)
+    return None
 
 
 def _reference_mac_reader(settings: Settings):

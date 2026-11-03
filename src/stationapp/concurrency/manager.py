@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 from collections.abc import Callable
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
 from stationapp.concurrency.errors import OperationConflict
 from stationapp.concurrency.worker import OperationCallable, OperationWorker
@@ -84,10 +84,12 @@ class OperationManager(QObject):
         # Delete the worker after its thread event loop processes the request.
         worker.finished.connect(worker.deleteLater)
         
-        # The QThread object belongs to the GUI thread. Mark cleanup only after 
-        # QT reports the worker thread has stopped.
-        
-        thread.finished.connect(lambda operation_id=handle.operation_id: self._remove(operation_id))
+        # The QThread object belongs to the GUI thread. Mark cleanup only after
+        # QT reports the worker thread has stopped. A slot of this QObject,
+        # not a lambda: PyQt could call a default-argument lambda without
+        # its operation id.
+
+        thread.finished.connect(self._reap_finished)
         thread.finished.connect(thread.deleteLater)
         
         thread.start()
@@ -123,6 +125,18 @@ class OperationManager(QObject):
         return True
         
         
+    @pyqtSlot()
+    def _reap_finished(self) -> None:
+        """Runs on the GUI thread after a worker thread stops (queued
+        before that thread's deleteLater)."""
+        for operation_id, handle in tuple(self._handles.items()):
+            try:
+                finished = handle.thread.isFinished()
+            except RuntimeError:  # the QThread is already deleted
+                finished = True
+            if finished:
+                self._remove(operation_id)
+
     def _remove(self, operation_id: str)->None:
         handle = self._handles.pop(operation_id, None)
         if handle is None:

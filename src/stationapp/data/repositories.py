@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from stationapp.data.errors import( AllocationImportConflict, BatchAlreadyExists, BatchNotFound, DuplicateMacInDatabase, DuplicateModuleQrInDatabase, InsufficientMacAvailability, 
                                    InvalidPersistedBatch, IncompleteSlotIdentity, NoQrSlotAvailable)
 
+from stationapp.data.box_block_repository import current_block_addresses
 from stationapp.data.models import( AllocatedMacModel, AllocationModel, BatchModel, BatchSlotModel )
 from stationapp.domain.allocation import AllocationDocument
 from stationapp.domain.batch import Batch
@@ -253,17 +254,22 @@ class BatchRepository:
 
             required_count = len(slot_numbers)
 
-            available = session.scalars(
-                select(AllocatedMacModel)
-                .where(
-                    AllocatedMacModel.purpose == purpose.value,
-                    AllocatedMacModel.status == MacStatus.AVAILABLE.value,
-                )
-                .order_by(
-                    AllocatedMacModel.id
-                )
-                .limit(required_count)
-            ).all()
+            # Box blocks: only the current block, switching to the
+            # reserve in this same transaction when it cannot fill the
+            # request.
+            available = current_block_addresses(session, purpose, required_count)
+            if available is None:
+                available = session.scalars(
+                    select(AllocatedMacModel)
+                    .where(
+                        AllocatedMacModel.purpose == purpose.value,
+                        AllocatedMacModel.status == MacStatus.AVAILABLE.value,
+                    )
+                    .order_by(
+                        AllocatedMacModel.id
+                    )
+                    .limit(required_count)
+                ).all()
 
             if len(available) != required_count:
                 raise InsufficientMacAvailability(

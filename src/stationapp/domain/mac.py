@@ -72,7 +72,45 @@ class MacPurpose(str, Enum):
     """Reason an address was allocated"""
     STOCK_RF_TEST = "STOCK_RF_TEST"
     PRICOL_PRODUCTION = "PRICOL_PRODUCTION"
-    
+
+
+# Allocation of the per-slot temporary Stock MACs used in Stock + Pricol
+# mode. They are reused on every tray, never reported to the box, and are
+# not rows of the authorized MAC cache.
+TEMPORARY_ALLOCATION_ID = "TEMPORARY-STOCK"
+
+# Built-in temporary Stock MAC of slots 1-8 (locally administered,
+# unicast). Every station may use the same ones: they only live on a
+# module between the Stock RF test and the Pricol MAC write.
+TEMPORARY_STOCK_MACS = (
+    "0A:FF:00:00:00:01",
+    "0A:FF:00:00:00:02",
+    "0A:FF:00:00:00:03",
+    "0A:FF:00:00:00:04",
+    "0A:FF:00:00:00:05",
+    "0A:FF:00:00:00:06",
+    "0A:FF:00:00:00:07",
+    "0A:FF:00:00:00:08",
+)
+
+
+def temporary_stock_mac(base: "MacAddress | None", slot_number: int) -> "MacAddress":
+    """Temporary Stock MAC of one slot: base + slot_number - 1, or the
+    built-in list when no base is configured."""
+    if slot_number <= 0:
+        raise ValueError("slot number must be positive")
+    if base is None:
+        if slot_number > len(TEMPORARY_STOCK_MACS):
+            raise ValueError(f"no built-in temporary Stock MAC for slot {slot_number}")
+        return MacAddress.parse(TEMPORARY_STOCK_MACS[slot_number - 1])
+    if (base.value >> 40) & 0x01:
+        raise InvalidMacAddress(f"{base} is a multicast address")
+    return MacAddress(base.value + slot_number - 1)
+
+
+def is_temporary(record: "AllocatedMac") -> bool:
+    return record.allocation_id == TEMPORARY_ALLOCATION_ID
+
 class MacStatus(str, Enum):
     """ Local lifecycle of one server-authourized MAC."""
     AVAILABLE = "AVAILABLE"
@@ -169,6 +207,19 @@ class AllocatedMac:
         self.slot_number = None
         self.hold_reason = None
         
+    def rewind_for_restart(self) -> None:
+        """Back to RESERVED for the same batch and slot: the tray was
+        restarted and this address is programmed again.
+
+        Only for a tray not yet committed: until the box has the report,
+        the address is the tray's, whatever was written with it.
+        """
+        if self.batch_id is None or self.slot_number is None:
+            raise InvalidMacTransition(f"MAC {self.address} does not belong to a tray")
+        self.status = MacStatus.RESERVED
+        self.module_qr = None
+        self.hold_reason = None
+
     def mark_issued(self) -> None:
         self._transition(MacStatus.ISSUED)
         

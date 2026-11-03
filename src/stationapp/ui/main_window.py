@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
 
         self._session_bar: SessionBar | None = None
         if self._context.access is not None:
-            self._session_bar = SessionBar(self._context.access, self, sync_scheduler=self._context.sync_scheduler)
+            self._session_bar = SessionBar(self._context.access, self, box_reports=self._context.box_reports)
             root_layout.addWidget(self._session_bar)
 
         tabs = QTabWidget()
@@ -171,7 +171,8 @@ class MainWindow(QMainWindow):
                 jig_positions=context.settings.jig_positions,
                 topology_service=context.serial_topology_service,
                 simulation=context.simulation,
-                sync_scheduler=context.sync_scheduler,
+                box_reports=context.box_reports,
+                box_blocks=context.mac_cache,
                 parent=self,
             )
             tabs.addTab(self._station_configuration, "Station configuration")
@@ -238,13 +239,9 @@ class MainWindow(QMainWindow):
 
         footer = QHBoxLayout()
         self._stage_label = QLabel(
-        (
-            "Stage 1 - Local operation"
-            if not self._context.settings.is_stage_two
-            else (
-                    f"LAN server: {self._context.settings.lan_server_url}"
-                )
-            )
+            f"Box: {self._context.settings.box_url}"
+            if self._context.settings.is_stage_two
+            else "Box: not configured"
         )
         footer.addWidget(self._stage_label)
         footer.addStretch()
@@ -515,12 +512,8 @@ class MainWindow(QMainWindow):
         bridge.scanned.connect(self._on_pos_scan)
 
     def _on_pos_scan(self, raw: str) -> None:
-        """A HID POS read goes where a keyboard scan would have gone:
-        the badge field on the login screen, else the module QR field
-        while the batch is waiting for a QR."""
-        if self._login_page is not None and self._stack.currentWidget() is self._login_page:
-            self._login_page.badge_input.submit(raw)
-            return
+        """A HID POS read goes where a keyboard scan would have gone: the
+        module QR field while the batch is waiting for a QR."""
         panel = self._production_panel
         if panel is not None and panel.qr_input.isEnabled():
             panel.qr_input.submit(raw)

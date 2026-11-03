@@ -146,42 +146,8 @@ def test_controller_normalises_and_validates_scans(tmp_path):
         controller.scan_qr("QR-1001")
     assert controller.scan_qr("sn:1a2b3c4d") == 1
     assert controller.batch.slots[1].module_qr == "1A2B3C4D"
-    with pytest.raises(ProductionError, match="already bound"):
+    with pytest.raises(ProductionError, match="already belongs to slot 1"):
         controller.scan_qr("1A2B3C4D")
-    engine.dispose()
-
-
-@pytest.mark.unit
-def test_supervisor_badge_scan_fills_user_id(qtbot, tmp_path):
-    from stationapp.data.base import Base
-    from stationapp.data.database import create_session_factory, create_station_engine
-    from stationapp.domain.session import StationConfiguration
-    from stationapp.drivers.lan.client import LanServerClient
-    from stationapp.services.access import StationAccessService
-    from stationapp.services.remote_auth import ServerAuthenticationService
-    from stationapp.services.test_users import TestAuthServer, TestUser
-    from stationapp.ui.widgets.login_page import LoginPage
-
-    engine = create_station_engine(f"sqlite:///{(tmp_path / 's.db').as_posix()}")
-    Base.metadata.create_all(engine)
-    factory = create_session_factory(engine)
-    users = (TestUser("SUPERVISOR1", "Test Supervisor", "SUPERVISOR", "Sup@1234", badge_id="SUPBADGE01"),)
-    client = LanServerClient(base_url="http://lan", api_key=None, station_id="S", transport=TestAuthServer(users).transport())
-    auth = ServerAuthenticationService(client=client, session_factory=factory, station_id="S", jig_id="J", mode_description="test", test_users=True)
-    access = StationAccessService(session_factory=factory, station_id="S", authentication=auth, configuration_provider=lambda: StationConfiguration("J", 4, ((1, "U1"),), "R", "a" * 64))
-    page = LoginPage(access, station_label="S / J")
-    qtbot.addWidget(page)
-
-    qtbot.keyClicks(page.badge_input, "SUPBADGE01")
-    qtbot.keyClick(page.badge_input, "\r")
-
-    assert access.supervisor is None                      # badge alone is not enough
-    assert page.user_input.text() == "SUPERVISOR1"
-    assert "enter your password" in page.error_label.text()
-
-    qtbot.keyClicks(page.password_input, "Sup@1234")
-    qtbot.keyClick(page.password_input, "\r")
-    assert access.supervisor is not None and access.supervisor.user_id == "SUPERVISOR1"
     engine.dispose()
 
 

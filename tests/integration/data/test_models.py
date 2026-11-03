@@ -17,6 +17,7 @@ from stationapp.data.models import (
     AllocationModel,
     BatchModel,
     BatchSlotModel,
+    ModuleQrRegistryModel,
 )
 
 
@@ -186,38 +187,22 @@ def test_same_slot_cannot_exist_twice_in_batch(
 
 
 @pytest.mark.integration
-def test_module_qr_is_globally_unique(database_engine) -> None:
+def test_module_qr_has_one_registry_entry(database_engine) -> None:
+    """A re-worked module keeps its QR in a later batch, so batch slots
+    may repeat a QR; the QR registry holds one row per QR."""
     with Session(database_engine) as session:
-        batch = BatchModel(
-            batch_id="BATCH-QR",
-            station_id="STATION-01",
-            jig_id="JIG-01",
-            slot_count=4,
-            state="QR_SCANNING",
-        )
-
-        session.add(batch)
+        for batch_id in ("BATCH-QR-1", "BATCH-QR-2"):
+            session.add(BatchModel(batch_id=batch_id, station_id="STATION-01", jig_id="JIG-01", slot_count=4, state="QR_SCANNING"))
+            session.flush()
+            session.add(BatchSlotModel(batch_id=batch_id, slot_number=1, module_qr="MODULE-0001", device_state="QR_BOUND"))
         session.flush()
 
-        slot_one = BatchSlotModel(
-            batch_id=batch.batch_id,
-            slot_number=1,
-            module_qr="MODULE-0001",
-            device_state="QR_BOUND",
-        )
+        def entry() -> ModuleQrRegistryModel:
+            return ModuleQrRegistryModel(module_qr="MODULE-0001", source="LOCAL", station_id="STATION-01", server_status="UNCONFIRMED")
 
-        slot_two = BatchSlotModel(
-            batch_id=batch.batch_id,
-            slot_number=2,
-            module_qr="MODULE-0001",
-            device_state="QR_BOUND",
-        )
-
-        session.add(slot_one)
+        session.add(entry())
         session.flush()
-
-        session.add(slot_two)
-
+        session.add(entry())
         with pytest.raises(IntegrityError):
             session.flush()
 

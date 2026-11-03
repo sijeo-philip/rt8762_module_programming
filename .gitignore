@@ -13,3 +13,6 @@ dist/
 *.db-shm
 # Bench tool runtime state (test MAC usage)
 data/bench_mac_state.json
+
+# Vendor SDK handover folders: what StationApp needs is copied to vendor/unisemble/
+unisemble-sdk-handover-*/

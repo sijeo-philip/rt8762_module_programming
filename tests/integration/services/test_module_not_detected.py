@@ -14,7 +14,7 @@ from stationapp.drivers.mpcli.types import ProcessOutcome, ProcessResult, Progra
 from stationapp.services.production import ProductionController, build_batch_record
 from stationapp.services.programming import SlotProgrammingResult
 from stationapp.services.simulation import SimulatedFunctionalTester, SimulatedGoldenRig, SimulatedProgrammer
-from tests.integration.services.test_production_controller import JIG, STATION, make_controller, ports, run_until, session_factory  # noqa: F401
+from tests.integration.services.test_production_controller import JIG, STATION, TEMP_BASE, make_controller, ports, run_until, session_factory  # noqa: F401
 
 
 def mac_status(factory, mac: str) -> str:
@@ -100,6 +100,7 @@ def test_module_lost_before_pricol_releases_the_pricol_mac_and_is_held(session_f
         programmer=PricolAbsentProgrammer(),
         rf_tester=SimulatedGoldenRig(delay_seconds=0, failures=frozenset()),
         functional_tester=SimulatedFunctionalTester(delay_seconds=0, failures=frozenset()),
+        temporary_stock_mac_base=TEMP_BASE,
     )
     controller.start_batch(occupied=(1, 2), ports=ports(1, 2), mode=ProgrammingMode.STOCK_AND_PRICOL)
     batch = controller.batch

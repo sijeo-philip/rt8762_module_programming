@@ -124,7 +124,7 @@ def test_operator_cannot_log_in_before_session(env):
 
 
 @pytest.mark.integration
-def test_session_lifecycle_and_operator_badge(env):
+def test_session_lifecycle(env):
     access = env["access"]
 
     with pytest.raises(AuthorizationError, match="Supervisor login required"):
@@ -137,17 +137,12 @@ def test_session_lifecycle_and_operator_badge(env):
     session = access.start_session(config())
     assert session.supervisor_id == "SUP1"
 
-    operator = access.login_operator_badge("BADGE-77")
+    operator = access.login_operator("op1", "1234")
     assert operator.user_id == "OP1"
     assert access.require_production_access() == (session.session_id, "OP1")
 
-    with pytest.raises(AuthenticationFailed, match="not recognised"):
-        access.login_operator_badge("nope")
-
-    supervisor = access.require_supervisor()
-    env["users"].set_badge(supervisor, user_id="sup1", badge_id="BADGE-SUP", reason="Issued badge")
-    with pytest.raises(AuthenticationFailed, match="password"):
-        access.login_operator_badge("BADGE-SUP")
+    with pytest.raises(AuthenticationFailed):
+        access.login_operator("op1", "0000")
 
     access.close_session("Shift end")
     assert access.session is None

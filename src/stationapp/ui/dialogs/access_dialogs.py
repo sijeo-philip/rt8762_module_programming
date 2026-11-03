@@ -15,7 +15,8 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
-    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -64,17 +65,34 @@ def _password_field() -> QLineEdit:
     return field
 
 
+def _pin_field() -> QLineEdit:
+    field = _password_field()
+    field.setMaxLength(6)
+    return field
+
+
+_TAKES_BOX_SESSION = (
+    "The box keeps one person logged in per station: after this Supervisor "
+    "login the Operator must log in again."
+)
+
+
 class SupervisorLoginDialog(_CredentialDialog):
     def __init__(self, access: StationAccessService, parent: QWidget | None = None, *, title: str = "Supervisor login") -> None:
         super().__init__(title, parent)
         self._access = access
         form = QFormLayout()
         self.user_input = QLineEdit()
-        self.password_input = _password_field()
+        self.password_input = _pin_field()
         self.password_input.returnPressed.connect(self._submit)
-        form.addRow("Supervisor ID", self.user_input)
-        form.addRow("Password", self.password_input)
+        form.addRow("Phone number", self.user_input)
+        form.addRow("PIN", self.password_input)
         self._layout.addLayout(form)
+        if access.operator is not None and getattr(access.authentication, "one_person_per_station", False):
+            note = QLabel(_TAKES_BOX_SESSION)
+            note.setWordWrap(True)
+            note.setStyleSheet("color: #92400e;")
+            self._layout.addWidget(note)
         self._finish(QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel))
 
     def _submit(self) -> None:
@@ -97,43 +115,103 @@ class SupervisorAuthorizationDialog(SupervisorLoginDialog):
 
 
 class OperatorLoginDialog(_CredentialDialog):
-    """Badge scan (default) or operator ID + PIN."""
+    """Operator phone number + PIN, verified by the box."""
 
     def __init__(self, access: StationAccessService, parent: QWidget | None = None) -> None:
         super().__init__("Operator login", parent)
         self._access = access
-        self.tabs = QTabWidget()
-
-        badge_page = QWidget()
-        badge_form = QFormLayout(badge_page)
-        self.badge_input = _password_field()
-        self.badge_input.setPlaceholderText("Scan your badge")
-        self.badge_input.returnPressed.connect(self._submit)
-        badge_form.addRow("Badge", self.badge_input)
-        self.tabs.addTab(badge_page, "Badge")
-
-        pin_page = QWidget()
-        pin_form = QFormLayout(pin_page)
+        form = QFormLayout()
         self.user_input = QLineEdit()
-        self.pin_input = _password_field()
+        self.pin_input = _pin_field()
         self.pin_input.returnPressed.connect(self._submit)
-        pin_form.addRow("Operator ID", self.user_input)
-        pin_form.addRow("PIN / password", self.pin_input)
-        self.tabs.addTab(pin_page, "ID + PIN")
-
-        self._layout.addWidget(self.tabs)
+        form.addRow("Phone number", self.user_input)
+        form.addRow("PIN", self.pin_input)
+        self._layout.addLayout(form)
         self._finish(QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel))
-        self.badge_input.setFocus()
+        self.user_input.setFocus()
 
     def _submit(self) -> None:
-        if self.tabs.currentIndex() == 0:
-            badge = self.badge_input.text()
-            self.badge_input.clear()
-            self._attempt(lambda: self._access.login_operator_badge(badge))
-        else:
-            pin = self.pin_input.text()
-            self.pin_input.clear()
-            self._attempt(lambda: self._access.login_operator(self.user_input.text(), pin))
+        pin = self.pin_input.text()
+        self.pin_input.clear()
+        self._attempt(lambda: self._access.login_operator(self.user_input.text(), pin))
+
+
+class ClearHoldDialog(QDialog):
+    """The line is stopped - by the box, or because a QR was scanned
+    again: a Supervisor types their own phone number and PIN at the
+    station to clear the hold (R16). The box checks the PIN."""
+
+    def __init__(self, reports, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._reports = reports
+        hold = reports.hold()
+        self.setWindowTitle("Line stopped by the box" if hold.box_on_hold else "Line stopped: QR scanned again")
+        self.setModal(True)
+        self.setMinimumWidth(620)
+        layout = QVBoxLayout(self)
+
+        reason = QLabel(f"<b>Reason:</b> {hold.reason or 'The station is on hold.'}")
+        reason.setWordWrap(True)
+        layout.addWidget(reason)
+
+        if hold.reused_qrs:
+            layout.addWidget(QLabel("QR scanned again - this label is already on a module made at this station:"))
+            table = QTableWidget(len(hold.reused_qrs), 2)
+            table.setHorizontalHeaderLabels(["Module QR", "Already bound at"])
+            for row, item in enumerate(hold.reused_qrs):
+                for column, text in enumerate((item.qr, item.previous)):
+                    table.setItem(row, column, QTableWidgetItem(text))
+            table.resizeColumnsToContents()
+            table.setMaximumHeight(140)
+            layout.addWidget(table)
+            advice = QLabel(
+                "Check the module. If it is a re-worked module, clear the hold and let the operator scan "
+                "the same QR again: it is then linked to the module's new MAC. If the label is wrong, "
+                "clear the hold, put the right label on the module and scan that one."
+            )
+            advice.setWordWrap(True)
+            layout.addWidget(advice)
+
+        if hold.rejected:
+            layout.addWidget(QLabel("Rejected modules - take them out and keep them apart:"))
+            table = QTableWidget(len(hold.rejected), 3)
+            table.setHorizontalHeaderLabels(["Module QR", "MAC", "Why"])
+            for row, item in enumerate(hold.rejected):
+                for column, text in enumerate((item.qr, item.mac, item.words)):
+                    table.setItem(row, column, QTableWidgetItem(text))
+            table.resizeColumnsToContents()
+            table.setMaximumHeight(180)
+            layout.addWidget(table)
+
+        layout.addWidget(QLabel("Supervisor: type your own phone number and PIN to clear the hold."))
+        form = QFormLayout()
+        self.phone_input = QLineEdit()
+        self.pin_input = _pin_field()
+        self.pin_input.returnPressed.connect(self._submit)
+        form.addRow("Phone number", self.phone_input)
+        form.addRow("PIN", self.pin_input)
+        layout.addLayout(form)
+
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color: #991b1b; font-weight: 600;")
+        layout.addWidget(self.error_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Clear hold")
+        buttons.accepted.connect(self._submit)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _submit(self) -> None:
+        pin = self.pin_input.text()
+        self.pin_input.clear()
+        try:
+            self._reports.clear_hold(self.phone_input.text(), pin)
+        except (AccessError, ValueError) as exc:
+            self.error_label.setText(str(exc))
+            return
+        self.accept()
 
 
 class FirstSupervisorDialog(QDialog):

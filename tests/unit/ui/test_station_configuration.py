@@ -105,7 +105,7 @@ def test_configuration_locked_until_supervisor_login(ui, qtbot):
 
 
 @pytest.mark.unit
-def test_bind_rig_then_start_session_then_operator_badge_login(ui, qtbot):
+def test_bind_rig_then_start_session_then_operator_login(ui, qtbot):
     widget, access = ui["widget"], ui["access"]
     access.login_supervisor("sup1", "supervisor-pw")
     qtbot.waitUntil(widget.tabs.isEnabled, timeout=2_000)
@@ -137,10 +137,11 @@ def test_bind_rig_then_start_session_then_operator_badge_login(ui, qtbot):
     assert access.session is not None, session_page.message.text()
     qtbot.waitUntil(lambda: "OPEN" in ui["bar"].session_label.text(), timeout=2_000)
 
-    # Operator badge login through the dialog.
+    # Operator login through the dialog.
     dialog = OperatorLoginDialog(access)
     qtbot.addWidget(dialog)
-    qtbot.keyClicks(dialog.badge_input, "BADGE-77")
+    qtbot.keyClicks(dialog.user_input, "op1")
+    qtbot.keyClicks(dialog.pin_input, "1234")
     dialog._submit()
     assert access.operator.user_id == "OP1"
     qtbot.waitUntil(lambda: "Ravi" in ui["bar"].operator_label.text(), timeout=2_000)
@@ -150,7 +151,8 @@ def test_bind_rig_then_start_session_then_operator_badge_login(ui, qtbot):
 def test_operator_login_dialog_shows_refusal(ui, qtbot):
     dialog = OperatorLoginDialog(ui["access"])
     qtbot.addWidget(dialog)
-    qtbot.keyClicks(dialog.badge_input, "BADGE-77")
+    qtbot.keyClicks(dialog.user_input, "op1")
+    qtbot.keyClicks(dialog.pin_input, "1234")
     dialog._submit()
 
     assert ui["access"].operator is None

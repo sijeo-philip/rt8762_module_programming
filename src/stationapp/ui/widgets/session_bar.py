@@ -1,4 +1,4 @@
-"""Always-visible strip: session state, Operator and Supervisor logins."""
+"""Always-visible strip: session state, logins, box reports and holds."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton, QWidget
 
 from stationapp.services.access import StationAccessService
-from stationapp.services.server_sync import SyncScheduler
-from stationapp.ui.dialogs.access_dialogs import SupervisorLoginDialog
+from stationapp.services.box_reporting import BoxReportScheduler
+from stationapp.ui.dialogs.access_dialogs import ClearHoldDialog, SupervisorLoginDialog
 
 GREEN = "#166534"
 RED = "#991b1b"
@@ -18,7 +18,7 @@ GREY = "#64748b"
 class SessionBar(QFrame):
     _changed = pyqtSignal()
 
-    def __init__(self, access: StationAccessService, parent: QWidget | None = None, *, sync_scheduler: SyncScheduler | None = None) -> None:
+    def __init__(self, access: StationAccessService, parent: QWidget | None = None, *, box_reports: BoxReportScheduler | None = None) -> None:
         super().__init__(parent)
         self._access = access
         self._compact = False
@@ -35,16 +35,22 @@ class SessionBar(QFrame):
             layout.addSpacing(18)
         layout.addStretch()
 
-        self._sync = sync_scheduler
+        self._sync = box_reports
         self.sync_label = QLabel()
         self.sync_label.setTextFormat(Qt.TextFormat.RichText)
-        self.sync_button = QPushButton("Sync now")
+        self.sync_button = QPushButton("Report now")
         self.sync_button.clicked.connect(self._sync_now)
-        if sync_scheduler is not None:
+        # Always visible while the box has the line stopped (R14-R16).
+        self.hold_button = QPushButton("LINE STOPPED - Clear hold")
+        self.hold_button.setStyleSheet(f"QPushButton {{ color: white; background: {RED}; font-weight: 700; padding: 4px 10px; }}")
+        self.hold_button.clicked.connect(self._clear_hold)
+        self.hold_button.hide()
+        if box_reports is not None:
             layout.addWidget(self.sync_label)
             layout.addWidget(self.sync_button)
+            layout.addWidget(self.hold_button)
             layout.addSpacing(18)
-            sync_scheduler.add_listener(self._changed.emit)
+            box_reports.add_listener(self._changed.emit)
         else:
             self.sync_label.hide()
             self.sync_button.hide()
@@ -119,26 +125,34 @@ class SessionBar(QFrame):
         try:
             status = self._sync.service.status()
         except Exception:  # noqa: BLE001 - indicator only
-            self.sync_label.setText("<b>Server:</b> status unavailable")
+            self.sync_label.setText("<b>Box:</b> status unavailable")
             return
-        if status.running:
-            text, colour = "syncing...", GREY
+        self.hold_button.setVisible(status.on_hold)
+        if status.on_hold:
+            text, colour = "LINE STOPPED - on hold", RED
+        elif status.running:
+            text, colour = "reporting...", GREY
         elif not status.configured:
             text, colour = f"not configured ({status.pending_modules} modules queued)", AMBER
-        elif status.qr_conflicts:
-            text, colour = f"{status.qr_conflicts} QR conflict(s)!", RED
+        elif status.login_required and status.pending_modules:
+            text, colour = f"{status.pending_modules} modules wait for a login", AMBER
         elif status.last_error and status.pending_modules:
-            text, colour = f"offline - {status.pending_modules}/{status.threshold} pending, retrying", AMBER
+            text, colour = f"not answering - {status.pending_modules} modules queued, retrying", AMBER
         else:
-            text, colour = f"{status.pending_modules}/{status.threshold} modules pending", GREEN
+            text, colour = f"{status.pending_modules} modules to report", GREEN
         if status.last_success_at is not None:
-            text += f" &middot; last sync {status.last_success_at.astimezone():%H:%M}"
-        self.sync_label.setText(f"<b>Server:</b> <span style='color:{colour}'>{text}</span>")
+            text += f" &middot; last report {status.last_success_at.astimezone():%H:%M}"
+        self.sync_label.setText(f"<b>Box:</b> <span style='color:{colour}'>{text}</span>")
         self.sync_button.setEnabled(status.configured and not status.running)
 
     def _sync_now(self) -> None:
         if self._sync is not None:
             self._sync.request("MANUAL")
+            self.render()
+
+    def _clear_hold(self) -> None:
+        if self._sync is not None and ClearHoldDialog(self._sync.service, self).exec():
+            QMessageBox.information(self, "Hold cleared", "The hold is cleared. The line can start again.")
             self.render()
 
     def _show_error_codes(self) -> None:

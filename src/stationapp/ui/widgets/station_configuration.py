@@ -49,7 +49,8 @@ from stationapp.services.golden_rig_configuration import (
     RigEndpoint,
 )
 from stationapp.services.jig_configuration import JigConfigurationService
-from stationapp.services.server_sync import SyncScheduler
+from stationapp.domain.mac import MacPurpose
+from stationapp.services.box_reporting import BoxReportScheduler
 from stationapp.ui.dialogs.access_dialogs import ask_reason
 
 logger = logging.getLogger(__name__)
@@ -134,10 +135,10 @@ class _Page(QWidget):
 
 
 class SessionPage(_Page):
-    def __init__(self, access: StationAccessService, topology_service=None, parent: QWidget | None = None, *, sync_scheduler: SyncScheduler | None = None) -> None:
+    def __init__(self, access: StationAccessService, topology_service=None, parent: QWidget | None = None, *, box_reports: BoxReportScheduler | None = None) -> None:
         super().__init__(parent)
         self._access = access
-        self._sync = sync_scheduler
+        self._sync = box_reports
         self._topology = topology_service
         self._reviewed: StationConfiguration | None = None
 
@@ -257,7 +258,7 @@ class SessionPage(_Page):
             self,
             "Close session",
             "Close the production session? The Operator is logged out and no batch can start until a new session is opened.\n\n"
-            "Upload of completed batches continues to be queued locally.",
+            "Finished trays not yet reported stay queued and are reported to the box later.",
         )
         if answer is not QMessageBox.StandardButton.Yes:
             return
@@ -267,12 +268,12 @@ class SessionPage(_Page):
             self.refresh()
 
     def _sync_before_close(self) -> bool:
-        """README: synchronize with the LAN server before closing."""
+        """Report finished trays to the box before closing (guide 4.9)."""
         if self._sync is None or not self._sync.service.configured:
             return True
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            report = self._sync.sync_now("SESSION_CLOSE")
+            report = self._sync.report_now("SESSION_CLOSE")
         finally:
             QApplication.restoreOverrideCursor()
         if report.success:
@@ -280,9 +281,9 @@ class SessionPage(_Page):
             return True
         answer = QMessageBox.question(
             self,
-            "Server sync failed",
-            f"Could not synchronize with the LAN server:\n{report.detail}\n\n"
-            "Close the session anyway? All records stay queued and upload automatically later.",
+            "Box report failed",
+            f"Could not report finished trays to the box:\n{report.detail}\n\n"
+            "Close the session anyway? The trays stay queued and are reported after the next login.",
         )
         return answer is QMessageBox.StandardButton.Yes
 
@@ -797,49 +798,58 @@ class UsersPage(_Page):
 
 
 # ---------------------------------------------------------------------------
-# LAN server sync
+# Box: blocks, reports and hold
 # ---------------------------------------------------------------------------
 
 
-class SyncPage(_Page):
-    def __init__(self, scheduler: SyncScheduler, parent: QWidget | None = None) -> None:
+class BoxPage(_Page):
+    def __init__(self, scheduler: BoxReportScheduler, blocks=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._scheduler = scheduler
+        self._blocks = blocks
 
-        status_box = QGroupBox("Synchronization status")
+        status_box = QGroupBox("Box status")
         form = QFormLayout(status_box)
         self.server_label = QLabel()
+        self.hold_label = QLabel()
+        self.hold_label.setWordWrap(True)
         self.pending_label = QLabel()
-        self.history_label = QLabel()
-        self.qr_label = QLabel()
+        self.blocks_label = QLabel()
+        self.blocks_label.setWordWrap(True)
         self.last_label = QLabel()
         self.last_label.setWordWrap(True)
-        form.addRow("LAN server", self.server_label)
-        form.addRow("Waiting to upload", self.pending_label)
-        form.addRow("History not yet sent", self.history_label)
-        form.addRow("Module QR", self.qr_label)
-        form.addRow("Last sync", self.last_label)
-        self.sync_button = QPushButton("Sync now")
+        form.addRow("Box", self.server_label)
+        form.addRow("Hold", self.hold_label)
+        form.addRow("Waiting to report", self.pending_label)
+        form.addRow("MAC blocks", self.blocks_label)
+        form.addRow("Last report", self.last_label)
+        buttons = QHBoxLayout()
+        self.sync_button = QPushButton("Report now")
         self.sync_button.clicked.connect(self._sync_now)
-        form.addRow("", self.sync_button)
+        self.hold_button = QPushButton("Clear hold...")
+        self.hold_button.clicked.connect(self._clear_hold)
+        buttons.addWidget(self.sync_button)
+        buttons.addWidget(self.hold_button)
+        buttons.addStretch()
+        form.addRow("", buttons)
         self.layout_.addWidget(status_box)
 
-        runs = QGroupBox("Recent sync runs")
+        runs = QGroupBox("Recent reports")
         runs_layout = QVBoxLayout(runs)
-        self.runs_table = _table(["Started", "Trigger", "Result", "Modules", "Batches", "Events", "Detail"])
+        self.runs_table = _table(["Started", "Trigger", "Result", "Modules", "Trays", "Rejected", "Detail"])
         self.runs_table.setMaximumHeight(200)
         runs_layout.addWidget(self.runs_table)
         self.layout_.addWidget(runs)
 
-        conflicts = QGroupBox("Duplicate QR conflicts reported by the LAN server")
+        conflicts = QGroupBox("Modules rejected by the box")
         conflicts_layout = QVBoxLayout(conflicts)
-        self.conflict_table = _table(["Module QR", "Batch", "Slot", "Also bound at"])
+        self.conflict_table = _table(["Module QR", "Batch", "Slot", "Why"])
         self.conflict_table.setMaximumHeight(160)
         conflicts_layout.addWidget(self.conflict_table)
         self.layout_.addWidget(conflicts)
         self.finish()
 
-        # Scheduler callbacks arrive on the sync thread; a queued signal
+        # Scheduler callbacks arrive on the report thread; a queued signal
         # brings the refresh onto the GUI thread.
         self._changed.connect(self._refresh_if_visible, Qt.ConnectionType.QueuedConnection)
         scheduler.add_listener(self._changed.emit)
@@ -854,8 +864,7 @@ class SyncPage(_Page):
         service = self._scheduler.service
         try:
             status = service.status()
-            conflicts = service.conflicts()
-            from stationapp.data.sync_repository import SyncRepository
+            from stationapp.data.sync_repository import QrRegistryRepository, ReportQueueRepository
 
             with service._session_factory() as session:  # noqa: SLF001 - read-only view
                 runs = [
@@ -865,39 +874,66 @@ class SyncPage(_Page):
                         run.status,
                         str(run.modules),
                         str(run.batches),
-                        str(run.events),
+                        str(run.qr_conflicts),
                         run.detail or "",
                     ]
-                    for run in SyncRepository(session).last_runs(20)
+                    for run in ReportQueueRepository(session).last_runs(20)
                 ]
+                conflicts = [
+                    [row.module_qr, row.batch_id or "-", str(row.slot_number or "-"), row.conflict_detail or ""]
+                    for row in QrRegistryRepository(session).conflicts()
+                ]
+            block_lines = []
+            if self._blocks is not None:
+                for purpose, label in ((MacPurpose.STOCK_RF_TEST, "Stock Only"), (MacPurpose.PRICOL_PRODUCTION, "Pricol")):
+                    state = self._blocks.state(purpose)
+                    master_range = self._blocks.master_range(purpose) or "not configured"
+                    if state.current is None:
+                        text = "no block yet"
+                    else:
+                        text = f"block {state.current.block_id} ({state.current.first_mac} - {state.current.last_mac}), {state.current.available} left"
+                        text += f"; reserve {state.reserve.block_id}" if state.reserve else "; no reserve"
+                    if state.owed_promote:
+                        text += f"; promote {state.owed_promote[0]} -> {state.owed_promote[1]} not yet confirmed by the box"
+                    block_lines.append(f"{label} [{master_range}]: {text}")
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Could not read sync status")
-            self.notice(f"Could not read sync status: {exc}", error=True)
+            logger.exception("Could not read box status")
+            self.notice(f"Could not read box status: {exc}", error=True)
             return
 
-        self.server_label.setText("configured" if status.configured else "NOT CONFIGURED - set LAN_SERVER_URL")
-        self.pending_label.setText(
-            f"{status.pending_modules} modules in {status.pending_batches} batches "
-            f"(automatic sync at {status.threshold})"
+        gateway = service.gateway
+        self.server_label.setText(gateway.url if gateway is not None else "NOT CONFIGURED - set BOX_URL and BOX_STATION_KEY")
+        hold = status.hold
+        self.hold_label.setText(
+            f"<span style='color:{RED}; font-weight:700'>LINE STOPPED: {hold.reason or 'on hold'}</span>"
+            if hold.on_hold else "none"
         )
-        self.history_label.setText(f"{status.unsynced_events} events, {status.unsynced_audits} audit records")
-        self.qr_label.setText(f"{status.unconfirmed_qr} not yet confirmed by server, {status.qr_conflicts} conflict(s)")
+        self.pending_label.setText(
+            f"{status.pending_modules} modules in {status.pending_batches} trays"
+            + (" - waiting for an operator login" if status.login_required and status.pending_modules else "")
+        )
+        self.blocks_label.setText("\n".join(block_lines) or "-")
         last = status.last_success_at.astimezone().strftime("%d-%b-%Y %H:%M") if status.last_success_at else "never"
         self.last_label.setText(f"Last success: {last}" + (f" | Last error: {status.last_error}" if status.last_error else ""))
         self.sync_button.setEnabled(status.configured and not status.running)
+        self.hold_button.setEnabled(status.configured and hold.on_hold)
         _fill(self.runs_table, runs)
-        _fill(self.conflict_table, [
-            [item["module_qr"], item["batch_id"] or "-", str(item["slot_number"] or "-"), item["detail"] or ""]
-            for item in conflicts
-        ])
+        _fill(self.conflict_table, conflicts)
 
     def _sync_now(self) -> None:
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            report = self._scheduler.sync_now("MANUAL")
+            report = self._scheduler.report_now("MANUAL")
         finally:
             QApplication.restoreOverrideCursor()
-        self.notice(report.detail, error=not report.success)
+        self.notice(report.detail or "Reported.", error=not report.success)
+        self.refresh()
+
+    def _clear_hold(self) -> None:
+        from stationapp.ui.dialogs.access_dialogs import ClearHoldDialog
+
+        if ClearHoldDialog(self._scheduler.service, self).exec():
+            self.notice("Hold cleared. The line can start again.")
         self.refresh()
 
 
@@ -909,7 +945,7 @@ class SyncPage(_Page):
 class StationConfigurationWidget(QWidget):
     _changed = pyqtSignal()
 
-    def __init__(self, *, access: StationAccessService, users: UserAdministrationService | None, jig_configuration: JigConfigurationService, golden_rig: GoldenRigConfigurationService, operations: OperationManager, jig_positions: int, topology_service=None, simulation: bool = False, sync_scheduler: SyncScheduler | None = None, parent: QWidget | None = None) -> None:
+    def __init__(self, *, access: StationAccessService, users: UserAdministrationService | None, jig_configuration: JigConfigurationService, golden_rig: GoldenRigConfigurationService, operations: OperationManager, jig_positions: int, topology_service=None, simulation: bool = False, box_reports: BoxReportScheduler | None = None, box_blocks=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._access = access
         layout = QVBoxLayout(self)
@@ -919,16 +955,16 @@ class StationConfigurationWidget(QWidget):
         layout.addWidget(self.locked_label)
 
         self.tabs = QTabWidget()
-        self.session_page = SessionPage(access, None if simulation else topology_service, sync_scheduler=sync_scheduler)
+        self.session_page = SessionPage(access, None if simulation else topology_service, box_reports=box_reports)
         self.slot_page = SlotBindingPage(jig_configuration, jig_positions, simulation=simulation, operations=operations)
         self.rig_page = GoldenRigPage(golden_rig, operations, simulation=simulation)
         if users is not None:
             self.users_page = UsersPage(users, access)
         else:
             self.users_page = QLabel(
-                "Operators and Supervisors are enrolled on the LAN server. "
-                "Every login on this station is verified there, so any enrolled user "
-                "can log in on any jig."
+                "Operators and Supervisors are registered at head office and reach the box from there. "
+                "Every login on this station (phone number and PIN) is verified by the box, so anyone "
+                "registered can log in on any station. The box decides each person's role."
             )
             self.users_page.setWordWrap(True)
             self.users_page.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -937,10 +973,10 @@ class StationConfigurationWidget(QWidget):
         self.tabs.addTab(self.slot_page, "Jig slot binding")
         self.tabs.addTab(self.rig_page, "Golden Rig binding")
         self.tabs.addTab(self.users_page, "Users")
-        self.sync_page: SyncPage | None = None
-        if sync_scheduler is not None:
-            self.sync_page = SyncPage(sync_scheduler)
-            self.tabs.addTab(self.sync_page, "Server sync")
+        self.sync_page: BoxPage | None = None
+        if box_reports is not None:
+            self.sync_page = BoxPage(box_reports, box_blocks)
+            self.tabs.addTab(self.sync_page, "Box")
         self.tabs.currentChanged.connect(lambda _index: self._refresh_current())
         layout.addWidget(self.tabs)
 

@@ -4,7 +4,8 @@ Workflow steps 1 and 2:
 
 * The Supervisor logs in and starts a production session, confirming the
   jig's COM-port-to-slot bindings and the approved Golden Rig binding.
-* The Operator logs in (user ID + PIN, or badge) once a session is open.
+* The Operator logs in (phone number + PIN, verified by the box) once a
+  session is open.
 
 StationAccessService is the single place the rest of the application
 asks "who may do this?". Production refuses to start, advance or scan
@@ -422,6 +423,7 @@ class StationAccessService:
         if not user.is_supervisor:
             self._auth.record_logout(user, "Refused: not a Supervisor")
             raise AuthorizationError(f"{user.user_id} is not a Supervisor")
+        self._box_session_taken_by(user)
         with self._lock:
             self._supervisor = user
             self._supervisor_seen = self._clock()
@@ -449,6 +451,7 @@ class StationAccessService:
         user = self._auth.authenticate(user_id, password, purpose="Supervisor authorization")
         if not user.is_supervisor:
             raise AuthorizationError(f"{user.user_id} is not a Supervisor")
+        self._box_session_taken_by(user)
         return user
 
     def login(self, user_id: str, secret: str) -> AuthenticatedUser:
@@ -460,12 +463,37 @@ class StationAccessService:
         user = self._auth.authenticate(user_id, secret, purpose="Station login")
         return self._accept_login(user)
 
-    def login_with_badge(self, badge_id: str) -> AuthenticatedUser:
-        user = self._auth.authenticate_badge(badge_id, purpose="Station login")
+    def login_with_new_pin(self, phone: str, current_pin: str, new_pin: str) -> AuthenticatedUser:
+        """Login after the box asked for a new PIN (PinChangeRequired)."""
+        change_pin = getattr(self._auth, "change_pin", None)
+        if change_pin is None:
+            raise AuthenticationFailed("PIN changes are made on the box")
+        user = change_pin(phone, current_pin, new_pin, purpose="Station login")
         return self._accept_login(user)
+
+    def box_session_ended(self) -> None:
+        """The box ended the Operator's session: log in again to report."""
+        with self._lock:
+            user, self._operator = self._operator, None
+        if user is not None:
+            self._auth.record_logout(user, "Box session ended - log in again")
+            self._notify()
+
+    def _box_session_taken_by(self, supervisor: AuthenticatedUser) -> None:
+        """The box keeps one person per station: a Supervisor login ends the
+        Operator's box session, so the Operator must log in again."""
+        if not getattr(self._auth, "one_person_per_station", False):
+            return
+        with self._lock:
+            operator = self._operator
+            if operator is None or operator.user_id == supervisor.user_id:
+                return
+            self._operator = None
+        self._auth.record_logout(operator, f"Box session taken by Supervisor {supervisor.user_id}; Operator must log in again")
 
     def _accept_login(self, user: AuthenticatedUser) -> AuthenticatedUser:
         if user.is_supervisor:
+            self._box_session_taken_by(user)
             with self._lock:
                 self._supervisor = user
                 self._supervisor_seen = self._clock()
@@ -486,11 +514,6 @@ class StationAccessService:
     def login_operator(self, user_id: str, secret: str) -> AuthenticatedUser:
         self._require_open_session_for_login()
         user = self._auth.authenticate(user_id, secret, purpose="Operator login")
-        return self._set_operator(user)
-
-    def login_operator_badge(self, badge_id: str) -> AuthenticatedUser:
-        self._require_open_session_for_login()
-        user = self._auth.authenticate_badge(badge_id, purpose="Operator login")
         return self._set_operator(user)
 
     def logout_operator(self) -> None:

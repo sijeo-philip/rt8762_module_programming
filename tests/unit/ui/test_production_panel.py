@@ -12,6 +12,7 @@ from stationapp.data.base import Base
 from stationapp.data.database import create_session_factory, create_station_engine
 from stationapp.data.production_repository import SqlProductionStore
 from stationapp.domain.batch import BatchState
+from stationapp.domain.mac import MacPurpose
 from stationapp.services.health import HealthCheck, Severity
 from stationapp.services.mac_cache import MacCacheService
 from stationapp.services.production import ProductionController
@@ -25,6 +26,7 @@ from stationapp.services.simulation import (
 from stationapp.services.slot_eligibility import SlotEligibilityService
 from stationapp.ui.widgets.jig_slot_grid import JigSlotGrid
 from stationapp.ui.widgets.production_panel import ProductionPanel
+from PyQt6.QtWidgets import QMessageBox
 
 
 @pytest.fixture
@@ -43,6 +45,9 @@ def panel(qtbot, tmp_path: Path):
         gateway=SimulatedMacAllocationGateway(),
         request_size=16,
     )
+    # Blocks for both modes, so switching mode never waits for a top-up.
+    mac_cache.ensure(MacPurpose.STOCK_RF_TEST)
+    mac_cache.ensure(MacPurpose.PRICOL_PRODUCTION)
     readiness = StationReadinessService(
         settings=settings,
         topology_service=None,
@@ -79,6 +84,13 @@ def panel(qtbot, tmp_path: Path):
     engine.dispose()
 
 
+def check_after_setup_change(qtbot, widget) -> None:
+    """Run the READY check for the new mode/slots now, not after the delay."""
+    widget._readiness_timer.stop()
+    widget.check_station(top_up=True)
+    qtbot.waitUntil(lambda: widget.primary_button.isEnabled() and not widget._readiness_pending, timeout=5_000)
+
+
 def press_until(qtbot, widget, controller, state: BatchState) -> None:
     for _ in range(15):
         if controller.batch.state is state:
@@ -113,7 +125,7 @@ def test_operator_runs_stock_only_batch_end_to_end(panel, qtbot):
 
     widget.stock_only_radio.setChecked(True)
     widget.slot_checks[2].setChecked(False)
-    qtbot.waitUntil(lambda: widget.primary_button.isEnabled() and not widget._readiness_pending, timeout=5_000)
+    check_after_setup_change(qtbot, widget)
 
     widget.primary_button.click()
 
@@ -160,7 +172,7 @@ def test_scanner_rejects_duplicate_qr_with_message(panel, qtbot):
     widget.stock_only_radio.setChecked(True)
     for number in (2, 3, 4):
         widget.slot_checks[number].setChecked(False)
-    qtbot.waitUntil(lambda: widget.primary_button.isEnabled() and not widget._readiness_pending, timeout=5_000)
+    check_after_setup_change(qtbot, widget)
     widget.primary_button.click()
 
     press_until(qtbot, widget, controller, BatchState.QR_SCANNING)
@@ -180,3 +192,58 @@ def test_scanner_rejects_duplicate_qr_with_message(panel, qtbot):
     qtbot.keyClicks(widget.qr_input, "C0FFEE01")
     qtbot.keyClick(widget.qr_input, "\r")
     assert widget.error_label.text() == ""
+
+
+def start_one_slot_stock_only(widget, controller, qtbot) -> None:
+    widget.check_station(top_up=True)
+    qtbot.waitUntil(lambda: widget.primary_button.isEnabled(), timeout=5_000)
+    widget.stock_only_radio.setChecked(True)
+    for number in (2, 3, 4):
+        widget.slot_checks[number].setChecked(False)
+    check_after_setup_change(qtbot, widget)
+    widget.primary_button.click()
+
+
+@pytest.mark.unit
+def test_restart_tray_during_qr_scanning_keeps_the_mac(panel, qtbot, monkeypatch):
+    widget, controller, _ = panel
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes)
+    start_one_slot_stock_only(widget, controller, qtbot)
+    batch = controller.batch
+    mac = batch.slots[1].stock_mac
+    assert not widget.restart_button.isHidden()
+
+    press_until(qtbot, widget, controller, BatchState.QR_SCANNING)
+    qtbot.waitUntil(widget.qr_input.isEnabled, timeout=5_000)
+    widget.restart_button.click()
+
+    assert batch.state is BatchState.STOCK_MACS_RESERVED
+    assert batch.slots[1].stock_mac == mac
+    assert "restarted 1x" in widget.instruction_label.text()
+
+    press_until(qtbot, widget, controller, BatchState.QR_SCANNING)
+    qtbot.waitUntil(widget.qr_input.isEnabled, timeout=5_000)
+    qtbot.keyClicks(widget.qr_input, "1A2B1001")
+    qtbot.keyClick(widget.qr_input, "\r")
+    assert batch.state is BatchState.QR_BOUND
+
+
+@pytest.mark.unit
+def test_restart_tray_stops_the_running_step_first(panel, qtbot, monkeypatch):
+    widget, controller, operations = panel
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes)
+    start_one_slot_stock_only(widget, controller, qtbot)
+    batch = controller.batch
+    controller._programmer = SimulatedProgrammer(delay_seconds=5, failures=frozenset())
+
+    press_until(qtbot, widget, controller, BatchState.AWAITING_STOCK_PROGRAM_MODE)
+    qtbot.waitUntil(widget.primary_button.isEnabled, timeout=5_000)
+    widget.primary_button.click()                    # programming runs for 5 s
+    qtbot.waitUntil(lambda: controller.snapshot().running, timeout=5_000)
+    widget.restart_button.click()
+    assert widget.headline_label.text() == "STOPPING..."
+
+    qtbot.waitUntil(lambda: batch.restart_count == 1, timeout=10_000)
+    assert batch.state is BatchState.STOCK_MACS_RESERVED
+    assert operations.get("production-advance") is None
+    assert widget.restart_button.isEnabled()

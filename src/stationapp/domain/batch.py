@@ -115,7 +115,14 @@ class Batch:
     # (released_macs is persisted with the batch).
     not_detected_slots: dict[int, str] = field(default_factory=dict)
     released_macs: list[AllocatedMac] = field(default_factory=list)
-    
+
+    # Restart: the slots the operator loaded (a not-detected slot comes
+    # back on restart), the Pricol MACs of an earlier attempt waiting to
+    # be programmed again (slot -> record), and the number of restarts.
+    loaded_slot_numbers: tuple[int, ...] | None = None
+    carried_pricol_macs: dict[int, AllocatedMac] = field(default_factory=dict)
+    restart_count: int = 0
+
     def __post_init__(self) -> None:
         if self.slot_count not in (4, 8):
             raise ValueError("slot_count must be 4 or 8")
@@ -137,6 +144,8 @@ class Batch:
             self.occupied_slot_numbers = tuple(range(1, self.slot_count + 1))
         else:
             self._validate_occupied_slots(self.occupied_slot_numbers)
+        if self.loaded_slot_numbers is None:
+            self.loaded_slot_numbers = self.occupied_slot_numbers
 
     @property
     def ordered_slots(self) -> tuple[JigSlot, ...]:
@@ -472,6 +481,7 @@ class Batch:
             assert record.slot_number is not None
 
             self.slots[record.slot_number].assign_pricol_mac(record)
+            self.carried_pricol_macs.pop(record.slot_number, None)
 
         self.state = BatchState.PRICOL_MACS_RESERVED
         
@@ -776,6 +786,11 @@ class Batch:
     def commit(self) -> None:
         if not self.can_commit:
             raise InvalidBatchTransition("Batch cannot be committed until all functional results exist and no slot is on HOLD")
+        # Pricol MACs of an earlier attempt that this one did not need.
+        for record in self.carried_pricol_macs.values():
+            record.release_unused()
+            self.released_macs.append(record)
+        self.carried_pricol_macs.clear()
         self.state = BatchState.COMMITTED
         
     def queue_upload(self) -> None:
@@ -802,7 +817,42 @@ class Batch:
             
         self.hold_reason = text
         self.state = BatchState.ABORTED
-        
+
+    def restart(self) -> dict[int, AllocatedMac]:
+        """Send the tray back to its first step, keeping its MACs.
+
+        Every loaded slot starts again, a not-detected one included, with
+        a fresh slot record (no results, no QR). The returned Stock MACs
+        (slot -> record, RESERVED again) are to be reserved for the same
+        slots; Pricol MACs wait in carried_pricol_macs for the Pricol
+        step. The batch is left CREATED, ready for port binding.
+        """
+        if self.state in {BatchState.COMMITTED, BatchState.UPLOAD_PENDING, BatchState.UPLOADED}:
+            raise InvalidBatchTransition("A completed tray cannot be restarted")
+        if self.state is BatchState.ABORTED:
+            raise InvalidBatchTransition("An aborted tray cannot be restarted")
+        if self.state in {BatchState.CREATED, BatchState.PORT_BINDING, BatchState.PORTS_BOUND}:
+            raise InvalidBatchTransition("The tray has not started yet")
+
+        stock: dict[int, AllocatedMac] = {}
+        for slot in self.ordered_slots:
+            if slot.stock_mac_record is not None:
+                slot.stock_mac_record.rewind_for_restart()
+                stock[slot.number] = slot.stock_mac_record
+            if slot.pricol_mac_record is not None:
+                slot.pricol_mac_record.rewind_for_restart()
+                self.carried_pricol_macs[slot.number] = slot.pricol_mac_record
+
+        self.slots = {number: JigSlot(number) for number in range(1, self.slot_count + 1)}
+        self.occupied_slot_numbers = self.loaded_slot_numbers or self.occupied_slot_numbers
+        # Already saved as AVAILABLE when they were released.
+        self.not_detected_slots.clear()
+        self.released_macs.clear()
+        self.hold_reason = None
+        self.restart_count += 1
+        self.state = BatchState.CREATED
+        return stock
+
     # -------------------------------------------------------------------------------------------
     # Internal Validation
     # -------------------------------------------------------------------------------------------
@@ -905,6 +955,7 @@ class Batch:
         self._require_state(BatchState.CREATED)
         self._validate_occupied_slots(numbers)
         self.occupied_slot_numbers = tuple(sorted(numbers))
+        self.loaded_slot_numbers = self.occupied_slot_numbers
 
 
     @property

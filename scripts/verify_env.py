@@ -27,7 +27,7 @@ REQUIRED_MODULES = {
     "pydantic": "validation",
     "pydantic_settings": "validated configuration",
     "serial": "serial port access (pyserial)",
-    "httpx": "LAN server client (Stage 2)",
+    "unisemble_client": "UnisemBLE box SDK (vendor/unisemble)",
     "argon2": "password hashing (argon2-cffi)",
     "openpyxl": "Excel report writing",
     "pytest": "test framework",

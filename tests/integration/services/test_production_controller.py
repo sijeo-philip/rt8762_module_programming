@@ -12,7 +12,7 @@ from stationapp.data.database import create_session_factory, create_station_engi
 from stationapp.data.models import AllocatedMacModel, BatchModel, OutboxModel
 from stationapp.data.production_repository import SqlProductionStore
 from stationapp.domain.batch import BatchState, ProgrammingMode, SlotDisposition
-from stationapp.domain.mac import MacPurpose, MacStatus
+from stationapp.domain.mac import MacAddress, MacPurpose, MacStatus
 from stationapp.domain.slot import DeviceState
 from stationapp.services.mac_cache import MacCacheService
 from stationapp.services.production import (
@@ -30,6 +30,8 @@ from stationapp.services.simulation import (
 
 STATION = "STATION-01"
 JIG = "JIG-01"
+# Stock + Pricol: slot N is programmed with TEMP_BASE + N - 1 for the Stock stages.
+TEMP_BASE = MacAddress.parse("0A:FF:00:00:00:01")
 
 
 @pytest.fixture
@@ -63,6 +65,7 @@ def make_controller(session_factory, *, failures: str = "", rf_tester=None, read
         rf_tester=rf_tester or SimulatedGoldenRig(delay_seconds=0, failures=failure_set),
         functional_tester=SimulatedFunctionalTester(delay_seconds=0, failures=failure_set),
         readiness_gate=readiness_gate,
+        temporary_stock_mac_base=TEMP_BASE,
     )
 
 
@@ -145,13 +148,14 @@ def test_partial_jig_with_independent_slot_failures(session_factory):
         assert model.batch_label == "LOT-A"
         assert model.committed_at is not None
 
-        held = session.scalar(
+        # Stock + Pricol: the Stock stages use the per-slot temporary MAC,
+        # which is never a row of the authorized cache.
+        assert batch.slots[2].stock_mac == MacAddress(TEMP_BASE.value + 1)
+        assert session.scalar(
             select(AllocatedMacModel).where(
                 AllocatedMacModel.address == batch.slots[2].stock_mac.compact
             )
-        )
-        # A MAC from failed programming never returns to the pool.
-        assert held.status == MacStatus.HOLD.value
+        ) is None
 
         outbox = session.scalars(select(OutboxModel)).all()
         assert len(outbox) == 1
@@ -283,6 +287,7 @@ def test_mac_is_persisted_as_programming_before_mpcli_runs(session_factory):
         programmer=programmer,
         rf_tester=SimulatedGoldenRig(delay_seconds=0, failures=frozenset()),
         functional_tester=SimulatedFunctionalTester(delay_seconds=0, failures=frozenset()),
+        temporary_stock_mac_base=TEMP_BASE,
     )
     controller.start_batch(occupied=(1, 2), ports=ports(1, 2), mode=ProgrammingMode.STOCK_ONLY)
 
@@ -357,6 +362,7 @@ def test_pricol_functional_test_over_uart_records_evidence(session_factory):
         programmer=SimulatedProgrammer(delay_seconds=0, failures=none),
         rf_tester=SimulatedGoldenRig(delay_seconds=0, failures=none),
         functional_tester=functional,
+        temporary_stock_mac_base=TEMP_BASE,
     )
     controller.start_batch(occupied=(1, 2, 3), ports=ports(1, 2, 3), mode=ProgrammingMode.STOCK_AND_PRICOL)
 
@@ -456,6 +462,7 @@ def test_pricol_programming_and_tests_start_only_on_operator_buttons(session_fac
         programmer=programmer,
         rf_tester=SimulatedGoldenRig(delay_seconds=0, failures=frozenset()),
         functional_tester=functional,
+        temporary_stock_mac_base=TEMP_BASE,
     )
     controller.start_batch(occupied=(1, 2), ports=ports(1, 2), mode=ProgrammingMode.STOCK_AND_PRICOL)
 

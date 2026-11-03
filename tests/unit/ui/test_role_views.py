@@ -8,6 +8,9 @@ import pytest
 
 from stationapp.config import get_settings
 
+OPERATOR = ("9000000001", "123456")
+SUPERVISOR = ("9000000003", "246810")
+
 
 @pytest.fixture
 def app_window(qtbot, tmp_path: Path, monkeypatch):
@@ -19,7 +22,7 @@ def app_window(qtbot, tmp_path: Path, monkeypatch):
         "SIMULATION_DELAY_SECONDS": "0",
         "DATABASE_URL": f"sqlite:///{(tmp_path / 'station.db').as_posix()}",
         "LOG_DIR": str(tmp_path / "logs"),
-        "LAN_SERVER_URL": "",
+        "BOX_URL": "",
         "AUTH_MODE": "server",
     }.items():
         monkeypatch.setenv(key, value)
@@ -33,13 +36,19 @@ def app_window(qtbot, tmp_path: Path, monkeypatch):
     qtbot.addWidget(window)
     yield window, context
     window.shutdown()
-    context.sync_scheduler.shutdown()
-    context.sync_scheduler.wait(5)
+    context.box_reports.shutdown()
+    context.box_reports.wait(5)
     get_settings.cache_clear()
 
 
 def visible_tabs(window) -> list[str]:
     return [window._tabs.tabText(i) for i in range(window._tabs.count()) if window._tabs.isTabVisible(i)]
+
+
+def log_in(login, phone: str, pin: str) -> None:
+    login.user_input.setText(phone)
+    login.password_input.setText(pin)
+    login.login_button.click()
 
 
 @pytest.mark.unit
@@ -49,32 +58,27 @@ def test_role_based_screens(app_window, qtbot):
     login = window._login_page
     panel = window._production_panel
 
-    # Nobody logged in: login page, test users announced.
+    # Nobody logged in: login page, demo box announced.
     assert window._stack.currentWidget() is login
-    assert "TEST USERS" in login.mode_label.text()
+    assert "DEMO BOX" in login.mode_label.text()
 
     # Operator cannot log in before a Supervisor opens a session.
-    login.user_input.setText("OPERATOR1")
-    login.password_input.setText("op1234")
-    login.login_button.click()
+    log_in(login, *OPERATOR)
     assert "Supervisor must log in" in login.error_label.text()
     assert window._stack.currentWidget() is login
 
-    # Supervisor: full view with every tab and the detailed setup.
-    login.user_input.setText("supervisor1")
-    login.password_input.setText("Sup@1234")
-    login.login_button.click()
+    # Supervisor (role from the box): full view with every tab.
+    log_in(login, *SUPERVISOR)
     qtbot.waitUntil(lambda: window._stack.currentWidget() is window._work_page, timeout=3_000)
     assert visible_tabs(window) == ["Production", "Production settings", "Station configuration", "Station status"]
     assert window._tabs.tabBar().isVisible() or not window.isVisible()
     assert panel.supervisor_view
     access.start_session(access.current_configuration())
 
-    # Log out -> login page; Operator logs in with the badge.
+    # Log out -> login page; Operator logs in with phone and PIN.
     window._session_bar.operator_button.click()
     qtbot.waitUntil(lambda: window._stack.currentWidget() is login, timeout=3_000)
-    login.badge_input.setText("OPBADGE001")
-    login.badge_input.returnPressed.emit()
+    log_in(login, *OPERATOR)
     qtbot.waitUntil(lambda: window._stack.currentWidget() is window._work_page, timeout=3_000)
 
     # Operator: Production only, no settings, compact header.
@@ -91,28 +95,25 @@ def test_role_based_screens(app_window, qtbot):
     assert panel.selected_slots == (1, 3, 4)
     assert window._jig_slot_grid.cards[2].status_label.text() == "EMPTY"
 
-    # Supervisor elevation from the Operator view, then back.
-    access.login("SUPERVISOR1", "Sup@1234")
+    # Supervisor elevation from the Operator view: the box keeps one
+    # person per station, so the Operator must log in again afterwards.
+    access.login(*SUPERVISOR)
     qtbot.waitUntil(lambda: panel.supervisor_view, timeout=3_000)
     assert "Production settings" in visible_tabs(window)
+    assert access.operator is None
     access.logout_current()
-    qtbot.waitUntil(lambda: not panel.supervisor_view, timeout=3_000)
-    assert access.operator is not None and visible_tabs(window) == ["Production"]
+    qtbot.waitUntil(lambda: window._stack.currentWidget() is login, timeout=3_000)
+    log_in(login, *OPERATOR)
+    qtbot.waitUntil(lambda: access.operator is not None and visible_tabs(window) == ["Production"], timeout=3_000)
 
 
 @pytest.mark.unit
-def test_hid_pos_badge_scan_logs_in(app_window, qtbot):
+def test_hid_pos_scan_on_login_page_is_ignored(app_window, qtbot):
     from tests.unit.drivers.test_pos_scanner import FakeBridge
 
     window, context = app_window
-    access = context.access
-    access.login("SUPERVISOR1", "Sup@1234")
-    access.start_session(access.current_configuration())
-    window._session_bar.operator_button.click()                # supervisor logs out
-    qtbot.waitUntil(lambda: window._stack.currentWidget() is window._login_page, timeout=3_000)
-
     bridge = FakeBridge()
     window.attach_pos_scanner(bridge)
-    bridge.scanned.emit("OPBADGE001")                           # badge read in HID POS mode
-    qtbot.waitUntil(lambda: window._stack.currentWidget() is window._work_page, timeout=3_000)
-    assert access.operator is not None
+    bridge.scanned.emit("OPBADGE001")                           # no badge login any more
+    assert window._stack.currentWidget() is window._login_page
+    assert context.access.operator is None and context.access.supervisor is None

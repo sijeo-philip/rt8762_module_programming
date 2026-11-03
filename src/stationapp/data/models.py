@@ -189,7 +189,8 @@ class BatchSlotModel(Base):
     slot_number: Mapped[int] = mapped_column(Integer, nullable=False)
     port_identity: Mapped[str | None] = mapped_column(String(256), nullable=True)
     device_state: Mapped[str] = mapped_column(String(64), nullable=False, default="EMPTY")
-    module_qr: Mapped[str | None] = mapped_column(String(256), nullable=True, unique=True)
+    # Not unique: a re-worked module keeps its QR in a later batch.
+    module_qr: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
     pricol_app_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     pricol_dfu_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     hold_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -564,6 +565,37 @@ class SyncRunModel(Base):
 
     __table_args__ = (
         CheckConstraint("status IN ('RUNNING', 'SUCCESS', 'FAILED')", name="ck_sync_runs_status"),
+    )
+
+
+class BoxBlockModel(Base):
+    """One block of addresses the box gave this station.
+
+    Its addresses are rows of allocated_macs under allocation_id, used
+    from the bottom up. CURRENT is programmed from, RESERVE is next, and
+    a CLOSED block's unused addresses are never used again. A promote is
+    owed to the box while promote_from_block_id is set and promoted_at
+    is not.
+    """
+
+    __tablename__ = "box_blocks"
+
+    block_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    allocation_id: Mapped[str] = mapped_column(ForeignKey("allocations.allocation_id", ondelete="RESTRICT"), nullable=False, unique=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    master_range: Mapped[str] = mapped_column(String(128), nullable=False)
+    first_mac: Mapped[str] = mapped_column(String(12), nullable=False)
+    last_mac: Mapped[str] = mapped_column(String(12), nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    promote_from_block_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("state IN ('CURRENT', 'RESERVE', 'CLOSED')", name="ck_box_blocks_state"),
+        CheckConstraint("size > 0", name="ck_box_blocks_size"),
     )
 
 

@@ -20,6 +20,19 @@ class UserRole(str, Enum):
 class AuthenticationMethod(str, Enum):
     PASSWORD = "PASSWORD"
     BADGE = "BADGE"
+    PIN = "PIN"
+
+
+# Box roles (SDK 6.1 User.role) as station roles. "admin" may do what a
+# supervisor does; anything else operates the station.
+_BOX_ROLES = {"admin": UserRole.SUPERVISOR, "supervisor": UserRole.SUPERVISOR, "user": UserRole.OPERATOR}
+
+
+def role_from_box(role: str) -> UserRole:
+    try:
+        return _BOX_ROLES[role.strip().lower()]
+    except KeyError:
+        raise ValueError(f"Unknown box role {role!r}") from None
 
 
 class AccessError(DomainError):
@@ -30,12 +43,12 @@ class AuthenticationFailed(AccessError):
     """Unknown user, wrong secret, inactive or locked account."""
 
 
-class PasswordRequired(AuthenticationFailed):
-    """A recognised badge belongs to a Supervisor: a password is needed."""
+class PinChangeRequired(AuthenticationFailed):
+    """The PIN is right, but a new 6-digit PIN must be set before logging in."""
 
-    def __init__(self, user_id: str, message: str) -> None:
+    def __init__(self, phone: str, message: str) -> None:
         super().__init__(message)
-        self.user_id = user_id
+        self.phone = phone
 
 
 class AuthorizationError(AccessError):

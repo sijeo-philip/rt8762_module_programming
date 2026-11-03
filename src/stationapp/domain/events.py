@@ -40,6 +40,9 @@ class EventType(str, Enum):
     MODULE_QR_BOUND = "MODULE_QR_BOUND"
     QR_CONFLICT_REPORTED = "QR_CONFLICT_REPORTED"
 
+    # The tray went back to its first step, keeping its MACs.
+    BATCH_RESTARTED = "BATCH_RESTARTED"
+
     HOLD_PLACED = "HOLD_PLACED"
     SLOT_DISPOSITION = "SLOT_DISPOSITION"
     BATCH_COMMITTED = "BATCH_COMMITTED"

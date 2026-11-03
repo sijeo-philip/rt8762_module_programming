@@ -19,18 +19,20 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from stationapp.data.box_block_repository import closed_block_allocations
 from stationapp.data.errors import InvalidPersistedBatch
 from stationapp.data.models import (
     AllocatedMacModel,
     BatchModel,
     BatchSlotModel,
+    ModuleQrRegistryModel,
     OutboxModel,
 )
 from stationapp.data.repositories import BatchRepository
 from stationapp.data.unit_of_work import UnitOfWork
 from stationapp.domain.batch import Batch, BatchState
 from stationapp.domain.events import ManufacturingEvent
-from stationapp.domain.mac import AllocatedMac, MacPurpose, MacStatus
+from stationapp.domain.mac import AllocatedMac, MacPurpose, MacStatus, is_temporary
 
 
 def utc_now() -> datetime:
@@ -100,9 +102,17 @@ class ProductionStateRepository:
         for record in batch.released_macs:
             self.sync_mac(record)
 
+        # Pricol MACs of a restarted tray, waiting for the Pricol step.
+        for record in batch.carried_pricol_macs.values():
+            self.sync_mac(record)
+
         self._session.flush()
 
     def sync_mac(self, record: AllocatedMac) -> None:
+        if is_temporary(record):
+            # Per-slot temporary Stock MAC: not a cache row; its use is in
+            # the batch events.
+            return
         row = self._session.scalar(
             select(AllocatedMacModel).where(
                 AllocatedMacModel.address == record.address.compact
@@ -131,6 +141,7 @@ class ProductionStateRepository:
                 select(func.count(AllocatedMacModel.id)).where(
                     AllocatedMacModel.purpose == purpose.value,
                     AllocatedMacModel.status == MacStatus.AVAILABLE.value,
+                    AllocatedMacModel.allocation_id.not_in(closed_block_allocations()),
                 )
             )
             or 0
@@ -207,37 +218,66 @@ class SqlProductionStore:
                 aggregate_id=batch.batch_id,
                 payload=upload_payload,
             )
+            # QRs scanned before a restart and not scanned again.
+            _drop_registry_rows(uow.session, batch.batch_id, keep={slot.module_qr for slot in batch.ordered_slots if slot.module_qr})
             uow.commit()
             return transaction_id
+
+    def restart(self, batch: Batch, events: Iterable[ManufacturingEvent]) -> None:
+        """Persist a restarted tray. The QRs scanned before the restart
+        are released, except a re-worked module's: its registry row keeps
+        the supervisor's approval for this tray."""
+        with UnitOfWork(self._session_factory) as uow:
+            _drop_registry_rows(uow.session, batch.batch_id, keep_reworked=True)
+            ProductionStateRepository(uow.session).sync_batch(batch)
+            for event in events:
+                uow.events.append(event)
+            uow.commit()
 
     def module_qr_in_use(self, module_qr: str) -> bool:
         return self.module_qr_owner(module_qr) is not None
 
-    def module_qr_owner(self, module_qr: str) -> str | None:
-        """Where the QR is already used: this station's history, or
-        another station as reported by the LAN server."""
+    def module_qr_owner(self, module_qr: str, *, ignore_batch: str | None = None) -> str | None:
+        """Where the QR is already used on this station. ignore_batch:
+        a binding in this batch (before a restart) does not count."""
         from stationapp.data.sync_repository import module_qr_owner
 
         with self._session_factory() as session:
-            return module_qr_owner(session, module_qr.strip())
+            return module_qr_owner(session, module_qr.strip(), ignore_batch=ignore_batch)
 
-    def bind_module_qr(self, batch: Batch, events: Iterable[ManufacturingEvent], *, module_qr: str, slot_number: int, server_status: str) -> None:
+    def bind_module_qr(self, batch: Batch, events: Iterable[ManufacturingEvent], *, module_qr: str, slot_number: int, server_status: str, rework_of: str | None = None) -> None:
         """Persist a QR binding and its registry entry in one transaction.
 
         The registry primary key makes a second binding of the same QR
-        fail the whole transaction.
+        fail the whole transaction, unless a supervisor approved it as a
+        re-worked module (rework_of: where it was bound before).
         """
         from stationapp.data.sync_repository import QrRegistryRepository
 
         with UnitOfWork(self._session_factory) as uow:
-            QrRegistryRepository(uow.session).add(
-                module_qr=module_qr,
-                source="LOCAL",
-                station_id=batch.station_id,
-                batch_id=batch.batch_id,
-                slot_number=slot_number,
-                server_status=server_status,
-            )
+            registry = QrRegistryRepository(uow.session)
+            existing = registry.get(module_qr)
+            if existing is not None and existing.batch_id == batch.batch_id:
+                # Bound in this tray before a restart: scanned again.
+                existing.slot_number, existing.bound_at = slot_number, utc_now()
+            elif rework_of:
+                registry.rebind(
+                    module_qr=module_qr,
+                    station_id=batch.station_id,
+                    batch_id=batch.batch_id,
+                    slot_number=slot_number,
+                    server_status=server_status,
+                    previous=rework_of,
+                )
+            else:
+                registry.add(
+                    module_qr=module_qr,
+                    source="LOCAL",
+                    station_id=batch.station_id,
+                    batch_id=batch.batch_id,
+                    slot_number=slot_number,
+                    server_status=server_status,
+                )
             ProductionStateRepository(uow.session).sync_batch(batch)
             for event in events:
                 uow.events.append(event)
@@ -250,3 +290,16 @@ class SqlProductionStore:
     def pending_upload_count(self) -> int:
         with self._session_factory() as session:
             return ProductionStateRepository(session).pending_upload_count()
+
+
+def _drop_registry_rows(session: Session, batch_id: str, *, keep: set[str] = frozenset(), keep_reworked: bool = False) -> None:
+    """Remove this batch's QR registry rows, except the QRs in keep and,
+    with keep_reworked, a re-worked module's (approved for this tray)."""
+    rows = session.scalars(select(ModuleQrRegistryModel).where(ModuleQrRegistryModel.batch_id == batch_id))
+    for row in rows:
+        if row.module_qr in keep:
+            continue
+        if keep_reworked and (row.conflict_detail or "").startswith("Re-worked module"):
+            continue
+        session.delete(row)
+    session.flush()

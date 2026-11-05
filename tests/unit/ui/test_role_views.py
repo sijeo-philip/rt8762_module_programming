@@ -73,13 +73,18 @@ def test_role_based_screens(app_window, qtbot):
     assert visible_tabs(window) == ["Production", "Production settings", "Station configuration", "Station status"]
     assert window._tabs.tabBar().isVisible() or not window.isVisible()
     assert panel.supervisor_view
-    access.start_session(access.current_configuration())
+    access.start_session(access.current_configuration(), batch_code_threshold=100)
 
     # Log out -> login page; Operator logs in with phone and PIN.
     window._session_bar.operator_button.click()
     qtbot.waitUntil(lambda: window._stack.currentWidget() is login, timeout=3_000)
     log_in(login, *OPERATOR)
     qtbot.waitUntil(lambda: window._stack.currentWidget() is window._work_page, timeout=3_000)
+
+    # First Operator of the session: the Batch Code series comes first.
+    qtbot.waitUntil(lambda: panel.headline_label.text() == "ENTER BATCH CODE", timeout=10_000)
+    assert not panel.primary_button.isEnabled() and not panel.batch_code_button.isHidden()
+    context.batch_codes.start_series("S5A01")
 
     # Operator: Production only, no settings, compact header.
     assert visible_tabs(window) == ["Production"]

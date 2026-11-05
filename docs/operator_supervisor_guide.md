@@ -85,6 +85,7 @@ Each step says who does it:
 | **Box** | The site's server for MAC addresses and logins (also called the LAN server). Each station is registered on it with a **station key**. |
 | **PIN** | Your 6-digit secret number. Together with your phone number it is your login on every station. Never tell it to anyone, and never type it for someone else. |
 | **Batch** (the Box calls it a **tray**) | The modules in the jig that go through one complete run, from START to BATCH COMPLETE. It can be fewer than all slots. |
+| **Batch Code** | The production batch every module is reported to the Box with, for example `S5A01`. The Supervisor sets how many **passed** modules go into one Batch Code (the **threshold**); the Operator enters the first code of the shift. When the threshold is reached the code goes up by one by itself: `S5A01` → `S5A02`. Not the same as a *Batch* (one jig load). |
 | **MAC address** | A module's unique Bluetooth address, for example `0A:00:00:00:12:34`. Two shipped modules must never share one. |
 | **Block** | A run of MAC addresses the Box gives this station. The station holds a **current** block and, when it runs low, a **reserve** block. |
 | **Programming mode** | **Stock only**: the module gets the Stock firmware and keeps its Stock MAC. **Stock + Pricol**: the module first gets the Stock firmware with a **temporary** MAC for the RF test, then the Pricol firmware with its final **Pricol MAC**. |
@@ -459,11 +460,12 @@ Operators can run batches only while a production session is open. Open one at t
 4. Tick both boxes:
    - **"I have identified the jig and confirm the COM-port-to-slot bindings"**
    - **"I confirm the approved Golden Rig binding"**
-5. Press **Start production session**.
+5. Under **Batch Code**, set the **Batch Code threshold**: how many **passed** modules go into one Batch Code (for example `100`). It cannot be changed until the session is closed.
+6. Press **Start production session**.
    - The station contacts the Golden Rig and checks that it shows **exactly** the approved certificate.
    - Success: *"Production session started. Operators may now log in."* and **Session OPEN since …** in green.
    - If it fails, the reason is shown in red (see [D. Problems](#d-problems-and-what-to-do)).
-6. Hand over to the Operator. Press **Log out**; the Operator then logs in on the login screen.
+7. Give the Operator the **starting Batch Code** for this shift (for example `S5A01`). Press **Log out**; the Operator then logs in on the login screen and enters it ([C7](#batch-code)).
 
 **If something changes during the shift** (a slot binding or the rig binding), the Session page shows the problem in red. Once you have checked it, press **Re-confirm changed configuration** and give a reason.
 
@@ -474,14 +476,31 @@ The Operator screen shows a large coloured **headline**, an **instruction** unde
 ### Getting ready
 
 1. Log in ([C2](#c2-logging-in)).
-2. If the headline says **CHECK STATION**, press **Check station / fetch MAC blocks**. The station checks the jig, the Golden Rig, the Box and the MAC addresses.
+2. If the headline says **ENTER BATCH CODE**, enter the starting Batch Code the Supervisor gave you ([Batch Code](#batch-code) below). This is needed once per session.
+3. If the headline says **CHECK STATION**, press **Check station / fetch MAC blocks**. The station checks the jig, the Golden Rig, the Box and the MAC addresses.
    - **JIG READY - LOAD MODULES** (blue): continue.
    - **JIG NOT READY** or **STATION NOT READY** (red): call the Supervisor. The reason is shown in brackets.
-3. **Load modules** into the jig. You can load only some slots: empty slots are simply skipped. A batch does not have to be a full jig.
+4. **Load modules** into the jig. You can load only some slots: empty slots are simply skipped. A batch does not have to be a full jig.
    - If a slot you tapped has no module, or the module is not seated or not in boot mode, the station cannot detect it (MPCLI **ERR 6**). That slot shows **NOT DETECTED - skipped**: it gets **no MAC address**, no tests, and **no QR scan**, and the MAC goes back for the next batch. The other slots carry on.
    - If no slot has a detectable module, the batch ends as **BATCH ABORTED** without using any MAC. Check the modules, then press **PREPARE NEXT BATCH**.
-4. **Tap each slot on screen that holds a module.** The headline becomes **JIG READY - PRESS START** (green) and lists the loaded slots.
-5. Press **START**.
+5. **Tap each slot on screen that holds a module.** The headline becomes **JIG READY - PRESS START** (green) and lists the loaded slots.
+6. Press **START**.
+
+### Batch Code
+
+The line above the error messages shows **Batch Code: S5A01 · 37 of 100 passed**. Every module is reported to the Box with its Batch Code.
+
+**Entering the starting Batch Code (first Operator of the session):**
+1. Press **ENTER BATCH CODE**.
+2. Type the code the Supervisor gave you, exactly, for example `S5A01`. It must **end in a number**. Press **OK**.
+3. Check the code in the question and press **Yes**.
+
+**What the station does by itself:**
+- Only **passed** modules are counted, and only when **COMPLETE BATCH** is pressed. Failed modules, aborted batches and restarted attempts are not counted.
+- When the threshold is reached, the next passed module gets the next code: `S5A01` → `S5A02`, `S5A09` → `S5A10`, `S5A99` → `S5A100`. This can happen in the middle of a batch: for example the modules in slots 1–2 get `S5A01` and slots 3–8 get `S5A02`. The slot cards do not change; the Box records each module's code.
+- An Operator who takes over later in the same session does **not** enter a code: the station carries on.
+
+**Wrong code entered?** Only a Supervisor can change it, between batches: **Change Batch Code (Supervisor)**, then the Supervisor's phone and PIN, a reason, and the new code. Counting starts again from 0 on the new code. Modules already reported keep their code.
 
 ### Stock programming and RF test (every batch)
 
@@ -637,6 +656,10 @@ Clearing a hold does **not** log the Operator out.
 | Slot fails with **ERR: 6** after programming started, or another number | Programming error from the module once MPCLI was talking to it. | Press **Error codes** for the meaning. The module is held and its QR is scanned. If one slot keeps failing, call the Supervisor. |
 | Every module fails Pricol programming or the RF test at once | The button was pressed before the modules were switched: Pricol programming needs **boot mode**, the RF test needs **application mode** after a reset. | Press **RESTART TRAY** ([C7](#restart-the-tray)) and this time switch and reset as the screen says **before** pressing the button. |
 | APP / DFU test fails with *"no start-up message"* | The modules were reset **before** RUN APP TEST / RUN DFU TEST was pressed, not reset at all, or are still in boot mode. | Press **RESTART TRAY**. At the test step put the modules in application mode, press the button **first**, then reset them when the screen says **RESET ALL MODULES NOW**. |
+| **ENTER BATCH CODE** | No starting Batch Code yet in this session. | Press **ENTER BATCH CODE** and type the code the Supervisor gave you ([C7](#batch-code)). |
+| *The Batch Code must end in a number …* | The code typed has no number at the end (e.g. `S5A`). | Type it again with its number, e.g. `S5A01`. |
+| **Batch Code: no threshold for this session** | The session was opened without a threshold. | Supervisor: close the session and open it again with a threshold ([C6](#c6-start-of-every-shift--open-the-session-supervisor)). |
+| *Batch Code … is already running. Only a Supervisor can start a new series.* | An Operator tried to change the running code. | Call the Supervisor. |
 | A QR label cannot be read | The label is damaged, smudged or missing. | Press **RESTART TRAY**, replace the label, and run the batch again ([C7](#restart-the-tray)). The MAC addresses stay the same. |
 | *Restart refused: no Stock MAC for slot(s) …* | Stock only: a slot that was NOT DETECTED needs an address again, and none is left. | Press **Check station** (the Box must be reachable), then restart again. |
 
@@ -684,9 +707,9 @@ Clearing a hold does **not** log the Operator out.
 | # | Who | Task |
 |---|---|---|
 | 1 | 🔵 | Golden Rig powered on and connected. |
-| 2 | 🔵 | Log in → **Station configuration → Session** → **Review configuration** → tick both boxes → **Start production session**. |
+| 2 | 🔵 | Log in → **Station configuration → Session** → **Review configuration** → tick both boxes → set the **Batch Code threshold** → **Start production session**. Give the Operator the starting Batch Code. |
 | 3 | 🔵 | Check **Production settings** (mode, firmware, lot). Log out. |
-| 4 | 🟢 | Log in → **Check station** → load modules → tap slots → **START** → follow the headline. |
+| 4 | 🟢 | Log in → **ENTER BATCH CODE** (first Operator of the session) → **Check station** → load modules → tap slots → **START** → follow the headline. |
 | 5 | 🔵 | End of shift: **Close session** (waiting batches are reported to the Box first). |
 
 ### Needs a Supervisor (and maybe the technician)

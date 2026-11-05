@@ -35,6 +35,7 @@ from stationapp.services.readiness import StationReadinessService, approved_gold
 from stationapp.services.access import StationAccessService, UserAdministrationService
 from stationapp.services.golden_rig_configuration import GoldenRigConfigurationService
 from stationapp.services.jig_configuration import JigConfigurationService
+from stationapp.services.batch_codes import BatchCodeService
 from stationapp.services.box_reporting import BoxReportScheduler
 from stationapp.drivers.qr_scanner import ScanFormat
 
@@ -68,6 +69,7 @@ class AppContext:
     golden_rig_configuration: GoldenRigConfigurationService | None = None
     box_reports: BoxReportScheduler | None = None
     production_settings: object | None = None       # ProductionSettingsService
+    batch_codes: object | None = None               # BatchCodeService
     authentication: object | None = None            # BoxAuthenticationService
 
 
@@ -120,8 +122,9 @@ def bootstrap() -> AppContext:
         settings, session_factory, binding_service, box
     )
     production_settings = _build_production_settings(settings, session_factory, access)
+    batch_codes = BatchCodeService(session_factory=session_factory, station_id=settings.station_id, access=access)
     production, readiness, mac_cache = _build_production(
-        settings, session_factory, serial_topology_service, slot_eligibility_service, access, box, production_settings
+        settings, session_factory, serial_topology_service, slot_eligibility_service, access, box, production_settings, batch_codes
     )
     access.set_batch_activity_probe(lambda: production.has_active_batch)
     _wire_box_reports(box, access, production)
@@ -141,6 +144,7 @@ def bootstrap() -> AppContext:
             golden_rig_configuration=golden_rig_configuration,
             box_reports=box.reports,
             production_settings=production_settings,
+            batch_codes=batch_codes,
             authentication=access.authentication,
         )
     logger.debug("Bootstrap Complete")
@@ -382,7 +386,7 @@ def _build_production_settings(settings: Settings, session_factory, access: Stat
     )
 
 
-def _build_production(settings: Settings, session_factory, topology_service, eligibility_service, access: StationAccessService, box: "BoxConnection", production_settings):
+def _build_production(settings: Settings, session_factory, topology_service, eligibility_service, access: StationAccessService, box: "BoxConnection", production_settings, batch_codes: BatchCodeService):
     from stationapp.data.production_repository import SqlProductionStore
 
     simulation = settings.simulation_mode
@@ -463,6 +467,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         enabled_slots=lambda: production_settings.current().enabled_slots,
         qr_format=ScanFormat(length=settings.qr_code_length, hex_only=settings.qr_hex_only),
         qr_reuse=box.reports.service,
+        batch_codes=batch_codes,
     )
 
     return production, readiness, mac_cache

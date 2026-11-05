@@ -1,6 +1,6 @@
 # UnisemBLE Box Integration
 
-How StationApp talks to the UnisemBLE box (the site's LAN server) through the vendor SDK `unisemble_client` 6.1.1. This replaces the earlier StationApp-defined LAN contract (`docs/lan_server_api.md`), which no server implemented.
+How StationApp talks to the UnisemBLE box (the site's LAN server) through the vendor SDK `unisemble_client` 7.0.0 (for a 7.0 box; a 7.0 station does not work with an older box, nor an older station with a 7.0 box). This replaces the earlier StationApp-defined LAN contract (`docs/lan_server_api.md`), which no server implemented.
 
 Reference material from the vendor, kept with the wheel in `vendor/unisemble/`:
 
@@ -22,7 +22,7 @@ The box owns the site's MAC addresses. It gives this station **blocks** of them,
 ## Layout
 
 ```
-vendor/unisemble/                     the SDK wheel (pinned 6.1.1) and the vendor's docs
+vendor/unisemble/                     the SDK wheel (pinned 7.0.0) and the vendor's docs
 src/stationapp/drivers/box/
     gateway.py                        BoxGateway: the only module holding the SDK client
     demo.py                           in-memory demo box (SIMULATION_MODE, AUTH_MODE=test, tests)
@@ -33,17 +33,20 @@ src/stationapp/services/
     box_auth.py                       phone + PIN login, roles, forced PIN change
     box_blocks.py                     current / reserve blocks, promotes
     box_reporting.py                  reports, hold state, background scheduler
+    batch_codes.py                    the session's running Batch Code (batch_id)
+src/stationapp/domain/batch_code.py   Batch Code rules: entry, +1, exact split
+src/stationapp/data/batch_code_repository.py   station_settings.batch_code
 alembic/versions/a6c3e9f2d815_box_blocks.py, c4e8a1d7b392_reworked_module_qr.py
 tests/integration/services/test_box_integration.py
 ```
 
-`unisemble-sdk-handover-6.1.0/unisem-station-src` is the vendor's **reference station app** and demo box. It is not the box's server code, and StationApp does not import it.
+`unisemble-sdk-handover-7.0.0/unisem-station-src` is the vendor's **reference station app** and demo box. It is not the box's server code, and StationApp does not import it.
 
 Install: `pip install --find-links vendor/unisemble -e .` (or `pip install -r requirements.txt`).
 
 ## One connection, one person
 
-`BoxGateway` wraps one `UnisembleClient` for the life of the app. A malformed `BOX_URL` makes SDK 6.1.1 raise `ValueError` when the client is created; `box_url_problem()` checks the URL first, so the app starts without a box connection and the READY check names the problem. The SDK runs one call at a time. Interactive calls (login, blocks, clearing a hold) wait their turn for up to 30 s. A background report does not wait: on `ClientBusy` it keeps its modules for the next attempt.
+`BoxGateway` wraps one `UnisembleClient` for the life of the app. A malformed `BOX_URL` makes the SDK raise `ValueError` when the client is created; `box_url_problem()` checks the URL first, so the app starts without a box connection and the READY check names the problem. The SDK runs one call at a time. Interactive calls (login, blocks, clearing a hold) wait their turn for up to 30 s. A background report does not wait: on `ClientBusy` it keeps its modules for the next attempt.
 
 The box keeps **one logged-in person per station**. Any `login()` ends the previous person's box session, and reports are recorded against whoever is logged in. Consequences in StationApp:
 
@@ -95,7 +98,7 @@ A power cut is not a restart: startup recovery still quarantines every address l
 
 ## Reports and holds
 
-A committed batch is one tray. `ProductionController._finalise` writes the batch record to the outbox in the same transaction as the commit. `BoxReportScheduler` then reports it on a background thread. A report holds every module that received a box address, with its QR, that MAC and whether it passed (`disposition == PASS`); a failed or held module's reason goes in `note`. Up to 500 modules go in one report, so queued trays go out together.
+A committed batch is one tray. `ProductionController._finalise` writes the batch record to the outbox in the same transaction as the commit. `BoxReportScheduler` then reports it on a background thread. A report holds every module that received a box address, with its QR, that MAC, whether it passed (`disposition == PASS`) and its Batch Code as `batch_id` (see Batch Codes); a failed or held module's reason goes in `note`. Up to 500 modules go in one report, so queued trays go out together.
 
 | Outcome | What StationApp does |
 |---|---|
@@ -113,6 +116,18 @@ Re-sending a report the box may already have recorded is safe: the box answers `
 A QR already bound on this station, scanned in a later tray, means a re-worked module or a wrong label. `ProductionController.scan_qr` does not bind it: it puts the station on hold (`BoxReportService.hold_for_reused_qr`, saved in `station_settings.qr_reuse_hold`, audit `QR_REUSE_HOLD`) and every further scan is refused. The READY check fails, the session bar shows LINE STOPPED, and `ClearHoldDialog` lists the QR and where it was bound.
 
 A Supervisor or Admin clears it with their phone and PIN. The box verifies them through `clear_hold` (which also clears any box hold); this needs the box to be reachable. Clearing approves each held QR **once**: scanned again, it is bound to the new slot (`QrRegistryRepository.rebind`, event `MODULE_QR_BOUND` with `rework_of`), and the report carries the new MAC, which the box records as `reprogrammed`. `batch_slots.module_qr` is therefore no longer unique (migration `c4e8a1d7b392`); the QR registry still holds one row per QR, pointing at the latest binding. A QR scanned twice within one tray is still refused without a hold.
+
+## Batch Codes (SDK 7.0 `batch_id`)
+
+SDK 7.0 requires a batch ID on every reported module (1 to 64 printable ASCII characters). StationApp calls it the **Batch Code**, because a StationApp "batch" is one tray. Rules agreed with the user (2026-11-05):
+
+- **Threshold.** The Supervisor or Admin enters the Batch Code threshold (passed modules per code) when starting the production session (Station configuration → Session). `StationAccessService.start_session(..., batch_code_threshold=)` saves it in `station_settings.batch_code` in the session's transaction; the audit `SESSION_STARTED` records it.
+- **Starting series.** The Operator enters it once per session, before the first tray (Production screen, ENTER BATCH CODE). Later Operators carry on with the running code. Once a series runs, only a Supervisor may start a new one, with a reason (audit `BATCH_CODE_SERIES_STARTED` / `BATCH_CODE_SERIES_CHANGED`). Closing the session ends the series; a new session needs a new threshold and series. No tray starts without a series (`ProductionController.start_batch`).
+- **Increment.** The code must end in a number; the next code is that number plus one, keeping its zero padding: `S5A09` → `S5A10`, `S5A99` → `S5A100`.
+- **Exact split.** Codes are given when a tray is committed (`ProductionController._allocate_batch_codes`), slots in ascending order. Each code holds exactly `threshold` passed modules, so a tray may straddle two codes. A failed module gets the code current at its slot and is not counted. The code moves on with the first pass beyond the threshold.
+- **Only complete cycles count.** A tray is counted only at its commit; aborted trays are never committed, and the attempts before a restart are not counted separately. The new count is saved in the commit's transaction (`SqlProductionStore.save_and_enqueue(batch_code_state=)`), so it always matches the trays queued for the box.
+- **Records.** Each slot of the outbox record has `batch_code` (`schema_version` 2); event `BATCH_COMMITTED` lists the codes and the state after the tray.
+- **Upgrade.** A tray queued before this change has no Batch Code: the SDK refuses it locally (`InvalidBatchIdError`) and the report stays queued with that message. Report every queued tray before upgrading the box and the stations (guide section 9).
 
 ## Configuration
 
@@ -139,7 +154,7 @@ A Supervisor or Admin clears it with their phone and PIN. The box verifies them 
 | R5, R6 own blocks only; no tray spans blocks | `current_block_addresses` |
 | R7 right master range | `BOX_MASTER_RANGE_*` per purpose |
 | R8–R10 reserve, switch, owed promote | `box_block_repository`, `BoxBlockService` |
-| R11, R12 report every programmed module; keep unsent ones | `box_reporting.modules_of`, outbox |
+| R11, R12 report every programmed module with its batch ID; keep unsent ones | `box_reporting.modules_of`, outbox; Batch Code given at commit |
 | R13 line does not wait | Background `BoxReportScheduler`; blocks topped up on the READY worker |
 | R14–R16 holds | `HoldState`, "Station hold" READY check, `ClearHoldDialog` |
 | R17 redraw, never resume | Guide 4.11 recovery; box-identity check. A database copied from another PC is not detected yet. |
@@ -151,5 +166,6 @@ A Supervisor or Admin clears it with their phone and PIN. The box verifies them 
 3. **Re-worked modules** (same QR, new MAC) hold the station until a Supervisor or Admin clears it; the module is then reported and the box records it as re-programmed.
 4. **Temporary Stock MACs** come from a fixed list on the station; repeats across trays and stations are acceptable.
 5. **Restart** (2026-11-03): a tray may be restarted at any step, QR scanning included; its MACs are reused until it is reported (see Restarting a tray).
+6. **Batch Codes** (SDK 7.0, 2026-11-05): every reported module carries its Batch Code (see Batch Codes).
 
 Still to verify on the real box: a `promote_block` from a block of one master range to a block of another (used after a mode change), and R3, the power-cut test.

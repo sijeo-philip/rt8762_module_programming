@@ -1,4 +1,4 @@
-"""Station <-> box (SDK 6.1) against the in-memory demo box.
+"""Station <-> box (SDK 7.0) against the in-memory demo box.
 
 Follows docs/box_integration.md and the SDK's STATION-APP-REQUIREMENTS
 (R4-R17): blocks and promotes, temporary Stock MACs, one report per
@@ -26,6 +26,7 @@ from stationapp.domain.session import StationConfiguration
 from stationapp.domain.users import AuthenticatedUser, AuthenticationFailed, AuthenticationMethod, AuthorizationError, PinChangeRequired, UserRole
 from stationapp.drivers.box.demo import DEMO_PRICOL_RANGE, DEMO_STOCK_RANGE, DemoBox
 from stationapp.services.access import StationAccessService
+from stationapp.services.batch_codes import BatchCodeService
 from stationapp.services.box_auth import BoxAuthenticationService
 from stationapp.services.box_blocks import BoxBlockService
 from stationapp.services.box_reporting import BoxReportService
@@ -71,11 +72,14 @@ def station(tmp_path: Path):
         configuration_provider=lambda: StationConfiguration(JIG, 8, tuple((n, f"USB:{n}") for n in range(1, 9)), "RIG", "a" * 64),
     )
     reports.set_session_listener(access.box_session_ended)
-    yield {"factory": factory, "box": box, "gateway": gateway, "blocks": blocks, "reports": reports, "access": access}
+    batch_codes = BatchCodeService(session_factory=factory, station_id=STATION, access=access)
+    yield {"factory": factory, "box": box, "gateway": gateway, "blocks": blocks, "reports": reports, "access": access, "batch_codes": batch_codes}
     engine.dispose()
 
 
 def controller_for(station, *, failures: frozenset = frozenset(), qr_reuse=None) -> ProductionController:
+    # Trays get Batch Codes once a session is open (login_operator).
+    batch_codes = station["batch_codes"] if station["access"].session is not None else None
     return ProductionController(
         station_id=STATION,
         jig_id=JIG,
@@ -85,6 +89,7 @@ def controller_for(station, *, failures: frozenset = frozenset(), qr_reuse=None)
         rf_tester=SimulatedGoldenRig(delay_seconds=0, failures=failures),
         functional_tester=SimulatedFunctionalTester(delay_seconds=0, failures=failures),
         qr_reuse=qr_reuse,
+        batch_codes=batch_codes,
     )
 
 
@@ -113,13 +118,15 @@ def run_tray(controller: ProductionController, mode: ProgrammingMode, slots: tup
     return batch
 
 
-def login_operator(station) -> None:
+def login_operator(station, *, threshold: int = 1000, series: str = "TST01") -> None:
     access = station["access"]
     access.login(*SUPERVISOR)
     if access.session is None:
-        access.start_session(access.current_configuration())
+        access.start_session(access.current_configuration(), batch_code_threshold=threshold)
     access.logout_current()
     access.login(*OPERATOR)
+    if not station["batch_codes"].current().ready:
+        station["batch_codes"].start_series(series)
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +365,7 @@ def test_stock_only_reports_stock_mac_and_failed_modules(station):
     station["reports"].report("TEST")
 
     box = station["box"]
-    assert box.modules[batch.slots[1].stock_mac.value] == {"qr": "SQR01", "passed": True, "state": "confirmed"}
+    assert box.modules[batch.slots[1].stock_mac.value] == {"qr": "SQR01", "passed": True, "state": "confirmed", "batch_id": "TST01"}
     # A module that had a box address programmed but failed is reported too (R11).
     assert box.modules[batch.slots[2].stock_mac.value]["passed"] is False
 
@@ -732,3 +739,121 @@ def test_restart_refused_once_the_tray_is_committed_or_on_hold_without_a_supervi
     controller.advance()
     with pytest.raises(ProductionError, match="finished"):
         controller.restart_batch()
+
+
+# ---------------------------------------------------------------------------
+# Batch Codes (SDK 7.0 batch_id)
+# ---------------------------------------------------------------------------
+
+
+def reported_batch_ids(box: DemoBox) -> dict[str, str]:
+    return {module["qr"]: module["batch_id"] for module in box.modules.values()}
+
+
+@pytest.mark.integration
+def test_every_module_is_reported_with_its_batch_code_split_exactly(station):
+    station["blocks"].ensure(MacPurpose.STOCK_RF_TEST)
+    login_operator(station, threshold=3, series="S5A01")
+    controller = controller_for(station)
+
+    run_tray(controller, ProgrammingMode.STOCK_ONLY, (1, 2, 3, 4), "BA")
+    # Slot 2 fails the RF test: reported on the current code, not counted.
+    controller._rf_tester = SimulatedGoldenRig(delay_seconds=0, failures=frozenset({("rf", 2)}))
+    run_tray(controller, ProgrammingMode.STOCK_ONLY, (1, 2, 3, 5), "BB")
+    assert station["reports"].report("TEST").success
+
+    assert reported_batch_ids(station["box"]) == {
+        "BA01": "S5A01", "BA02": "S5A01", "BA03": "S5A01", "BA04": "S5A02",
+        "BB01": "S5A02", "BB02": "S5A02", "BB03": "S5A02", "BB05": "S5A03",
+    }
+    state = station["batch_codes"].current()
+    assert (state.code, state.passed) == ("S5A03", 1)
+
+
+@pytest.mark.integration
+def test_aborted_tray_never_counts_and_a_restarted_tray_counts_once(station):
+    station["blocks"].ensure(MacPurpose.STOCK_RF_TEST)
+    login_operator(station, threshold=2, series="R01")
+    controller = controller_for(station)
+
+    start_tray(controller, ProgrammingMode.STOCK_ONLY, (1, 2))
+    controller.abort_batch(reason="jig fault", actor_id="SUP-1")
+    controller.release_batch()
+    assert station["batch_codes"].current().passed == 0
+
+    batch = start_tray(controller, ProgrammingMode.STOCK_ONLY, (1,))
+    controller.restart_batch()
+    controller.restart_batch()
+    for _ in range(30):
+        if batch.state is BatchState.QR_SCANNING:
+            break
+        controller.advance()
+    controller.scan_qr("RT01")
+    controller.advance()
+    assert batch.state is BatchState.UPLOAD_PENDING
+    state = station["batch_codes"].current()
+    assert (state.code, state.passed) == ("R01", 1)
+
+
+@pytest.mark.integration
+def test_no_tray_without_a_batch_code_series(station):
+    station["blocks"].ensure(MacPurpose.STOCK_RF_TEST)
+    access = station["access"]
+    access.login(*SUPERVISOR)
+    access.start_session(access.current_configuration(), batch_code_threshold=50)
+    access.logout_current()
+    access.login(*OPERATOR)
+    controller = controller_for(station)
+    with pytest.raises(ProductionError, match="Batch Code starting series"):
+        controller.start_batch(occupied=(1,), ports=ports(1), mode=ProgrammingMode.STOCK_ONLY)
+
+    station["batch_codes"].start_series("Q01")
+    controller.start_batch(occupied=(1,), ports=ports(1), mode=ProgrammingMode.STOCK_ONLY)
+
+
+@pytest.mark.integration
+def test_session_without_threshold_cannot_run_trays(station):
+    access = station["access"]
+    access.login(*SUPERVISOR)
+    access.start_session(access.current_configuration())
+    access.logout_current()
+    access.login(*OPERATOR)
+    with pytest.raises(ProductionError, match="threshold"):
+        controller_for(station).start_batch(occupied=(1,), ports=ports(1), mode=ProgrammingMode.STOCK_ONLY)
+
+
+@pytest.mark.integration
+def test_only_a_supervisor_starts_a_new_series_with_a_reason(station):
+    login_operator(station, threshold=10, series="S01")
+    codes, access = station["batch_codes"], station["access"]
+    with pytest.raises(AuthorizationError, match="Only a Supervisor"):
+        codes.start_series("S50")
+    supervisor = access.authorize_supervisor(*SUPERVISOR)
+    with pytest.raises(ValueError, match="reason"):
+        codes.start_series("S50", supervisor=supervisor)
+    state = codes.start_series("S50", supervisor=supervisor, reason="label roll changed")
+    assert (state.code, state.passed, state.series_start) == ("S50", 0, "S50")
+
+
+@pytest.mark.integration
+def test_series_ends_with_the_session(station):
+    login_operator(station, threshold=10, series="S01")
+    access = station["access"]
+    access.login(*SUPERVISOR)
+    access.close_session("shift end")
+    access.start_session(access.current_configuration(), batch_code_threshold=20)
+    state = station["batch_codes"].current()
+    assert state.threshold == 20 and not state.ready
+
+
+@pytest.mark.integration
+def test_tray_committed_without_batch_codes_is_not_reported(station):
+    """A tray queued by a pre-7.0 station: the 7.0 SDK refuses it locally."""
+    station["blocks"].ensure(MacPurpose.STOCK_RF_TEST)
+    login_operator(station)
+    controller = controller_for(station)
+    controller._batch_codes = None                   # as committed before SDK 7.0
+    run_tray(controller, ProgrammingMode.STOCK_ONLY, (1,), "OLD")
+    run = station["reports"].report("TEST")
+    assert not run.success and "before Batch Codes" in run.detail
+    assert station["box"].modules == {}

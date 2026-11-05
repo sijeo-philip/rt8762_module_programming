@@ -1,6 +1,6 @@
 """The station's connection to the UnisemBLE box (docs/box_integration.md).
 
-The only module that holds the SDK client (unisemble_client 6.1). One
+The only module that holds the SDK client (unisemble_client 7.0). One
 client serves the whole application for its lifetime: it carries the
 station key and, while someone is logged in, that person's box session.
 
@@ -32,7 +32,7 @@ WAIT_SECONDS = 30.0
 
 
 def box_url_problem(box_url: str) -> str | None:
-    """Why the SDK (6.1.1) would refuse box_url at once, or None."""
+    """Why the SDK would refuse box_url at once, or None."""
     try:
         parts = urllib.parse.urlsplit(box_url)
         parts.port  # ValueError for a port that is not a number

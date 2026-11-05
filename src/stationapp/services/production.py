@@ -37,6 +37,7 @@ from typing import Any, Protocol
 
 from stationapp.concurrency.cancellation import CancellationToken
 from stationapp.domain.batch import Batch, BatchState, ProgrammingMode, SlotDisposition
+from stationapp.domain.batch_code import BatchCodeError, BatchCodeState
 from stationapp.domain.errors import DomainError, DuplicateModuleQr, VerificationMismatch
 from stationapp.domain.events import EventType, ManufacturingEvent
 from stationapp.domain.golden_rig import GoldenRigTarget
@@ -126,6 +127,16 @@ class QrReuseGate(Protocol):
     def reuse_bound(self, qr: str) -> None: ...
 
 
+class BatchCodes(Protocol):
+    """BatchCodeService: the session's running Batch Code."""
+
+    def problem(self, session_id: str | None = None) -> str | None: ...
+
+    def allocate(self, session_id: str | None, passed: tuple[bool, ...]) -> tuple[tuple[str, ...], BatchCodeState]: ...
+
+    def notify(self) -> None: ...
+
+
 class ProductionStore(Protocol):
     """SqlProductionStore, or an in-memory double in tests."""
 
@@ -135,7 +146,7 @@ class ProductionStore(Protocol):
 
     def save(self, batch: Batch, events: Iterable[ManufacturingEvent] = ()) -> None: ...
 
-    def save_and_enqueue(self, batch: Batch, events: Iterable[ManufacturingEvent], upload_payload: dict[str, Any]) -> str: ...
+    def save_and_enqueue(self, batch: Batch, events: Iterable[ManufacturingEvent], upload_payload: dict[str, Any], *, batch_code_state: BatchCodeState | None = None) -> str: ...
 
     def module_qr_in_use(self, module_qr: str) -> bool: ...
 
@@ -205,7 +216,7 @@ _FINISHED_STATES = frozenset({
 class ProductionController:
     """Owns the active batch and executes the production workflow."""
 
-    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, temporary_stock_mac_base: MacAddress | None = None, enabled_slots: Callable[[], tuple[int, ...]] | None = None, qr_format: ScanFormat | None = None, qr_reuse: QrReuseGate | None = None) -> None:
+    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, temporary_stock_mac_base: MacAddress | None = None, enabled_slots: Callable[[], tuple[int, ...]] | None = None, qr_format: ScanFormat | None = None, qr_reuse: QrReuseGate | None = None, batch_codes: BatchCodes | None = None) -> None:
         """programmer_factory builds a programmer for the firmware images
         chosen at batch setup; programmer is a fixed alternative.
 
@@ -216,7 +227,11 @@ class ProductionController:
 
         qr_reuse: with it, a QR already bound on this station puts the
         station on hold instead of being refused, and is bound again (a
-        re-worked module) once a supervisor has cleared the hold."""
+        re-worked module) once a supervisor has cleared the hold.
+
+        batch_codes: with it, a tray starts only once the session's Batch
+        Code series is entered, and each committed tray's modules are
+        recorded with their Batch Code (SDK 7.0 batch_id)."""
         if slot_count not in (4, 8):
             raise ValueError("slot_count must be 4 or 8")
         if (programmer is None) == (programmer_factory is None):
@@ -232,6 +247,7 @@ class ProductionController:
         self._access = access
         self._temporary_stock_mac_base = temporary_stock_mac_base
         self._qr_reuse = qr_reuse
+        self._batch_codes = batch_codes
         self._enabled_slots = enabled_slots
         self._qr_format = qr_format
         self._commit_listeners: list[Callable[[Batch], None]] = []
@@ -335,6 +351,11 @@ class ProductionController:
             if self._access is not None:
                 # The authenticated Operator, never a typed-in name, owns the batch.
                 session_id, operator_id = self._require_access()
+
+            if self._batch_codes is not None:
+                problem = self._batch_codes.problem(session_id)
+                if problem:
+                    raise ProductionError(problem)
 
             occupied = tuple(sorted(occupied))
             if self._enabled_slots is not None:
@@ -1087,18 +1108,48 @@ class ProductionController:
                 "programming, verification or QR record"
             )
 
+        # Batch Codes before the commit: if they cannot be given, the tray
+        # stays uncommitted and the operator may retry.
+        codes, code_state = self._allocate_batch_codes(batch)
+
         batch.commit()
         events = list(self._disposition_events(batch))
-        events.append(self._event(batch, EventType.BATCH_COMMITTED, dispositions={str(number): value.value for number, value in batch.dispositions.items()}))
+        committed: dict[str, Any] = {"dispositions": {str(number): value.value for number, value in batch.dispositions.items()}}
+        if code_state is not None:
+            committed["batch_codes"] = {str(number): code for number, code in codes.items()}
+            committed["batch_code_after"] = {"code": code_state.code, "passed": code_state.passed, "threshold": code_state.threshold}
+        events.append(self._event(batch, EventType.BATCH_COMMITTED, **committed))
         batch.queue_upload()
         events.append(self._event(batch, EventType.UPLOAD_QUEUED))
-        self._store.save_and_enqueue(batch, events, build_batch_record(batch))
-        logger.info("Batch committed and queued | batch_id=%s", batch.batch_id)
+        record = build_batch_record(batch, batch_codes=codes)
+        if code_state is None:
+            self._store.save_and_enqueue(batch, events, record)
+        else:
+            self._store.save_and_enqueue(batch, events, record, batch_code_state=code_state)
+        logger.info("Batch committed and queued | batch_id=%s batch_codes=%s", batch.batch_id, sorted(set(codes.values())) or "-")
+        if self._batch_codes is not None:
+            self._batch_codes.notify()
         for callback in tuple(self._commit_listeners):
             try:
                 callback(batch)
             except Exception:  # noqa: BLE001 - upload problems never fail production
                 logger.exception("Commit listener failed")
+
+    def _allocate_batch_codes(self, batch: Batch) -> tuple[dict[int, str], BatchCodeState | None]:
+        """Batch Code of every module of a tray about to be committed.
+
+        Only PASS counts toward the threshold; a tray reaches this point
+        only when its whole cycle is finished, so aborted trays and the
+        earlier attempts of a restarted tray are never counted."""
+        if self._batch_codes is None:
+            return {}, None
+        slots = tuple(number for number, value in batch.dispositions.items() if value is not SlotDisposition.EMPTY)
+        passed = tuple(batch.disposition_for(number) is SlotDisposition.PASS for number in slots)
+        try:
+            codes, state = self._batch_codes.allocate(batch.session_id, passed)
+        except BatchCodeError as exc:
+            raise ProductionError(f"Batch Code: {exc}") from exc
+        return dict(zip(slots, codes)), state
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1194,8 +1245,12 @@ def _firmware_identity(path: Path | None) -> dict[str, str] | None:
     return {"path": str(path), "sha256": digest.hexdigest()}
 
 
-def build_batch_record(batch: Batch) -> dict[str, Any]:
-    """Self-contained upload record preserving original identity and time."""
+def build_batch_record(batch: Batch, *, batch_codes: Mapping[int, str] | None = None) -> dict[str, Any]:
+    """Self-contained upload record preserving original identity and time.
+
+    batch_codes: each module's Batch Code (slot -> code), reported to
+    the box as the module's batch_id."""
+    batch_codes = batch_codes or {}
     slots = []
     for slot in batch.ordered_slots:
         rf = slot.golden_rf_result
@@ -1213,10 +1268,11 @@ def build_batch_record(batch: Batch) -> dict[str, Any]:
             "pricol_app_passed": slot.functional.pricol_app_passed,
             "pricol_dfu_passed": slot.functional.pricol_dfu_passed,
             "hold_reason": slot.hold_reason,
+            "batch_code": batch_codes.get(slot.number),
         })
 
     return {
-        "schema_version": 1,
+        "schema_version": 2 if batch_codes else 1,
         "batch_id": batch.batch_id,
         "batch_label": batch.batch_label,
         "station_id": batch.station_id,

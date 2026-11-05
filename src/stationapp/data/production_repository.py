@@ -19,6 +19,7 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from stationapp.data.batch_code_repository import save_batch_code
 from stationapp.data.box_block_repository import closed_block_allocations
 from stationapp.data.errors import InvalidPersistedBatch
 from stationapp.data.models import (
@@ -31,6 +32,7 @@ from stationapp.data.models import (
 from stationapp.data.repositories import BatchRepository
 from stationapp.data.unit_of_work import UnitOfWork
 from stationapp.domain.batch import Batch, BatchState
+from stationapp.domain.batch_code import BatchCodeState
 from stationapp.domain.events import ManufacturingEvent
 from stationapp.domain.mac import AllocatedMac, MacPurpose, MacStatus, is_temporary
 
@@ -206,9 +208,15 @@ class SqlProductionStore:
                 uow.events.append(event)
             uow.commit()
 
-    def save_and_enqueue(self, batch: Batch, events: Iterable[ManufacturingEvent], upload_payload: dict[str, Any]) -> str:
-        """Commit final batch state and queue its upload atomically."""
+    def save_and_enqueue(self, batch: Batch, events: Iterable[ManufacturingEvent], upload_payload: dict[str, Any], *, batch_code_state: BatchCodeState | None = None) -> str:
+        """Commit final batch state and queue its upload atomically.
+
+        batch_code_state: the running Batch Code after this tray, saved in
+        the same transaction so the passed count always matches the
+        trays queued for the box."""
         with UnitOfWork(self._session_factory) as uow:
+            if batch_code_state is not None:
+                save_batch_code(uow.session, batch_code_state, batch.operator_id or "STATION")
             repository = ProductionStateRepository(uow.session)
             repository.sync_batch(batch)
             for event in events:

@@ -247,3 +247,46 @@ def test_restart_tray_stops_the_running_step_first(panel, qtbot, monkeypatch):
     assert batch.state is BatchState.STOCK_MACS_RESERVED
     assert operations.get("production-advance") is None
     assert widget.restart_button.isEnabled()
+
+
+class _Access:
+    """Just enough of StationAccessService for the Batch Code strip."""
+
+    def __init__(self) -> None:
+        self.session = type("S", (), {"session_id": "SESSION-1"})()
+        self.operator = None
+        self.supervisor = None
+
+
+class _Codes:
+    def __init__(self, state) -> None:
+        self.state = state
+
+    def current(self):
+        return self.state
+
+    def problem(self, _session_id=None):
+        return None if self.state.ready else "Enter the Batch Code starting series before the first tray."
+
+
+@pytest.mark.unit
+def test_start_waits_for_the_batch_code_series(panel, qtbot):
+    from stationapp.domain.batch_code import BatchCodeState
+
+    widget, _controller, _ = panel
+    codes = _Codes(BatchCodeState(session_id="SESSION-1", threshold=100))
+    widget._access, widget._batch_codes = _Access(), codes
+    widget._readiness_timer.stop()
+    widget.check_station(top_up=True)
+    qtbot.waitUntil(lambda: widget._report is not None and not widget._readiness_pending, timeout=5_000)
+    widget.render()
+
+    assert widget.headline_label.text() == "ENTER BATCH CODE"
+    assert not widget.primary_button.isEnabled()
+    assert widget.batch_code_button.text() == "ENTER BATCH CODE" and widget.batch_code_button.isEnabled()
+
+    codes.state = codes.state.started("S5A01")
+    widget.render()
+    assert widget.primary_button.isEnabled()
+    assert "S5A01" in widget.batch_code_label.text() and "0 of 100" in widget.batch_code_label.text()
+    assert widget.batch_code_button.text() == "Change Batch Code (Supervisor)"

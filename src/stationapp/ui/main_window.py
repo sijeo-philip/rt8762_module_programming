@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
                 simulation=context.simulation,
                 box_reports=context.box_reports,
                 box_blocks=context.mac_cache,
+                batch_codes=context.batch_codes,
                 parent=self,
             )
             tabs.addTab(self._station_configuration, "Station configuration")
@@ -277,6 +278,7 @@ class MainWindow(QMainWindow):
             access=context.access,
             settings_service=context.production_settings,
             scan_debounce_ms=context.settings.qr_debounce_ms,
+            batch_codes=context.batch_codes,
             parent=self,
         )
         if context.recovered_macs:

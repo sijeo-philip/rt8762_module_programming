@@ -135,10 +135,11 @@ class _Page(QWidget):
 
 
 class SessionPage(_Page):
-    def __init__(self, access: StationAccessService, topology_service=None, parent: QWidget | None = None, *, box_reports: BoxReportScheduler | None = None) -> None:
+    def __init__(self, access: StationAccessService, topology_service=None, parent: QWidget | None = None, *, box_reports: BoxReportScheduler | None = None, batch_codes=None) -> None:
         super().__init__(parent)
         self._access = access
         self._sync = box_reports
+        self._batch_codes = batch_codes
         self._topology = topology_service
         self._reviewed: StationConfiguration | None = None
 
@@ -162,6 +163,22 @@ class SessionPage(_Page):
             check.toggled.connect(self._update_buttons)
             box_layout.addWidget(check)
         self.layout_.addWidget(box)
+
+        # Batch Code (box batch_id): threshold set here, series entered by
+        # the Operator on the Production screen before the first tray.
+        self.batch_code_box = QGroupBox("Batch Code")
+        code_form = QFormLayout(self.batch_code_box)
+        self.threshold_spin = QSpinBox()
+        self.threshold_spin.setRange(1, 1_000_000)
+        self.threshold_spin.setValue(100)
+        self.threshold_spin.setSuffix(" passed modules")
+        self.threshold_spin.setToolTip("After this many passed modules the Batch Code goes up by one (e.g. S5A01 -> S5A02).")
+        code_form.addRow("Batch Code threshold", self.threshold_spin)
+        self.batch_code_label = QLabel()
+        self.batch_code_label.setWordWrap(True)
+        code_form.addRow("Running Batch Code", self.batch_code_label)
+        self.layout_.addWidget(self.batch_code_box)
+        self.batch_code_box.setVisible(batch_codes is not None)
 
         buttons = QHBoxLayout()
         self.review_button = QPushButton("Review configuration")
@@ -215,9 +232,30 @@ class SessionPage(_Page):
             problems = access.configuration_problems()
             self.problem_label.setText("\n".join(problems))
 
+        self._render_batch_code()
         self.confirm_jig.setChecked(False)
         self.confirm_rig.setChecked(False)
         self._update_buttons()
+
+    def _render_batch_code(self) -> None:
+        if self._batch_codes is None:
+            return
+        session = self._access.session
+        self.threshold_spin.setEnabled(session is None)
+        if session is None:
+            self.batch_code_label.setText("Set the threshold, then start the session. The Operator enters the starting series before the first tray.")
+            return
+        state = self._batch_codes.current()
+        if state is None:
+            self.batch_code_label.setText("This session has no Batch Code threshold. Close it and start a new session with one.")
+            self.batch_code_label.setStyleSheet(f"color: {RED}; font-weight: 600;")
+            return
+        self.threshold_spin.setValue(state.threshold)
+        self.batch_code_label.setStyleSheet("")
+        if not state.ready:
+            self.batch_code_label.setText("Waiting for the Operator to enter the starting series.")
+        else:
+            self.batch_code_label.setText(f"{state.code}: {state.passed} of {state.threshold} passed modules (series started at {state.series_start}).")
 
     def _detected_slots(self) -> set[str] | None:
         if self._topology is None:
@@ -242,7 +280,15 @@ class SessionPage(_Page):
         reviewed = self._reviewed
         if reviewed is None:
             return
-        if self.guarded(lambda: self._access.start_session(reviewed), "Production session started. Operators may now log in."):
+        if self._batch_codes is not None:
+            threshold = self.threshold_spin.value()
+
+            def start():
+                return self._access.start_session(reviewed, batch_code_threshold=threshold)
+        else:
+            def start():
+                return self._access.start_session(reviewed)
+        if self.guarded(start, "Production session started. Operators may now log in."):
             self.refresh()
 
     def _reconfirm(self) -> None:
@@ -945,7 +991,7 @@ class BoxPage(_Page):
 class StationConfigurationWidget(QWidget):
     _changed = pyqtSignal()
 
-    def __init__(self, *, access: StationAccessService, users: UserAdministrationService | None, jig_configuration: JigConfigurationService, golden_rig: GoldenRigConfigurationService, operations: OperationManager, jig_positions: int, topology_service=None, simulation: bool = False, box_reports: BoxReportScheduler | None = None, box_blocks=None, parent: QWidget | None = None) -> None:
+    def __init__(self, *, access: StationAccessService, users: UserAdministrationService | None, jig_configuration: JigConfigurationService, golden_rig: GoldenRigConfigurationService, operations: OperationManager, jig_positions: int, topology_service=None, simulation: bool = False, box_reports: BoxReportScheduler | None = None, box_blocks=None, batch_codes=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._access = access
         layout = QVBoxLayout(self)
@@ -955,7 +1001,7 @@ class StationConfigurationWidget(QWidget):
         layout.addWidget(self.locked_label)
 
         self.tabs = QTabWidget()
-        self.session_page = SessionPage(access, None if simulation else topology_service, box_reports=box_reports)
+        self.session_page = SessionPage(access, None if simulation else topology_service, box_reports=box_reports, batch_codes=batch_codes)
         self.slot_page = SlotBindingPage(jig_configuration, jig_positions, simulation=simulation, operations=operations)
         self.rig_page = GoldenRigPage(golden_rig, operations, simulation=simulation)
         if users is not None:

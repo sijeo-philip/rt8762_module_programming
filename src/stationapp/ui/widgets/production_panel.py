@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
 
 from stationapp.concurrency.manager import OperationManager
 from stationapp.domain.batch import BatchState, ProgrammingMode
+from stationapp.domain.users import AccessError
 from stationapp.services.health import Severity
 from stationapp.services.production import ProductionController, ProductionError, ProductionSnapshot
 from stationapp.services.readiness import ReadinessReport, StationReadinessService
@@ -161,10 +162,12 @@ class ProductionPanel(QWidget):
     _controller_changed = pyqtSignal()
     _access_changed = pyqtSignal()
     _settings_changed = pyqtSignal()
+    _batch_code_changed = pyqtSignal()
 
-    def __init__(self, *, controller: ProductionController, readiness: StationReadinessService, operations: OperationManager, jig_grid: JigSlotGrid, station_id: str, default_stock_firmware: Path | None = None, default_pricol_firmware: Path | None = None, simulation: bool = False, access: StationAccessService | None = None, settings_service=None, scan_debounce_ms: int = 2000, parent: QWidget | None = None) -> None:
+    def __init__(self, *, controller: ProductionController, readiness: StationReadinessService, operations: OperationManager, jig_grid: JigSlotGrid, station_id: str, default_stock_firmware: Path | None = None, default_pricol_firmware: Path | None = None, simulation: bool = False, access: StationAccessService | None = None, settings_service=None, scan_debounce_ms: int = 2000, batch_codes=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._controller = controller
+        self._batch_codes = batch_codes
         self._readiness = readiness
         self._operations = operations
         self._jig_grid = jig_grid
@@ -211,6 +214,10 @@ class ProductionPanel(QWidget):
             settings_service.add_listener(self._settings_changed.emit)
             self._settings_changed.connect(self._on_settings_changed, Qt.ConnectionType.QueuedConnection)
 
+        if batch_codes is not None:
+            batch_codes.add_listener(self._batch_code_changed.emit)
+            self._batch_code_changed.connect(self._schedule_render, Qt.ConnectionType.QueuedConnection)
+
         # Operators mark loaded/empty slots by tapping the slot cards.
         jig_grid.slot_clicked.connect(self._on_slot_clicked)
 
@@ -251,6 +258,21 @@ class ProductionPanel(QWidget):
         frame_layout.addWidget(self.headline_label)
         frame_layout.addWidget(self.instruction_label)
         layout.addWidget(self.instruction_frame)
+
+        # Batch Code reported with every module (box batch_id).
+        self.batch_code_frame = QFrame(self)
+        code_row = QHBoxLayout(self.batch_code_frame)
+        code_row.setContentsMargins(0, 0, 0, 0)
+        self.batch_code_label = QLabel("")
+        self.batch_code_label.setTextFormat(Qt.TextFormat.RichText)
+        self.batch_code_label.setStyleSheet("font-size: 15px;")
+        code_row.addWidget(self.batch_code_label, 1)
+        self.batch_code_button = QPushButton("ENTER BATCH CODE")
+        self.batch_code_button.setMinimumHeight(36)
+        self.batch_code_button.clicked.connect(self._on_batch_code)
+        code_row.addWidget(self.batch_code_button)
+        self.batch_code_frame.hide()
+        layout.addWidget(self.batch_code_frame)
 
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
@@ -311,7 +333,7 @@ class ProductionPanel(QWidget):
 
         self.batch_label_input = QLineEdit()
         self.batch_label_input.setPlaceholderText("Batch / lot identification")
-        form.addRow("Batch", self.batch_label_input)
+        form.addRow("Lot", self.batch_label_input)
 
         mode_row = QHBoxLayout()
         self.mode_group = QButtonGroup(self)
@@ -550,6 +572,82 @@ class ProductionPanel(QWidget):
             return
         self.render()
 
+    def _on_batch_code(self) -> None:
+        """Enter the starting series, or (Supervisor) start a new one."""
+        service = self._batch_codes
+        if service is None:
+            return
+        state = service.current()
+        if state is None:
+            self._action_error(service.problem() or "No Batch Code threshold for this session")
+            return
+        supervisor = None
+        reason = None
+        if state.ready:
+            supervisor = self._access.supervisor if self._access is not None else None
+            if supervisor is None and self._access is not None:
+                dialog = SupervisorAuthorizationDialog(self._access, "change the Batch Code", self)
+                if not dialog.exec() or dialog.result_user is None:
+                    return
+                supervisor = dialog.result_user
+            reason, ok = QInputDialog.getText(
+                self,
+                "Change Batch Code",
+                f"Batch Code {state.code} is running ({state.passed} of {state.threshold} passed).\nReason for starting a new series:",
+            )
+            if not ok or not reason.strip():
+                return
+        code, ok = QInputDialog.getText(
+            self,
+            "Batch Code",
+            "Batch Code starting series (it must end in a number, e.g. S5A01):",
+        )
+        if not ok or not code.strip():
+            return
+        answer = QMessageBox.question(
+            self,
+            "Batch Code",
+            f"Start with Batch Code {code.strip()}?\n\n"
+            f"Every {state.threshold} passed modules the code goes up by one. "
+            "Failed modules and aborted trays are not counted.",
+        )
+        if answer is not QMessageBox.StandardButton.Yes:
+            return
+        try:
+            service.start_series(code, supervisor=supervisor, reason=reason)
+        except (ValueError, AccessError) as exc:
+            self._action_error(str(exc))
+            return
+        self._local_error = None
+        self.render()
+
+    def _render_batch_code(self, *, tray_active: bool) -> str | None:
+        """Show the running Batch Code; returns why a tray may not start."""
+        service = self._batch_codes
+        session = self._access.session if self._access is not None else None
+        if service is None or session is None:
+            self.batch_code_frame.hide()
+            return None
+        self.batch_code_frame.show()
+        state = service.current()
+        if state is None:
+            self.batch_code_label.setText(f"<b>Batch Code:</b> <span style='color:{RED}'>no threshold for this session - call the Supervisor</span>")
+            self.batch_code_button.hide()
+            return service.problem()
+        self.batch_code_button.show()
+        self.batch_code_button.setEnabled(not tray_active)
+        if not state.ready:
+            self.batch_code_label.setText(f"<b>Batch Code:</b> <span style='color:{AMBER}'>not entered</span> &middot; {state.threshold} passed modules per code")
+            self.batch_code_button.setText("ENTER BATCH CODE")
+            return "Enter the Batch Code starting series before the first tray."
+        following = " &middot; the next pass starts a new code" if state.remaining == 0 else ""
+        self.batch_code_label.setText(
+            f"<b>Batch Code:</b> <span style='color:{GREEN}; font-weight:700'>{state.code}</span>"
+            f" &middot; {state.passed} of {state.threshold} passed{following}"
+        )
+        self.batch_code_button.setText("Change Batch Code (Supervisor)")
+        return None
+
     def _release_batch(self) -> None:
         try:
             self._controller.release_batch()
@@ -703,6 +801,7 @@ class ProductionPanel(QWidget):
 
         workflow = snapshot.workflow
         assert workflow is not None
+        self._render_batch_code(tray_active=not (workflow.completed or workflow.batch_state in _FINISHED))
         stock_only = snapshot.programming_mode is ProgrammingMode.STOCK_ONLY
         blocked = workflow.requires_supervisor or snapshot.last_error is not None
         self.step_rail.set_step(
@@ -774,9 +873,15 @@ class ProductionPanel(QWidget):
         self.qr_input.setPlaceholderText("Scanner disabled")
         self._render_load_grid()
 
-        ready = self._report is not None and self._report.ready and bool(self.selected_slots) and not self._readiness_pending
+        code_problem = self._render_batch_code(tray_active=False)
+        ready = self._report is not None and self._report.ready and bool(self.selected_slots) and not self._readiness_pending and code_problem is None
         operator = not self._supervisor_view
-        if self._report is None:
+        if code_problem is not None and self._report is not None and self._report.ready:
+            if self._batch_codes.current() is None:
+                self._set_banner("BATCH CODE MISSING", "Call the Supervisor: this session has no Batch Code threshold.", RED)
+            else:
+                self._set_banner("ENTER BATCH CODE", "Press ENTER BATCH CODE and type the starting Batch Code given by the Supervisor (e.g. S5A01).", AMBER)
+        elif self._report is None:
             if operator:
                 self._set_banner("CHECKING JIG...", "Please wait while the station checks the jig.", GREY)
             else:

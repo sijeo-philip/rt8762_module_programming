@@ -15,7 +15,7 @@ Write down the date, `STATION_ID`, the Box software version and the StationApp g
 | # | Check |
 |---|---|
 | 0.1 | `.env`: `AUTH_MODE=server`, `SIMULATION_MODE=false`, `BOX_URL`, `BOX_STATION_KEY`, `BOX_MASTER_RANGE_STOCK`, `BOX_MASTER_RANGE_PRICOL` set; `TEMP_STOCK_MAC_BASE` empty. Use a **fresh** `DATABASE_URL` file for the first run of this plan. |
-| 0.2 | `pip install -r requirements.txt` done; `python scripts/verify_env.py` reports `unisemble_client` 6.1.1. |
+| 0.2 | `pip install -r requirements.txt` done; `python scripts/verify_env.py` reports `unisemble_client` 7.0.0. The Box runs software **7.0** (a 7.0 station does not work with an older Box). Before upgrading a station that already ran trays, report every waiting tray (top bar **Box: 0 modules to report**). |
 | 0.3 | `alembic upgrade head` (or the app's start-up migration) ran without errors. |
 | 0.4 | On the Box console: the station exists, both master ranges exist, and test people exist: one **user** (Operator), one **supervisor**, one **admin**, and one user whose PIN must be changed at first login. |
 | 0.5 | Golden Rig bound and approved ([guide C4](operator_supervisor_guide.md#c4-bind-the-golden-rig--first-time-supervisor)); jig slots bound ([C3](operator_supervisor_guide.md#c3-bind-jig-slots-to-com-ports-supervisor)). |
@@ -101,6 +101,23 @@ Note each slot's MAC on screen before and after every restart.
 | 7.5 | Leave slot 2 unseated (**NOT DETECTED - skipped**), seat it, **RESTART TRAY**. | Slot 2 runs in the restarted batch with a MAC address; the other slots keep theirs. |
 | 7.6 | Close the app (or switch the PC off) after a restart during the Pricol steps; start again. | No crash. The unfinished tray is not resumed; addresses left mid-programming are quarantined, as in 6.1. |
 
-## 8. Known items to watch
+## 8. Batch Code (SDK 7.0)
+
+Use a threshold of **3** so the code changes within a few batches. On the Box console, look at each module's **batch ID** (trace screens / Modules).
+
+| # | Steps | Expected |
+|---|---|---|
+| 8.1 | Supervisor: **Session** → threshold `3` → **Start production session**. Operator logs in. | Headline **ENTER BATCH CODE**; **START** disabled. Line shows *Batch Code: not entered · 3 passed modules per code*. |
+| 8.2 | Press **ENTER BATCH CODE**, type `S5A` (no number). Then type `S5A01`. | First: *The Batch Code must end in a number…*. Second: *Batch Code: S5A01 · 0 of 3 passed*. |
+| 8.3 | Stock only, 4 modules, all pass. **COMPLETE BATCH**; wait for the report. | *S5A02 · 1 of 3 passed*. Console: slots 1–3 batch ID `S5A01`, slot 4 `S5A02`. |
+| 8.4 | 4 modules, make slot 2 fail (e.g. unplug the antenna for the RF test). Complete it. | Console: slot 1 `S5A02`, failed slot 2 `S5A02`, slot 3 `S5A02`, slot 4 `S5A03`. Station: *S5A03 · 1 of 3*. |
+| 8.5 | Start a batch, Supervisor **aborts** it after the RF test. Then **RESTART TRAY** a batch twice and complete it. | The aborted batch changes nothing; the restarted batch counts its passed modules once. |
+| 8.6 | Operator 1 logs out, Operator 2 logs in. | No **ENTER BATCH CODE**: the running code and count carry on. |
+| 8.7 | Operator presses **Change Batch Code (Supervisor)**; cancel the Supervisor dialog. Then do it with the Supervisor's phone/PIN, reason `test`, code `S6B01`. | Cancel: nothing changes. Afterwards *S6B01 · 0 of 3*. |
+| 8.8 | Close the session, start a new one with threshold `5`. | **ENTER BATCH CODE** again; the old code is gone. |
+| 8.9 | Power cut right after **COMPLETE BATCH** (cable pulled first, as 6.2). Restart, reconnect, log in. | The count shown includes that batch exactly once; the batch is reported with the codes shown before the power cut. |
+| 8.10 | Re-worked module (as 5.4) in a later Batch Code. | Console: the module keeps the batch ID of its **first** report (Box rule). |
+
+## 9. Known items to watch
 
 - The bench tool's automated tests pass, but their test process does not exit on its own (a thread left running; this predates the Box work). On the real jig, check that the bench tool closes cleanly after **RESTART WORKFLOW** during programming (guide F3), and report it if the window closes but the process stays in Task Manager.

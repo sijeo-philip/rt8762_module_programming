@@ -3,8 +3,9 @@
 A committed batch (one tray) waits in the outbox, saved in the same
 transaction as the commit, until the box has recorded it (R1, R11, R12).
 Each report carries, for every module that received a box address, its
-QR, that address and whether it passed: the Stock MAC in Stock Only
-mode, the Pricol MAC in Stock + Pricol mode. Temporary Stock MACs and
+QR, that address, whether it passed and its Batch Code (the SDK 7.0
+batch_id, given when the tray was committed): the Stock MAC in Stock
+Only mode, the Pricol MAC in Stock + Pricol mode. Temporary Stock MACs and
 modules that never received a box address are not reported.
 
 Reports run on a background thread and never stop the line (R13). While
@@ -31,7 +32,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
-from unisemble_client import InvalidMacError, Module, errors
+from unisemble_client import InvalidBatchIdError, InvalidMacError, Module, errors
 
 from stationapp.data.models import StationSettingModel
 from stationapp.data.sync_repository import QrRegistryRepository, ReportQueueRepository
@@ -143,7 +144,7 @@ def modules_of(record: dict[str, Any]) -> list[tuple[int, Module]]:
             continue
         passed = slot.get("disposition") == "PASS"
         note = None if passed else (slot.get("hold_reason") or slot.get("disposition") or "failed")[:NOTE_LIMIT]
-        modules.append((slot["slot_number"], Module(qr=qr, mac=MacAddress.parse(mac).compact, passed=passed, note=note)))
+        modules.append((slot["slot_number"], Module(qr=qr, mac=MacAddress.parse(mac).compact, passed=passed, note=note, batch_id=slot.get("batch_code"))))
     return modules
 
 
@@ -222,6 +223,11 @@ class BoxReportService:
             if self._on_session_ended is not None:
                 self._on_session_ended()
             return ReportRun(trigger, False, modules=len(pending.modules), detail="Box session ended; log in again", login_required=True)
+        except InvalidBatchIdError as exc:
+            # Only a tray committed before Batch Codes (SDK 7.0) lacks one.
+            detail = f"{exc}. A tray finished before Batch Codes were introduced cannot be reported to a 7.0 box; call the Supervisor."
+            self._failed(trigger, pending, detail)
+            return ReportRun(trigger, False, modules=len(pending.modules), detail=detail)
         except (errors.UnisembleError, InvalidMacError) as exc:
             detail = describe_box_error(exc) if isinstance(exc, errors.UnisembleError) else str(exc)
             self._failed(trigger, pending, detail)

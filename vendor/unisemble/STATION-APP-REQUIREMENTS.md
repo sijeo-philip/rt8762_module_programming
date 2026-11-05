@@ -1,4 +1,4 @@
-SDK version 6.1.1
+SDK version 7.0.0
 
 # Station Application Requirements
 
@@ -22,7 +22,7 @@ The box backs this up: it rejects an address that is already on another module, 
 - the reserve block, if one is held;
 - the position reached in the current block (how many addresses are used);
 - the promote still owed to the box, if any;
-- finished modules not yet reported (QR, MAC, passed, note).
+- finished modules not yet reported (QR, MAC, passed, note, batch ID).
 
 **R2 — One document, one atomic write.** All of R1 is written together as one document in one crash-safe write: never split across files written separately.
 
@@ -51,7 +51,7 @@ The box backs this up: it rejects an address that is already on another module, 
 
 ## 5. Reporting
 
-**R11 — Report once a tray is fully finished.** Every module that had an address programmed into it is reported, passed or failed, once the station's whole process for it is done.
+**R11 — Report once a tray is fully finished.** Every module that had an address programmed into it is reported, passed or failed, once the station's whole process for it is done, with the production batch ID it belongs to (required; the operator cannot start a tray without one).
 
 **R12 — Unsent modules are kept, not dropped.** After `ClientBusy`, `BoxUnreachable` or `SessionExpired`, the modules stay in the saved state and go out in a later report (after the operator logs in again, for `SessionExpired`). Re-sending modules the box may already have is safe.
 

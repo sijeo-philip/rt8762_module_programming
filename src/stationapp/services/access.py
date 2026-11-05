@@ -28,9 +28,11 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from stationapp.data.batch_code_repository import save_batch_code
 from stationapp.data.unit_of_work import UnitOfWork
 from stationapp.data.user_repository import SessionRepository, UserRepository
 from stationapp.domain.audit import AuditRecord
+from stationapp.domain.batch_code import BatchCodeState, validate_threshold
 from stationapp.domain.session import ProductionSession, StationConfiguration
 from stationapp.domain.users import (
     AccessError,
@@ -540,9 +542,19 @@ class StationAccessService:
     def current_configuration(self) -> StationConfiguration:
         return self._configuration_provider()
 
-    def start_session(self, confirmed: StationConfiguration) -> ProductionSession:
-        """Start production with the configuration the Supervisor reviewed."""
+    def batch_in_progress(self) -> bool:
+        """A tray has started and is not yet committed or aborted."""
+        return bool(self._batch_active())
+
+    def start_session(self, confirmed: StationConfiguration, *, batch_code_threshold: int | None = None) -> ProductionSession:
+        """Start production with the configuration the Supervisor reviewed.
+
+        batch_code_threshold: passed modules per Batch Code for this
+        session; saved with the session. The Operator then enters the
+        starting series (BatchCodeService)."""
         supervisor = self.require_supervisor()
+        if batch_code_threshold is not None:
+            batch_code_threshold = validate_threshold(batch_code_threshold)
         with self._lock:
             if self._session is not None:
                 raise AuthorizationError("A production session is already open")
@@ -567,7 +579,11 @@ class StationAccessService:
             )
             with UnitOfWork(self._session_factory) as uow:
                 SessionRepository(uow.session).add(session)
-                uow.audit.append(self._audit(supervisor.user_id, session, "SESSION_STARTED", "Supervisor started production session", None, live.to_dict()))
+                started = live.to_dict()
+                if batch_code_threshold is not None:
+                    save_batch_code(uow.session, BatchCodeState(session_id=session.session_id, threshold=batch_code_threshold), supervisor.user_id)
+                    started["batch_code_threshold"] = batch_code_threshold
+                uow.audit.append(self._audit(supervisor.user_id, session, "SESSION_STARTED", "Supervisor started production session", None, started))
                 uow.commit()
             self._session = session
 

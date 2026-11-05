@@ -23,7 +23,7 @@ winrt-Windows.Storage.Streams>=3.2,<4.0; sys_platform == "win32"
 
 # --- UnisemBLE box (LAN server) SDK, vendored -------------------------
 # docs/box_integration.md; the developer guide is in vendor/unisemble.
-./vendor/unisemble/unisemble_client-6.1.1-py3-none-any.whl
+./vendor/unisemble/unisemble_client-7.0.0-py3-none-any.whl
 
 # --- Security -------------------------------------------------------
 # Lesson 11 — proper password hashing for USER_MASTER.

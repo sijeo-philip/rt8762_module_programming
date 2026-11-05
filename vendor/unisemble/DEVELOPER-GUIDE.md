@@ -1,9 +1,9 @@
-SDK version 6.1.1
+SDK version 7.0.0
 
 # Station Application Developer Guide
 
 **Reader:** a Python developer at Unisem building the station application, who has not seen this system before.
-**SDK:** `unisemble_client` 6.1.1, for the 6.0 box. A 5.x station does not work with a 6.0 box.
+**SDK:** `unisemble_client` 7.0.0, for the 7.0 box. A station on an older SDK does not work with a 7.0 box, and a 7.0 station does not work with an older box: upgrade the box and every station together.
 **Status:** describes the SDK and box as built.
 
 Contents:
@@ -16,6 +16,7 @@ Contents:
 6. Errors
 7. Appendix: HTTP wire format (for non-Python clients)
 8. Appendix: Changes from 5.x
+9. Appendix: What changed in 7.0
 
 The rules a production station application keeps (for design reviews and acceptance testing) are in [STATION-APP-REQUIREMENTS.md](STATION-APP-REQUIREMENTS.md).
 
@@ -69,7 +70,7 @@ The station talks to the box at only a few moments:
 | The master-range name for each product | Box console → **Pools**. |
 
 ```bash
-pip install unisemble_client-6.1.1-py3-none-any.whl
+pip install unisemble_client-7.0.0-py3-none-any.whl
 python unisem-station-src/examples/jig_cycle.py --demo     # runs against an in-memory demo box
 ```
 
@@ -91,6 +92,7 @@ classDiagram
         +str mac
         +bool passed
         +str note
+        +str batch_id
     }
     class UnisembleClient {
         +UnisembleClient(box_url, station_key)
@@ -263,12 +265,16 @@ When the station's own process for a tray is completely finished, whatever steps
 
 ```python
 result = client.report([
-    Module(qr="U2610300001", mac="70B3D5A00001", passed=True),
-    Module(qr="U2610300002", mac="70B3D5A00002", passed=False, note="AT test: no RF"),
+    Module(qr="U2610300001", mac="70B3D5A00001", passed=True, batch_id="S5A01"),
+    Module(qr="U2610300002", mac="70B3D5A00002", passed=False, note="AT test: no RF", batch_id="S5A01"),
 ])
 ```
 
 Every module that had an address programmed into it goes in, passed or failed. `note` is free text for a person reading the record later. A report may hold modules from several trays (see 4.9).
+
+Every module carries its **batch ID**: the production batch it belongs to, e.g. `"S5A01"` (station S5A, batch 01). It is required. It is free text, 1 to 64 printable ASCII characters (letters, digits, spaces, punctuation); surrounding spaces are removed. A module with no batch ID, or one that breaks that rule, raises `InvalidBatchIdError` before anything is sent, naming the module's QR; nothing is reported and the client is ready for the next call. Pass it by name (`batch_id="S5A01"`). The batch ID shows on every trace screen and report, beside the module's week (WWYY, the week of the year it was first reported).
+
+A module keeps the batch ID and week of its **first** report. A re-test reported later in another batch keeps the module's first batch ID (the re-test's batch is still recorded with that report). A re-programmed module (same QR, new address) keeps the batch ID and week of the module it replaced.
 
 The client gives each `report()` call an id and re-sends it if the answer is lost. Sending the same report again returns the same answer.
 
@@ -391,7 +397,7 @@ A malformed `box_url` (not `http://` or `https://`, no host, or a port that is n
 | `change_pin(current_pin: str, new_pin: str)` | `User` after a forced change (it logs the person in), otherwise `None` | `WrongPin`, `AccountLocked`, `NotLoggedIn`, `Refused` (`bad_request`: new PIN not 6 digits) |
 | `request_block(size: int, master_range: str)` | `Block` | `Refused` (`master_range_unknown`, `master_range_used_up`, `reserve_already_held`, `bad_request`) |
 | `promote_block(old_block_id: int, new_block_id: int)` | `None` | `Refused` (`block_not_found`) |
-| `report(modules: list[Module])` | `ReportResult` | `SessionExpired`, `NotLoggedIn`, `Refused` (`bad_request`), `InvalidMacError` |
+| `report(modules: list[Module])` | `ReportResult` | `SessionExpired`, `NotLoggedIn`, `Refused` (`bad_request`), `InvalidMacError`, `InvalidBatchIdError` |
 | `clear_hold(phone: str, pin: str)` | `bool` | `WrongPin`, `AccountLocked` |
 | `logout()` | `None` | — |
 
@@ -402,10 +408,10 @@ Every method can also raise `ClientBusy`, `BoxUnreachable` and `Refused` (`stati
 ### 5.2 `Module`
 
 ```python
-Module(qr: str, mac: str, passed: bool, note: str | None = None)
+Module(qr: str, mac: str, passed: bool, note: str | None = None, batch_id: str | None = None)
 ```
 
-One finished module, as passed to `report()`. Frozen.
+One finished module, as passed to `report()`. Frozen. `batch_id` is required; it comes last, with a `None` default, only so that `Module(qr, mac, passed, note)` keeps putting the note in `note`. Always pass it by name.
 
 | Attribute | Meaning |
 |---|---|
@@ -413,6 +419,7 @@ One finished module, as passed to `report()`. Frozen.
 | `mac` | The address programmed into it: 12 hex digits. Lower case and a leading `0x` are accepted; colons are not. |
 | `passed` | Whether the module passed the station's own process. |
 | `note` | Optional free text, up to 500 characters. |
+| `batch_id` | **Required.** The production batch, e.g. `"S5A01"`. 1 to 64 printable ASCII characters; surrounding spaces are removed. Missing or malformed: `report()` raises `InvalidBatchIdError`. |
 
 ### 5.3 `Block`
 
@@ -461,7 +468,7 @@ The person logged in. Returned by `login()`, and by `change_pin()` when it logs 
 
 ## 6. Errors
 
-All SDK errors derive from `UnisembleError`, except `InvalidMacError` (a `ValueError`, for a MAC that is not 12 hex digits) and the plain `ValueError` the constructor raises for a malformed `box_url`.
+All SDK errors derive from `UnisembleError`, except `InvalidMacError` (a `ValueError`, for a MAC that is not 12 hex digits), `InvalidBatchIdError` (a `ValueError`, for a module whose `batch_id` is missing or not 1 to 64 printable ASCII characters; the message names the module's QR, e.g. `Module U2610300002: batch_id is required`) and the plain `ValueError` the constructor raises for a malformed `box_url`. Both are raised before anything is sent.
 
 | Error | Meaning | What the application usually does |
 |---|---|---|
@@ -496,9 +503,11 @@ For clients not written in Python. All routes are under `/api/v1`; every request
 | `POST /operator/change-pin` | `change_pin` | `phone`, `current_pin`, `new_pin` | 200 `{ ok }` |
 | `POST /blocks/request` | `request_block` | `request_id` (UUID), `requested_size`, `master_range` | 201 `{ block_id, range_start, range_end, size, … }` |
 | `POST /blocks/promote` | `promote_block` | `nonce` (UUID), `old_block_id`, `new_block_id` | 200 `{ outcome: "SATISFIED", … }` |
-| `POST /reports` | `report` | `report_id` (UUID), `finished_at`, `modules` (1–500 × `{ qr, mac, passed, note? }`) + `X-Operator-Session` | 200 `{ report_id, results: [ { qr, mac, outcome, reason? } ], on_hold, hold_reason }` |
+| `POST /reports` | `report` | `report_id` (UUID), `finished_at`, `modules` (1–500 × `{ qr, mac, passed, note?, batch_id }`) + `X-Operator-Session` | 200 `{ report_id, results: [ { qr, mac, outcome, reason? } ], on_hold, hold_reason }` |
 | `POST /station/hold/clear` | `clear_hold` | `phone`, `pin` | 200 `{ cleared, cleared_by?, cleared_at? }` |
 | `POST /operator/logout` | `logout` | `{}` + `X-Operator-Session` | 200 `{ clock_out_at, session_duration_s }` |
+
+`batch_id` is required on every module: 1 to 64 printable ASCII characters, no leading or trailing space (the box does not trim it). A report with any module lacking a valid one is refused whole, nothing recorded: 400 `invalid-request`, `detail` e.g. `modules.3.batch_id: batch_id is required`.
 
 A non-Python client makes a fresh UUID per logical request and sends the same id and body when it retries a time-out, a connection error, a 5xx or a 409 whose `type` starts with `pairing-` (box not ready). It does not retry any other 4xx; `login`, `change-pin`, `hold/clear` and `logout` are never retried.
 
@@ -531,3 +540,14 @@ How the SDK maps an answer (`type` slug, the part after the last `/`):
 - `operator_login`, `operator_change_pin`, `operator_logout` are now `login`, `change_pin(current_pin, new_pin)`, `logout`. The change ticket is gone. `operator_heartbeat` is gone: each report counts as activity.
 - Removed: `station_status`, `raise_hold`, `trace`, the cursor report, `degraded` warnings, and the device helpers. The box still puts the station on hold when a report skips addresses (4.4).
 - Errors are reduced to eight classes; `ClientBusy` and `SessionExpired` are new.
+
+---
+
+## 9. Appendix: What changed in 7.0
+
+- **Every module carries its batch ID.** `Module` gains `batch_id` (required, by name): `Module(qr, mac, passed, note=None, batch_id="S5A01")`. On the wire, each module in `POST /reports` carries `batch_id`.
+- New error `InvalidBatchIdError` (a `ValueError`, beside `InvalidMacError`): a module with no batch ID or a malformed one. Raised by `report()` before anything is sent.
+- The box records each module's batch ID and week (WWYY) from its first report, and shows both on its trace screens and reports.
+- **Upgrade the box and every station together.** A 7.0 box refuses a report without batch IDs (an older station gets `Refused("bad_request", "400 invalid-request: modules.0.batch_id: batch_id is required")`); an older box refuses a report that carries them. Stop the line, let the stations finish reporting, upgrade the box, install the 7.0 station app on every station, start the line.
+- Nothing else changed: the other calls, results and errors are as in 6.1.
+

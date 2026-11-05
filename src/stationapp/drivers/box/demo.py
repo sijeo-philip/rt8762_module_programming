@@ -1,9 +1,10 @@
 """In-memory demo box behind the SDK's FakeTransport - TESTING ONLY.
 
-Adapted from unisem-station-src/reference/demo_server.py (SDK 6.1.1).
+Adapted from unisem-station-src/reference/demo_server.py (SDK 7.0.0).
 It answers the station calls closely enough to run the station without
 a box: login and PIN change, blocks and promote, reports (duplicates,
-re-programming, holds) and a supervisor clearing a hold. Like the box,
+re-programming, holds, the batch ID every module must carry) and a
+supervisor clearing a hold. Like the box,
 it keeps one current and one reserve block per station, whatever the
 master range; unlike the reference, it serves two master ranges.
 
@@ -14,7 +15,7 @@ from __future__ import annotations
 
 import uuid
 
-from unisemble_client import int_to_mac, mac_to_int
+from unisemble_client import InvalidBatchIdError, int_to_mac, mac_to_int, normalize_batch_id
 from unisemble_client.errors import TransportError
 from unisemble_client.transport import FakeTransport
 
@@ -141,6 +142,16 @@ class DemoBox:
             return (200, stored[1]) if stored[0] == key else _problem(409, "idempotency-conflict", "report_id reused")
         if self.session is None or h.get("X-Operator-Session") != self.session:
             return _problem(401, "operator-session-expired", "No operator is logged in, or the session has ended.")
+        for i, m in enumerate(b["modules"]):  # like the 7.0 box: a valid batch ID, as sent
+            value = m.get("batch_id")
+            if value is None or value == "":
+                return _problem(400, "invalid-request", f"modules.{i}.batch_id: batch_id is required")
+            try:
+                ok = normalize_batch_id(m.get("qr"), value) == value  # the box does not strip
+            except InvalidBatchIdError:
+                ok = False
+            if not ok:
+                return _problem(400, "invalid-request", f"modules.{i}.batch_id: batch_id must be 1 to 64 printable ASCII characters, no surrounding spaces")
         results = [{"qr": m["qr"], "mac": m["mac"], **self._record(m)} for m in b["modules"]]
         answer = {"report_id": b["report_id"], "results": results, "on_hold": bool(self.holds),
                   "hold_reason": self.holds[0]["reason"] if self.holds else None}
@@ -163,7 +174,9 @@ class DemoBox:
         old = next((x for x in self.modules.values() if x["qr"] == qr and x["state"] != "unused"), None)
         if old is not None:
             old["state"] = "unused"
-        self.modules[mac] = {"qr": qr, "passed": m["passed"], "state": state}
+        # A module keeps the batch ID of its first report; a re-programmed one keeps the old record's.
+        batch = old.get("batch_id") if old is not None else m["batch_id"]
+        self.modules[mac] = {"qr": qr, "passed": m["passed"], "state": state, "batch_id": batch}
         return {"outcome": "reprogrammed" if old is not None else "accepted"}
 
     def _clear_hold(self, h, b, q):

@@ -320,6 +320,7 @@ When the app starts, it shows the **login screen** with the station name.
 
 **First login, or a new PIN from head office** 🟢🔵
 The screen asks for a **New PIN**. Type a new 6-digit PIN twice and press **SET NEW PIN AND LOG IN**.
+From then on the box accepts only the new PIN, on every station. The same happens in the small Supervisor pop-ups (Supervisor login, approving a restart, abort or Batch Code change): the pop-up shows **New PIN** and **Repeat new PIN**; type the new PIN twice and press **OK**. The PIN typed to **clear a hold** cannot be a first-time PIN: log in once on the login screen first to set a new one.
 
 **What you see afterwards**
 - **Operator:** a simple production screen with the jig slots, progress and results only.

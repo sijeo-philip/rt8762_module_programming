@@ -402,7 +402,10 @@ class BoxReportService:
         except errors.UnisembleError as exc:
             raise AuthenticationFailed(f"Hold not cleared: {describe_box_error(exc)}.") from exc
         if not cleared:
-            raise AuthorizationError("This person cannot clear holds: not a supervisor, or they must set a new PIN first.")
+            raise AuthorizationError(
+                "This person cannot clear holds: not a Supervisor, or their PIN is a first-time PIN. "
+                "Log in once with that PIN on the station login screen to set a new PIN, then clear the hold."
+            )
 
         previous = self.hold()
         with UnitOfWork(self._session_factory) as uow:

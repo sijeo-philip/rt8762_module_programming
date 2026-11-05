@@ -420,8 +420,19 @@ class StationAccessService:
 
     # -- logins ----------------------------------------------------------
 
-    def login_supervisor(self, user_id: str, password: str) -> AuthenticatedUser:
-        user = self._auth.authenticate(user_id, password, purpose="Supervisor login")
+    def _verify(self, user_id: str, secret: str, *, purpose: str, new_pin: str | None = None) -> AuthenticatedUser:
+        """Check the phone and PIN with the box. new_pin: the person was
+        asked for a new PIN (PinChangeRequired); the box changes it and
+        logs them in with it, and the box checks the new PIN from then on."""
+        if new_pin is None:
+            return self._auth.authenticate(user_id, secret, purpose=purpose)
+        change_pin = getattr(self._auth, "change_pin", None)
+        if change_pin is None:
+            raise AuthenticationFailed("PIN changes are made on the box")
+        return change_pin(user_id, secret, new_pin, purpose=purpose)
+
+    def login_supervisor(self, user_id: str, password: str, *, new_pin: str | None = None) -> AuthenticatedUser:
+        user = self._verify(user_id, password, purpose="Supervisor login", new_pin=new_pin)
         if not user.is_supervisor:
             self._auth.record_logout(user, "Refused: not a Supervisor")
             raise AuthorizationError(f"{user.user_id} is not a Supervisor")
@@ -447,10 +458,10 @@ class StationAccessService:
             self._supervisor_seen = self._clock()
             return user
 
-    def authorize_supervisor(self, user_id: str, password: str) -> AuthenticatedUser:
+    def authorize_supervisor(self, user_id: str, password: str, *, new_pin: str | None = None) -> AuthenticatedUser:
         """One-off Supervisor approval (e.g. a HOLD disposition) without
         changing who is logged in."""
-        user = self._auth.authenticate(user_id, password, purpose="Supervisor authorization")
+        user = self._verify(user_id, password, purpose="Supervisor authorization", new_pin=new_pin)
         if not user.is_supervisor:
             raise AuthorizationError(f"{user.user_id} is not a Supervisor")
         self._box_session_taken_by(user)
@@ -467,11 +478,7 @@ class StationAccessService:
 
     def login_with_new_pin(self, phone: str, current_pin: str, new_pin: str) -> AuthenticatedUser:
         """Login after the box asked for a new PIN (PinChangeRequired)."""
-        change_pin = getattr(self._auth, "change_pin", None)
-        if change_pin is None:
-            raise AuthenticationFailed("PIN changes are made on the box")
-        user = change_pin(phone, current_pin, new_pin, purpose="Station login")
-        return self._accept_login(user)
+        return self._accept_login(self._verify(phone, current_pin, purpose="Station login", new_pin=new_pin))
 
     def box_session_ended(self) -> None:
         """The box ended the Operator's session: log in again to report."""
@@ -513,9 +520,9 @@ class StationAccessService:
         else:
             self.logout_operator()
 
-    def login_operator(self, user_id: str, secret: str) -> AuthenticatedUser:
+    def login_operator(self, user_id: str, secret: str, *, new_pin: str | None = None) -> AuthenticatedUser:
         self._require_open_session_for_login()
-        user = self._auth.authenticate(user_id, secret, purpose="Operator login")
+        user = self._verify(user_id, secret, purpose="Operator login", new_pin=new_pin)
         return self._set_operator(user)
 
     def logout_operator(self) -> None:

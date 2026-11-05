@@ -29,6 +29,7 @@ Write down the date, `STATION_ID`, the Box software version and the StationApp g
 | 1.3 | Log in as the Operator. | Operator screen (no configuration tabs). |
 | 1.4 | Log out; log in as Supervisor, then as Admin. | Full screen with all tabs, for both. |
 | 1.5 | Log in as the must-change-PIN user. | *New PIN* fields appear; after setting a new 6-digit PIN the user is logged in. Logging in again with the old PIN fails. |
+| 1.5a | On the Box console reset the Supervisor's PIN so it must be changed. Operator logged in, start a tray, press **Restart** (Supervisor pop-up) and type the Supervisor's phone and the reset PIN. | The pop-up shows *New PIN* / *Repeat new PIN*. After a new 6-digit PIN the restart is approved; the Operator must log in again (the box keeps one person per station). The Supervisor's old PIN is refused afterwards, the new one works. |
 | 1.6 | Type a wrong PIN repeatedly. | *Phone number or PIN not recognised*, then *Too many wrong PINs. Try again in N minutes*. |
 | 1.7 | Pull the station's network cable, try to log in. Reconnect. | Within about 20 s: *the box is not answering*. Logging in works again after reconnecting. |
 | 1.8 | Operator logged in; Supervisor presses **Supervisor** and logs in, then logs out. | Warning that the Operator must log in again; afterwards the login screen. The Box console shows the Operator's session ended. |

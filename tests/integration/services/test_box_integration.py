@@ -471,6 +471,40 @@ def test_forced_pin_change(station):
 
 
 @pytest.mark.integration
+def test_first_time_supervisor_pin_changed_from_an_authorization_dialog(station):
+    """A Supervisor's first use may be an approval (HOLD, Batch Code ...)."""
+    access, box, gateway = station["access"], station["box"], station["gateway"]
+    login_operator(station)
+    box.people[SUPERVISOR[0]]["must_change"] = True
+
+    with pytest.raises(PinChangeRequired):
+        access.authorize_supervisor(*SUPERVISOR)
+    with pytest.raises(AuthenticationFailed, match="differ"):
+        access.authorize_supervisor(*SUPERVISOR, new_pin=SUPERVISOR[1])
+    supervisor = access.authorize_supervisor(*SUPERVISOR, new_pin="135135")
+
+    assert supervisor.is_supervisor and gateway.holder.user_id == "SUP-1"
+    assert box.people[SUPERVISOR[0]] == {**box.people[SUPERVISOR[0]], "pin": "135135", "must_change": False}
+    # From now on the box checks the new PIN only.
+    with pytest.raises(AuthenticationFailed, match="not recognised"):
+        access.authorize_supervisor(*SUPERVISOR)
+    assert access.authorize_supervisor(SUPERVISOR[0], "135135").user_id == "SUP-1"
+
+
+@pytest.mark.integration
+def test_first_time_operator_pin_changed_from_the_operator_login_dialog(station):
+    access, box = station["access"], station["box"]
+    login_operator(station)
+    access.logout_current()
+    with pytest.raises(PinChangeRequired):
+        access.login_operator("9000000002", "000000")
+    with pytest.raises(AuthenticationFailed, match="not recognised"):
+        access.login_operator("9000000002", "999999", new_pin="424242")   # wrong current PIN
+    user = access.login_operator("9000000002", "000000", new_pin="424242")
+    assert access.operator == user and box.people["9000000002"]["pin"] == "424242"
+
+
+@pytest.mark.integration
 def test_supervisor_login_takes_the_box_session_from_the_operator(station):
     access, gateway = station["access"], station["gateway"]
     login_operator(station)

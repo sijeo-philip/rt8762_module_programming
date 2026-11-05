@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from stationapp.domain.users import AccessError, AuthenticatedUser
+from stationapp.domain.users import AccessError, AuthenticatedUser, PinChangeRequired
 from stationapp.services.access import StationAccessService, UserAdministrationService
 
 
@@ -50,10 +50,13 @@ class _CredentialDialog(QDialog):
         try:
             self.result_user = action()
         except (AccessError, ValueError) as exc:
-            self.error_label.setText(str(exc))
-            self.error_label.show()
+            self._show_error(str(exc))
             return
         self.accept()
+
+    def _show_error(self, text: str) -> None:
+        self.error_label.setText(text)
+        self.error_label.show()
 
     def _submit(self) -> None:  # pragma: no cover - overridden
         raise NotImplementedError
@@ -71,23 +74,84 @@ def _pin_field() -> QLineEdit:
     return field
 
 
+class _PinDialog(_CredentialDialog):
+    """Phone number + 6-digit PIN, checked by the box.
+
+    A first login with a PIN issued at head office makes the box ask for
+    a new PIN: the dialog then shows New PIN / Repeat new PIN, the box
+    changes the PIN, and from then on the box checks the new one.
+    """
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(title, parent)
+        self._pending_pin: str | None = None   # PIN typed when the box asked for a new one
+        self._form = QFormLayout()
+        self.user_input = QLineEdit()
+        self.password_input = _pin_field()
+        self.password_input.returnPressed.connect(self._submit)
+        self._form.addRow("Phone number", self.user_input)
+        self._form.addRow("PIN", self.password_input)
+
+        self.new_pin_frame = QWidget()
+        new_form = QFormLayout(self.new_pin_frame)
+        new_form.setContentsMargins(0, 0, 0, 0)
+        self.new_pin_input = _pin_field()
+        self.confirm_pin_input = _pin_field()
+        self.confirm_pin_input.returnPressed.connect(self._submit)
+        new_form.addRow("New PIN", self.new_pin_input)
+        new_form.addRow("Repeat new PIN", self.confirm_pin_input)
+        self.new_pin_frame.hide()
+
+    def _add_credentials(self) -> None:
+        self._layout.addLayout(self._form)
+        self._layout.addWidget(self.new_pin_frame)
+
+    def _verify(self, phone: str, pin: str, new_pin: str | None) -> AuthenticatedUser:  # pragma: no cover - overridden
+        raise NotImplementedError
+
+    def _submit(self) -> None:
+        phone = self.user_input.text()
+        self.error_label.hide()
+        if self._pending_pin is not None:
+            new_pin, confirm = self.new_pin_input.text(), self.confirm_pin_input.text()
+            self.new_pin_input.clear()
+            self.confirm_pin_input.clear()
+            if new_pin != confirm:
+                self._show_error("The new PINs do not match.")
+                self.new_pin_input.setFocus()
+                return
+            current = self._pending_pin
+            self._attempt(lambda: self._verify(phone, current, new_pin))
+            return
+        pin = self.password_input.text()
+        self.password_input.clear()
+        try:
+            self.result_user = self._verify(phone, pin, None)
+        except PinChangeRequired as exc:
+            self._pending_pin = pin
+            self.new_pin_frame.show()
+            self.user_input.setReadOnly(True)
+            self.password_input.setEnabled(False)
+            self._show_error(str(exc))
+            self.new_pin_input.setFocus()
+            return
+        except (AccessError, ValueError) as exc:
+            self._show_error(str(exc))
+            return
+        self.accept()
+
+
 _TAKES_BOX_SESSION = (
     "The box keeps one person logged in per station: after this Supervisor "
     "login the Operator must log in again."
 )
 
 
-class SupervisorLoginDialog(_CredentialDialog):
+class SupervisorLoginDialog(_PinDialog):
     def __init__(self, access: StationAccessService, parent: QWidget | None = None, *, title: str = "Supervisor login") -> None:
         super().__init__(title, parent)
         self._access = access
-        form = QFormLayout()
-        self.user_input = QLineEdit()
-        self.password_input = _pin_field()
-        self.password_input.returnPressed.connect(self._submit)
-        form.addRow("Phone number", self.user_input)
-        form.addRow("PIN", self.password_input)
-        self._layout.addLayout(form)
+        self._add_credentials()
         if access.operator is not None and getattr(access.authentication, "one_person_per_station", False):
             note = QLabel(_TAKES_BOX_SESSION)
             note.setWordWrap(True)
@@ -95,9 +159,8 @@ class SupervisorLoginDialog(_CredentialDialog):
             self._layout.addWidget(note)
         self._finish(QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel))
 
-    def _submit(self) -> None:
-        self._attempt(lambda: self._access.login_supervisor(self.user_input.text(), self.password_input.text()))
-        self.password_input.clear()
+    def _verify(self, phone: str, pin: str, new_pin: str | None) -> AuthenticatedUser:
+        return self._access.login_supervisor(phone, pin, new_pin=new_pin)
 
 
 class SupervisorAuthorizationDialog(SupervisorLoginDialog):
@@ -109,31 +172,23 @@ class SupervisorAuthorizationDialog(SupervisorLoginDialog):
         note.setWordWrap(True)
         self._layout.insertWidget(0, note)
 
-    def _submit(self) -> None:
-        self._attempt(lambda: self._access.authorize_supervisor(self.user_input.text(), self.password_input.text()))
-        self.password_input.clear()
+    def _verify(self, phone: str, pin: str, new_pin: str | None) -> AuthenticatedUser:
+        return self._access.authorize_supervisor(phone, pin, new_pin=new_pin)
 
 
-class OperatorLoginDialog(_CredentialDialog):
+class OperatorLoginDialog(_PinDialog):
     """Operator phone number + PIN, verified by the box."""
 
     def __init__(self, access: StationAccessService, parent: QWidget | None = None) -> None:
         super().__init__("Operator login", parent)
         self._access = access
-        form = QFormLayout()
-        self.user_input = QLineEdit()
-        self.pin_input = _pin_field()
-        self.pin_input.returnPressed.connect(self._submit)
-        form.addRow("Phone number", self.user_input)
-        form.addRow("PIN", self.pin_input)
-        self._layout.addLayout(form)
+        self.pin_input = self.password_input
+        self._add_credentials()
         self._finish(QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel))
         self.user_input.setFocus()
 
-    def _submit(self) -> None:
-        pin = self.pin_input.text()
-        self.pin_input.clear()
-        self._attempt(lambda: self._access.login_operator(self.user_input.text(), pin))
+    def _verify(self, phone: str, pin: str, new_pin: str | None) -> AuthenticatedUser:
+        return self._access.login_operator(phone, pin, new_pin=new_pin)
 
 
 class ClearHoldDialog(QDialog):

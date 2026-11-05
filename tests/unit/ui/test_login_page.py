@@ -66,3 +66,28 @@ def test_forced_pin_change_then_login(page, qtbot):
     assert access.supervisor is not None and access.supervisor.user_id == "SUP-1"
     assert box.people[SUPERVISOR_PHONE]["pin"] == "112233"
     assert not widget.new_pin_frame.isVisibleTo(widget)
+
+
+@pytest.mark.unit
+def test_supervisor_authorization_dialog_sets_a_first_time_pin(page, qtbot):
+    from stationapp.ui.dialogs.access_dialogs import SupervisorAuthorizationDialog
+
+    _, access, box = page
+    box.people[SUPERVISOR_PHONE]["must_change"] = True
+    dialog = SupervisorAuthorizationDialog(access, "change the Batch Code")
+    qtbot.addWidget(dialog)
+
+    qtbot.keyClicks(dialog.user_input, SUPERVISOR_PHONE)
+    qtbot.keyClicks(dialog.password_input, "246810")
+    dialog._submit()
+    assert dialog.result_user is None
+    assert dialog.new_pin_frame.isVisibleTo(dialog)
+    assert "new 6-digit PIN" in dialog.error_label.text()
+
+    qtbot.keyClicks(dialog.new_pin_input, "112233")
+    qtbot.keyClicks(dialog.confirm_pin_input, "112233")
+    dialog._submit()
+
+    assert dialog.result() == dialog.DialogCode.Accepted
+    assert dialog.result_user is not None and dialog.result_user.is_supervisor
+    assert box.people[SUPERVISOR_PHONE]["pin"] == "112233"

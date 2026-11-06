@@ -12,6 +12,13 @@ block of the new range is requested while the box still files the old
 pair; the box answers reserve_already_held and the old pair is promoted
 (closed) as in guide 4.11. The old blocks' remaining addresses are lost.
 
+The master range and block size are the Supervisor's production
+settings, read at every request: the box API cannot list its pools, and
+request_block() must name one (R7). When the Supervisor changes the
+range of a purpose, its open blocks from the old range are closed
+before the next request; the box then answers reserve_already_held and
+the old pair is promoted, as after a mode change.
+
 Switching to the reserve happens inside the MAC reservation of a tray
 (BatchRepository.reserve_macs); this service only tells the box about
 it afterwards (promote_block), before it asks for any new block.
@@ -21,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable, Mapping
 
 from sqlalchemy.orm import Session, sessionmaker
 from unisemble_client import errors
@@ -38,13 +46,25 @@ LABELS = {MacPurpose.STOCK_RF_TEST: "Stock", MacPurpose.PRICOL_PRODUCTION: "Pric
 class BoxBlockService:
     """Keep each purpose supplied with a current block and a reserve."""
 
-    def __init__(self, *, session_factory: sessionmaker[Session], gateway: BoxGateway | None, station_id: str, jig_id: str, master_ranges: dict[MacPurpose, str | None], block_size: int, low_water: int) -> None:
+    def __init__(
+        self,
+        *,
+        session_factory: sessionmaker[Session],
+        gateway: BoxGateway | None,
+        station_id: str,
+        jig_id: str,
+        master_ranges: Mapping[MacPurpose, str | None] | Callable[[MacPurpose], str | None],
+        block_size: int | Callable[[], int],
+        low_water: int,
+    ) -> None:
+        """master_ranges / block_size: fixed values, or callables read at
+        every request (the Supervisor's production settings)."""
         self._repository = BoxBlockRepository(session_factory)
         self._gateway = gateway
         self._station_id = station_id
         self._jig_id = jig_id
-        self._master_ranges = master_ranges
-        self._block_size = block_size
+        self._master_ranges = master_ranges.get if isinstance(master_ranges, Mapping) else master_ranges
+        self._block_size = block_size if callable(block_size) else (lambda: block_size)
         self._low_water = low_water
         # One block request at a time: readiness and the report thread
         # may both top up.
@@ -55,7 +75,21 @@ class BoxBlockService:
         return self._gateway is not None
 
     def master_range(self, purpose: MacPurpose) -> str | None:
-        return self._master_ranges.get(purpose)
+        return self._master_ranges(purpose) or None
+
+    @property
+    def block_size(self) -> int:
+        return self._block_size()
+
+    def use_settings(self, *, master_ranges: Callable[[MacPurpose], str | None] | None = None, block_size: Callable[[], int] | None = None) -> None:
+        """Read the master ranges and/or block size from these callables
+        from now on (bootstrap: the production settings are built after
+        the box connection)."""
+        with self._lock:
+            if master_ranges is not None:
+                self._master_ranges = master_ranges
+            if block_size is not None:
+                self._block_size = block_size
 
     def state(self, purpose: MacPurpose) -> BlockState:
         return self._repository.state(purpose)
@@ -73,10 +107,11 @@ class BoxBlockService:
             if self._gateway is None:
                 problem = "box not configured"
             elif not self.master_range(purpose):
-                problem = f"no master range configured for {label} MACs"
+                problem = f"no box master range set for {label} MACs - a Supervisor sets it in Production settings"
             else:
                 try:
                     self._send_owed_promotes()
+                    self._retire_other_ranges(purpose)
                     self._top_up(purpose)
                 except errors.UnisembleError as exc:
                     logger.warning("Box block top-up failed | purpose=%s: %s", purpose.value, exc)
@@ -107,6 +142,15 @@ class BoxBlockService:
             except errors.UnisembleError as exc:
                 logger.warning("Owed promote not sent: %s", exc)
 
+    def apply_settings(self) -> None:
+        """The Supervisor saved production settings: close blocks from a
+        master range no longer configured, so the next tray cannot take
+        addresses from it. Works offline; the next ensure() fetches a
+        block from the new range."""
+        with self._lock:
+            for purpose in MacPurpose:
+                self._retire_other_ranges(purpose)
+
     def top_up_in_use(self) -> None:
         """Background top-up of every purpose already served from blocks."""
         for purpose in MacPurpose:
@@ -122,6 +166,14 @@ class BoxBlockService:
             self._repository.mark_promoted(new_block_id)
             logger.info("Promote sent | %d -> %d", old_block_id, new_block_id)
 
+    def _retire_other_ranges(self, purpose: MacPurpose) -> None:
+        master_range = self.master_range(purpose)
+        if not master_range:
+            return
+        closed = self._repository.close_other_ranges(purpose, master_range)
+        if closed:
+            logger.warning("Master range for %s changed to %s: block(s) %s from the old range closed, their unused addresses never used", purpose.value, master_range, ", ".join(map(str, closed)))
+
     def _top_up(self, purpose: MacPurpose) -> None:
         state = self.state(purpose)
         if state.current is None:
@@ -133,14 +185,15 @@ class BoxBlockService:
         assert self._gateway is not None
         master_range = self.master_range(purpose)
         assert master_range
+        size = self.block_size
         try:
-            block = self._gateway.request_block(self._block_size, master_range)
+            block = self._gateway.request_block(size, master_range)
         except errors.Refused as exc:
             if exc.reason != "reserve_already_held" or not self._recover(exc, purpose):
                 raise
             # Guide 4.11: the box held blocks this station no longer knows
             # about; they are closed, and the request is made again.
-            block = self._gateway.request_block(self._block_size, master_range)
+            block = self._gateway.request_block(size, master_range)
 
         state = self._repository.add(
             block_id=block.block_id,
@@ -173,7 +226,7 @@ def describe_box_error(exc: errors.UnisembleError) -> str:
     """Words for the operator, after the SDK guide."""
     if isinstance(exc, errors.Refused):
         return {
-            "master_range_unknown": "the box has no master range of that name - check the configuration",
+            "master_range_unknown": "the box has no master range of that name - a Supervisor corrects it in Production settings (box console -> Pools)",
             "master_range_used_up": "every address in this master range has been handed out - head office must add capacity",
             "station_key_rejected": "the box did not accept the station key - call support",
             "not_allowed": "this account cannot operate a station - call support",

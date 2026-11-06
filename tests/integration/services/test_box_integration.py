@@ -881,13 +881,68 @@ def test_series_ends_with_the_session(station):
 
 
 @pytest.mark.integration
-def test_tray_committed_without_batch_codes_is_not_reported(station):
-    """A tray queued by a pre-7.0 station: the 7.0 SDK refuses it locally."""
+def test_batch_code_not_accepted_holds_the_station_until_a_supervisor_corrects_it(station):
+    """A tray queued without a Batch Code (e.g. by a pre-7.0 station): the
+    SDK refuses it locally (InvalidBatchIdError). The station holds, sends
+    nothing more, and a Supervisor corrects the code at the hold screen."""
     station["blocks"].ensure(MacPurpose.STOCK_RF_TEST)
     login_operator(station)
-    controller = controller_for(station)
-    controller._batch_codes = None                   # as committed before SDK 7.0
-    run_tray(controller, ProgrammingMode.STOCK_ONLY, (1,), "OLD")
-    run = station["reports"].report("TEST")
-    assert not run.success and "before Batch Codes" in run.detail
-    assert station["box"].modules == {}
+    reports, box = station["reports"], station["box"]
+    old = controller_for(station)
+    old._batch_codes = None                          # as committed before SDK 7.0
+    first = run_tray(old, ProgrammingMode.STOCK_ONLY, (1, 2), "OLD")
+    second = run_tray(controller_for(station), ProgrammingMode.STOCK_ONLY, (1,), "NEW")
+
+    run = reports.report("TEST")
+    assert not run.success and run.held and "corrects the Batch Code" in run.detail
+    assert box.modules == {}                         # nothing was sent
+
+    hold = reports.hold()
+    assert hold.on_hold and not hold.box_on_hold and hold.title == "Line stopped: Batch Code not accepted"
+    assert [(item.tray, item.slot, item.qr, item.batch_code) for item in hold.bad_batch_ids] == [
+        (first.batch_id, 1, "OLD01", None), (first.batch_id, 2, "OLD02", None),
+    ]
+    # No new tray starts while on hold (R14)...
+    gated = controller_for(station)
+    gated._readiness_gate = lambda _mode, _slots: ["Station hold"] if reports.hold().on_hold else []
+    with pytest.raises(ProductionError, match="Station hold"):
+        gated.start_batch(occupied=(1,), ports=ports(1), mode=ProgrammingMode.STOCK_ONLY)
+    # ...nothing more is reported, and the hold survives a restart.
+    assert reports.report("RETRY").held and box.modules == {}
+    restarted = BoxReportService(session_factory=station["factory"], station_id=STATION, gateway=station["gateway"])
+    assert restarted.hold().bad_batch_ids
+
+    keys = [item.key for item in hold.bad_batch_ids]
+    with pytest.raises(ValueError, match="Enter the corrected Batch Code"):
+        reports.clear_hold(*SUPERVISOR, {keys[0]: "OLD01"})        # one module left out
+    with pytest.raises(ValueError, match="printable ASCII"):
+        reports.clear_hold(*SUPERVISOR, {keys[0]: "OLD01", keys[1]: "Bäd"})
+    with pytest.raises(AuthorizationError, match="cannot clear holds"):
+        reports.clear_hold(*OPERATOR, {key: "OLD01" for key in keys})
+    assert reports.hold().bad_batch_ids                              # nothing changed
+
+    cleared: list[str] = []
+    reports.add_cleared_listener(lambda: cleared.append("cleared"))
+    reports.clear_hold(*SUPERVISOR, {keys[0]: " OLD01 ", keys[1]: "OLD01"})
+    assert not reports.hold().on_hold and cleared == ["cleared"]
+
+    run = reports.report("HOLD_CLEARED")
+    assert run.success and run.modules == 3
+    codes = reported_batch_ids(box)
+    assert codes["OLD01"] == "OLD01" and codes["OLD02"] == "OLD01" and codes["NEW01"] == "TST01"
+    assert second.batch_id != first.batch_id
+
+
+@pytest.mark.integration
+def test_scheduler_does_not_retry_while_held_for_a_batch_code(station):
+    from stationapp.services.box_reporting import BoxReportScheduler
+
+    station["blocks"].ensure(MacPurpose.STOCK_RF_TEST)
+    login_operator(station)
+    old = controller_for(station)
+    old._batch_codes = None
+    run_tray(old, ProgrammingMode.STOCK_ONLY, (1,), "OLD")
+    scheduler = BoxReportScheduler(station["reports"], retry_seconds=0.01)
+    scheduler.request("TRAY")
+    scheduler.wait(5)
+    assert scheduler.last_report.held and scheduler._timer is None

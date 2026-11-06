@@ -61,8 +61,8 @@ Roles come from the box (SDK 6.1 `User.role`): `admin` and `supervisor` become `
 
 | Mode | Stock stages | Final MAC (from a box block, reported) |
 |---|---|---|
-| Stock Only | box block, master range `BOX_MASTER_RANGE_STOCK` | the Stock MAC |
-| Stock + Pricol | temporary per-slot MAC: the built-in `TEMPORARY_STOCK_MACS` (`0A:FF:00:00:00:01` for slot 1 … `:08`), or `TEMP_STOCK_MAC_BASE + slot - 1` when set. Reused on every tray and by every station, not stored in the MAC cache, never reported | the Pricol MAC, master range `BOX_MASTER_RANGE_PRICOL` |
+| Stock Only | box block, the **Stock Only range** of Production settings | the Stock MAC |
+| Stock + Pricol | temporary per-slot MAC: the built-in `TEMPORARY_STOCK_MACS` (`0A:FF:00:00:00:01` for slot 1 … `:08`), or `TEMP_STOCK_MAC_BASE + slot - 1` when set. Reused on every tray and by every station, not stored in the MAC cache, never reported | the Pricol MAC, the **Stock + Pricol range** of Production settings |
 
 A repeated temporary MAC is harmless: it lives on a module only between the Stock RF test and the Pricol MAC write, and the box checks the reported (final) MACs for duplicates.
 
@@ -79,6 +79,7 @@ A repeated temporary MAC is harmless: it lives on a module only between the Stoc
   Only purposes in use are topped up.
 - **One pair per station.** The box keeps one current + reserve pair per station, whatever the master range. The station therefore holds blocks for one purpose (the mode in use) at a time. The first block saved for the other purpose closes every open block of the previous purpose, in the same transaction (`BoxBlockRepository.add`); their remaining addresses are lost, which the box accepts. If the box is down at the mode change, nothing is closed.
 - **Lost state, mode change** (guide 4.11): if the box answers `reserve_already_held` with an open block the station does not hold for the purpose it is requesting (blocks it lost track of, or the previous mode's pair), that pair is promoted (closed) and the request is repeated. A block held for the requested purpose is never closed this way. After a mode change the box may file the new block as a reserve; the station programs from it at once, and the next reserve request promotes it (as in guide 4.11).
+- **Master range and block size** are the Supervisor's Production settings (`ProductionSettings.stock_master_range`, `pricol_master_range`, `block_size`), read at every `request_block()`. The SDK and the box's station API have no call that lists pools (`GET /station/status` returns only this station's blocks), so the names are typed from the box console (Pools). Saving a different range for a purpose closes that purpose's open blocks from the old range at once (`BoxBlockService.apply_settings` → `BoxBlockRepository.close_other_ranges`), also offline; addresses already reserved by a tray stay with it, and owed promotes are kept. The next top-up then draws from the new range; the box's old pair is promoted on `reserve_already_held` as after a mode change. A new block size applies to the next block only. The demo box keeps its fixed range names; only the block size applies there.
 - **Another box**: the station remembers which box issued its blocks (`station_settings.box_identity`). On a different box (for example demo → real), every open block is closed and fresh ones are drawn.
 
 ### Restarting a tray
@@ -106,6 +107,7 @@ A committed batch is one tray. `ProductionController._finalise` writes the batch
 | `ClientBusy`, `BoxUnreachable`, `Refused` | Trays stay queued; retried every `BOX_REPORT_RETRY_SECONDS` |
 | `SessionExpired` / no one logged in | Trays stay queued; reported after the next login |
 | `rejected` (`duplicate`, `not_this_station`) | QR registry `CONFLICT`, event `QR_CONFLICT_REPORTED`, module listed on the hold screen |
+| `on_hold` | The blocking hold screen opens at once on the station (no Cancel, cannot be closed) until a Supervisor clears the hold |
 | `on_hold` | Saved in `station_settings.box_hold`; the READY check fails ("Station hold"), so no new tray starts until a Supervisor clears it with their phone and PIN |
 | `reprogrammed` | Recorded like `accepted`: the box retires the module's previous MAC |
 
@@ -127,7 +129,7 @@ SDK 7.0 requires a batch ID on every reported module (1 to 64 printable ASCII ch
 - **Exact split.** Codes are given when a tray is committed (`ProductionController._allocate_batch_codes`), slots in ascending order. Each code holds exactly `threshold` passed modules, so a tray may straddle two codes. A failed module gets the code current at its slot and is not counted. The code moves on with the first pass beyond the threshold.
 - **Only complete cycles count.** A tray is counted only at its commit; aborted trays are never committed, and the attempts before a restart are not counted separately. The new count is saved in the commit's transaction (`SqlProductionStore.save_and_enqueue(batch_code_state=)`), so it always matches the trays queued for the box.
 - **Records.** Each slot of the outbox record has `batch_code` (`schema_version` 2); event `BATCH_COMMITTED` lists the codes and the state after the tray.
-- **Upgrade.** A tray queued before this change has no Batch Code: the SDK refuses it locally (`InvalidBatchIdError`) and the report stays queued with that message. Report every queued tray before upgrading the box and the stations (guide section 9).
+- **Batch Code not accepted.** If the SDK refuses a module's Batch Code locally (`InvalidBatchIdError`, e.g. a tray queued before Batch Codes existed), nothing is sent and the station goes on hold (`station_settings.batch_id_hold`, survives a restart). No further report is attempted and no retry timer runs: the box would refuse every later report too. The hold screen lists each module (tray, slot, QR, MAC, the code given); a Supervisor types the corrected Batch Code (box rule: 1-64 printable ASCII) and their phone and PIN. Only after the box accepts the Supervisor (`clear_hold`) are the corrected codes written into the queued trays (audit `BATCH_CODE_CORRECTED` per module), the hold cleared, and the queue reported at once (trigger `HOLD_CLEARED`). Report every queued tray before upgrading the box and the stations (guide section 9).
 
 ## Configuration
 
@@ -135,12 +137,12 @@ SDK 7.0 requires a batch ID on every reported module (1 to 64 printable ASCII ch
 |---|---|
 | `BOX_URL` | "Workstation app (SDK base_url)" from the box installer, e.g. `http://box-host:3001` |
 | `BOX_STATION_KEY` | Issued once on the box console (Stations) |
-| `BOX_MASTER_RANGE_STOCK`, `BOX_MASTER_RANGE_PRICOL` | Master range names from the box console (Pools) |
-| `BOX_BLOCK_SIZE` | Addresses per block request, 100–20000 (default 5000) |
 | `MAC_CACHE_THRESHOLD` | Low water for fetching the reserve block |
 | `TEMP_STOCK_MAC_BASE` | Optional, Stock + Pricol: empty uses the built-in list; otherwise a unicast address, and every slot of an 8-up jig must fit |
 | `BOX_REPORT_RETRY_SECONDS` | Retry interval for queued reports |
 | `AUTH_MODE=test` | Uses the in-memory demo box for everything; testing only |
+
+The master ranges and the block size (100–20000, default 5000) are not `.env` settings: a Supervisor sets them in **Production settings → Box MAC blocks** (see Blocks). `BOX_MASTER_RANGE_STOCK`, `BOX_MASTER_RANGE_PRICOL` and `BOX_BLOCK_SIZE` are ignored if still present.
 
 `SIMULATION_MODE` without `BOX_URL` also uses the demo box. Use a separate `DATABASE_URL` for simulation: trays committed in simulation would otherwise be reported to the real box and rejected.
 
@@ -152,7 +154,7 @@ SDK 7.0 requires a batch ID on every reported module (1 to 64 printable ASCII ch
 | R3 power-cut test | Not yet run on hardware |
 | R4 position saved before programming | Addresses are RESERVED and committed before MPCLI starts; PROGRAMMING is persisted before the write |
 | R5, R6 own blocks only; no tray spans blocks | `current_block_addresses` |
-| R7 right master range | `BOX_MASTER_RANGE_*` per purpose |
+| R7 right master range | Production settings range per purpose; blocks of a replaced range closed (`close_other_ranges`) |
 | R8–R10 reserve, switch, owed promote | `box_block_repository`, `BoxBlockService` |
 | R11, R12 report every programmed module with its batch ID; keep unsent ones | `box_reporting.modules_of`, outbox; Batch Code given at commit |
 | R13 line does not wait | Background `BoxReportScheduler`; blocks topped up on the READY worker |

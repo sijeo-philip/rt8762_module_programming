@@ -14,7 +14,7 @@ Write down the date, `STATION_ID`, the Box software version and the StationApp g
 
 | # | Check |
 |---|---|
-| 0.1 | `.env`: `AUTH_MODE=server`, `SIMULATION_MODE=false`, `BOX_URL`, `BOX_STATION_KEY`, `BOX_MASTER_RANGE_STOCK`, `BOX_MASTER_RANGE_PRICOL` set; `TEMP_STOCK_MAC_BASE` empty. Use a **fresh** `DATABASE_URL` file for the first run of this plan. |
+| 0.1 | `.env`: `AUTH_MODE=server`, `SIMULATION_MODE=false`, `BOX_URL`, `BOX_STATION_KEY` set; `TEMP_STOCK_MAC_BASE` empty. Use a **fresh** `DATABASE_URL` file for the first run of this plan. |
 | 0.2 | `pip install -r requirements.txt` done; `python scripts/verify_env.py` reports `unisemble_client` 7.0.0. The Box runs software **7.0** (a 7.0 station does not work with an older Box). Before upgrading a station that already ran trays, report every waiting tray (top bar **Box: 0 modules to report**). |
 | 0.3 | `alembic upgrade head` (or the app's start-up migration) ran without errors. |
 | 0.4 | On the Box console: the station exists, both master ranges exist, and test people exist: one **user** (Operator), one **supervisor**, one **admin**, and one user whose PIN must be changed at first login. |
@@ -38,13 +38,15 @@ Write down the date, `STATION_ID`, the Box software version and the StationApp g
 
 | # | Steps | Expected |
 |---|---|---|
+| 2.0 | Supervisor, **Production settings → Box MAC blocks**: type both range names exactly as on the Box console (**Pools**), **Block size** `5000`, save. Then type a wrong Stock + Pricol range name, save, and press **Check station**; put the correct name back. | Saving without the range of the selected mode is refused (*Enter the box master range …*). The wrong name shows *the box has no master range of that name - a Supervisor corrects it in Production settings*; no block is drawn. |
 | 2.1 | Production settings: **Stock + Pricol**. Operator: **Check station**. | **Pricol MACs**: *5000 Pricol MACs in box blocks (block N: 5000 left; no reserve yet)*. **Temporary Stock MACs**: *built-in list, slot 1 = 0A:FF:00:00:00:01*. Box console: one block for this station in the Pricol range. |
 | 2.2 | Restart the app, **Check station** again. | Same block, no new block on the Box console. |
-| 2.3 | Set `BOX_BLOCK_SIZE=100` and `MAC_CACHE_THRESHOLD=8` on a test station; run batches until fewer than 8 addresses are left in the block, then **Check station**. | A second block (reserve) appears on the console. When the current block cannot fill a batch, the next batch takes all its MACs from the reserve (never split across blocks), and the console then shows the old block closed (promote sent). |
+| 2.3 | Set **Block size** `100` in Production settings → Box MAC blocks and `MAC_CACHE_THRESHOLD=8` in `.env` on a test station; run batches until fewer than 8 addresses are left in the block, then **Check station**. | A second block (reserve) appears on the console. When the current block cannot fill a batch, the next batch takes all its MACs from the reserve (never split across blocks), and the console then shows the old block closed (promote sent). |
 | 2.4 | **Mode change.** Switch to **Stock only**, **Check station**. | **Stock MACs** now shows a block from the Stock range; no *call support* message. Console: the Pricol pair is closed, the new Stock block is open or reserved. *This is the cross-range promote: the most important Box test.* |
 | 2.5 | Run one Stock only batch; then let the Stock block reach low water (as in 2.3) and **Check station**. | A Stock reserve is drawn without errors. Console: never more than two open blocks for this station. |
 | 2.6 | Switch back to **Stock + Pricol**, **Check station**, run one batch. | A new Pricol block; the batch's Pricol MACs come from it. |
 | 2.7 | With the network cable pulled, switch mode and press **Check station**. Reconnect and check again. | While disconnected: *the box is not answering*, the old mode's blocks are kept. After reconnecting: the new block arrives. |
+| 2.8 | **Range change** (needs a second Pricol pool on the Box, e.g. a small test pool). In Stock + Pricol, with a Pricol block held, change the **Stock + Pricol range** to the second pool, save, **Check station**, run one batch. | Right after saving, **Pricol MACs** shows no block from the old range. After **Check station**: a block from the new pool; the batch's Pricol MACs come from it. Console: the old pool's block(s) closed; never more than two open blocks for this station. |
 
 ## 3. Production flow on the real jig
 
@@ -77,7 +79,8 @@ Use modules with fresh QR labels. Note each module's QR and the MACs shown on sc
 | 5.2 | Restart the app during the hold of 5.1. | The hold is still there. |
 | 5.3 | Try to clear with the Operator's phone and PIN. | *This person cannot clear holds*. The hold stays. |
 | 5.4 | Clear with the **Admin** (or Supervisor) phone and PIN; scan the same QR again; finish the batch. | The QR is accepted. Console: the module now has the new MAC, the old MAC is marked unused / re-programmed. The Operator stayed logged in. |
-| 5.5 | Box hold: put the station on hold from the Box console (or report a module whose MAC is already on another module), then complete a batch. | After the report: red **LINE STOPPED**; the dialog title is *Line stopped by the box*, listing rejected modules if any. Clearing with a Supervisor PIN clears it on the console too. |
+| 5.5 | Box hold: put the station on hold from the Box console (or report a module whose MAC is already on another module), then complete a batch. | After the report the hold screen opens by itself (no Cancel, cannot be closed); title *Line stopped by the box*, listing rejected modules if any; **START** is disabled. Clearing with a Supervisor PIN closes it and clears it on the console too. |
+| 5.5a | Batch Code not accepted: with the app stopped, blank one slot's `batch_code` in a queued (not yet reported) outbox row, start the app and log in. | Hold screen *Line stopped: Batch Code not accepted* lists the module; nothing is reported; no new tray starts. A blank or non-ASCII correction is refused; an Operator PIN is refused. A valid code plus Supervisor PIN clears the hold and the queued trays are reported with the corrected code. |
 | 5.6 | Clear a hold with the network cable pulled. | *Hold not cleared: the box is not answering*. Reconnect and clear. |
 | 5.7 | Abort a batch after programming but before the QR scan (Supervisor abort), then run normal batches. | No hold: the Box does not look for unreported addresses. |
 

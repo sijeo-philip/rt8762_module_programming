@@ -8,13 +8,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -192,18 +195,37 @@ class OperatorLoginDialog(_PinDialog):
 
 
 class ClearHoldDialog(QDialog):
-    """The line is stopped - by the box, or because a QR was scanned
-    again: a Supervisor types their own phone number and PIN at the
-    station to clear the hold (R16). The box checks the PIN."""
+    """The hold screen. The line is stopped - by the box, because a QR was
+    scanned again, or because a Batch Code was not accepted - and a
+    Supervisor types their own phone number and PIN at the station to clear
+    the hold (R16). The box checks the PIN.
 
-    def __init__(self, reports, parent: QWidget | None = None) -> None:
+    blocking: opened by the station itself when the hold arrives; it has no
+    Cancel and cannot be closed until the hold is cleared.
+    """
+
+    def __init__(self, reports, parent: QWidget | None = None, *, blocking: bool = False) -> None:
         super().__init__(parent)
         self._reports = reports
+        self._blocking = blocking
         hold = reports.hold()
-        self.setWindowTitle("Line stopped by the box" if hold.box_on_hold else "Line stopped: QR scanned again")
+        self._bad = hold.bad_batch_ids
+        self.setWindowTitle(hold.title)
         self.setModal(True)
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(720)
+        if blocking:
+            self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+            self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
         layout = QVBoxLayout(self)
+
+        banner = QLabel(f"STATION ON HOLD - {hold.title.upper()}")
+        banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        banner.setStyleSheet("background: #b3261e; color: white; font-size: 20px; font-weight: 800; padding: 12px; border-radius: 4px;")
+        layout.addWidget(banner)
+        operator_note = QLabel("Operator: stop work and call the Supervisor. Nothing can continue until the hold is cleared.")
+        operator_note.setWordWrap(True)
+        operator_note.setStyleSheet("font-size: 14px; font-weight: 600;")
+        layout.addWidget(operator_note)
 
         reason = QLabel(f"<b>Reason:</b> {hold.reason or 'The station is on hold.'}")
         reason.setWordWrap(True)
@@ -238,7 +260,42 @@ class ClearHoldDialog(QDialog):
             table.setMaximumHeight(180)
             layout.addWidget(table)
 
-        layout.addWidget(QLabel("Supervisor: type your own phone number and PIN to clear the hold."))
+        self.batch_table: QTableWidget | None = None
+        if self._bad:
+            layout.addWidget(QLabel(
+                "<b>Batch Code not accepted by the box.</b> These finished modules cannot be reported until "
+                "their Batch Code is corrected. Type the correct Batch Code in the last column "
+                "(1 to 64 letters, digits, spaces or punctuation, e.g. S5A01)."
+            ))
+            fill_row = QHBoxLayout()
+            self.fill_input = QLineEdit()
+            self.fill_input.setPlaceholderText("Same Batch Code for every module below")
+            fill_button = QPushButton("Fill all")
+            fill_button.clicked.connect(self._fill_all)
+            fill_row.addWidget(self.fill_input, 1)
+            fill_row.addWidget(fill_button)
+            layout.addLayout(fill_row)
+
+            table = QTableWidget(len(self._bad), 6)
+            table.setHorizontalHeaderLabels(["Tray", "Slot", "Module QR", "MAC", "Batch Code given", "Corrected Batch Code"])
+            for row, item in enumerate(self._bad):
+                given = "(none)" if item.batch_code is None else repr(item.batch_code)
+                for column, text in enumerate((item.tray, str(item.slot), item.qr, item.mac, given)):
+                    cell = QTableWidgetItem(text)
+                    cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    cell.setToolTip(item.problem)
+                    table.setItem(row, column, cell)
+                table.setItem(row, 5, QTableWidgetItem(""))
+            table.resizeColumnsToContents()
+            table.horizontalHeader().setStretchLastSection(True)
+            table.setMaximumHeight(220)
+            layout.addWidget(table)
+            self.batch_table = table
+
+        layout.addWidget(QLabel(
+            "Supervisor: correct the Batch Codes, then type your own phone number and PIN to clear the hold."
+            if self._bad else "Supervisor: type your own phone number and PIN to clear the hold."
+        ))
         form = QFormLayout()
         self.phone_input = QLineEdit()
         self.pin_input = _pin_field()
@@ -252,21 +309,52 @@ class ClearHoldDialog(QDialog):
         self.error_label.setStyleSheet("color: #991b1b; font-weight: 600;")
         layout.addWidget(self.error_label)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Clear hold")
+        if blocking:
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        else:
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Correct Batch Codes and clear hold" if self._bad else "Clear hold")
         buttons.accepted.connect(self._submit)
-        buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        (self.batch_table if self._bad else self.phone_input).setFocus()
+
+    def _fill_all(self) -> None:
+        if self.batch_table is None:
+            return
+        text = self.fill_input.text()
+        for row in range(self.batch_table.rowCount()):
+            self.batch_table.setItem(row, 5, QTableWidgetItem(text))
+
+    def corrections(self) -> dict[tuple[int, int], str]:
+        if self.batch_table is None:
+            return {}
+        result = {}
+        for row, item in enumerate(self._bad):
+            cell = self.batch_table.item(row, 5)
+            result[item.key] = cell.text() if cell is not None else ""
+        return result
 
     def _submit(self) -> None:
         pin = self.pin_input.text()
         self.pin_input.clear()
         try:
-            self._reports.clear_hold(self.phone_input.text(), pin)
+            self._reports.clear_hold(self.phone_input.text(), pin, self.corrections())
         except (AccessError, ValueError) as exc:
             self.error_label.setText(str(exc))
             return
         self.accept()
+
+    def reject(self) -> None:
+        # Esc or the window's close: the station's own hold screen stays.
+        if not self._blocking:
+            super().reject()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if self._blocking and self.result() != QDialog.DialogCode.Accepted:
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 class FirstSupervisorDialog(QDialog):

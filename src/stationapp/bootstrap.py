@@ -121,7 +121,8 @@ def bootstrap() -> AppContext:
     access, users, jig_configuration, golden_rig_configuration = _build_access(
         settings, session_factory, binding_service, box
     )
-    production_settings = _build_production_settings(settings, session_factory, access)
+    production_settings = _build_production_settings(settings, session_factory, access, box)
+    _connect_box_blocks(box, production_settings)
     batch_codes = BatchCodeService(session_factory=session_factory, station_id=settings.station_id, access=access)
     production, readiness, mac_cache = _build_production(
         settings, session_factory, serial_topology_service, slot_eligibility_service, access, box, production_settings, batch_codes
@@ -281,11 +282,11 @@ def _build_box(settings: Settings, session_factory) -> BoxConnection:
     from stationapp.domain.mac import MacPurpose
     from stationapp.drivers.box.gateway import BoxGateway, box_url_problem
     from stationapp.services.box_reporting import BoxReportService
+    from stationapp.services.production_settings import DEFAULT_BLOCK_SIZE
 
-    ranges = {
-        MacPurpose.STOCK_RF_TEST: settings.box_master_range_stock,
-        MacPurpose.PRICOL_PRODUCTION: settings.box_master_range_pricol,
-    }
+    # Master ranges and block size: the Supervisor's production settings,
+    # connected in _connect_box_blocks (built after the box connection).
+    ranges: dict = {}
     demo = settings.auth_mode == "test" or (settings.simulation_mode and not settings.is_stage_two)
     if demo:
         from stationapp.drivers.box.demo import DEMO_PRICOL_RANGE, DEMO_STOCK_RANGE, DemoBox
@@ -311,7 +312,7 @@ def _build_box(settings: Settings, session_factory) -> BoxConnection:
         station_id=settings.station_id,
         jig_id=settings.jig_id,
         master_ranges=ranges,
-        block_size=settings.box_block_size,
+        block_size=DEFAULT_BLOCK_SIZE,
         low_water=max(settings.mac_cache_threshold, settings.jig_positions),
     )
     if gateway is not None:
@@ -367,7 +368,21 @@ def _hold_health(reports: BoxReportScheduler) -> HealthCheck:
     return HealthCheck("Station hold", Severity.OK, "No hold")
 
 
-def _build_production_settings(settings: Settings, session_factory, access: StationAccessService):
+def _connect_box_blocks(box: BoxConnection, production_settings) -> None:
+    """Box blocks are requested with the Supervisor's master range and
+    block size. The demo box keeps its own fixed range names."""
+    blocks = box.blocks
+    if box.demo:
+        blocks.use_settings(block_size=lambda: production_settings.current().block_size)
+    else:
+        blocks.use_settings(
+            master_ranges=lambda purpose: production_settings.current().master_range(purpose),
+            block_size=lambda: production_settings.current().block_size,
+        )
+    production_settings.add_listener(blocks.apply_settings)
+
+
+def _build_production_settings(settings: Settings, session_factory, access: StationAccessService, box: BoxConnection):
     from stationapp.domain.batch import ProgrammingMode
     from stationapp.services.production_settings import ProductionSettings, ProductionSettingsService
 
@@ -383,6 +398,7 @@ def _build_production_settings(settings: Settings, session_factory, access: Stat
         jig_positions=settings.jig_positions,
         defaults=defaults,
         access=access,
+        require_master_ranges=not box.demo,
     )
 
 

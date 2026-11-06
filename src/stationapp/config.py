@@ -124,12 +124,8 @@ class Settings(BaseSettings):
     # console (Stations page).
     box_url: str | None = None
     box_station_key: str | None = None
-    # Master range (box console -> Pools) each final MAC is drawn from:
-    # Stock Only modules keep their Stock MAC, Stock + Pricol modules
-    # their Pricol MAC.
-    box_master_range_stock: str | None = None
-    box_master_range_pricol: str | None = None
-    box_block_size: int = Field(5000, ge=100, le=20000)
+    # The master ranges (box console -> Pools) and the block size are
+    # set by a Supervisor in Production settings, not here.
     # Unreported modules are re-sent this often while the box is away.
     box_report_retry_seconds: float = Field(60.0, gt=0)
 

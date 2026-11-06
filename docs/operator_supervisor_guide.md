@@ -292,8 +292,6 @@ Do this once per station PC.
    | `MPCLI_PATH` | path to `mpcli.exe` | Programming tool. |
    | `BOX_URL` | `http://box-host:3001` | The "Workstation app (SDK base_url)" line on the Box installer's finish page. It must start with `http://` or `https://`. A wrong format is shown at once as **Box: BOX_URL … must look like http://&lt;box-host&gt;:&lt;port&gt;**. |
    | `BOX_STATION_KEY` | from the Box | Shown **once** when the station is created on the Box console (**Stations**). Copy it exactly. |
-   | `BOX_MASTER_RANGE_STOCK`, `BOX_MASTER_RANGE_PRICOL` | from the Box console (**Pools**) | Where the final MACs come from: Stock Only modules keep their Stock MAC, Stock + Pricol modules their Pricol MAC. |
-   | `BOX_BLOCK_SIZE` | `5000` | Addresses per block. Smaller blocks waste fewer addresses when the programming mode is changed often ([C5](#c5-production-settings-supervisor)). |
    | `TEMP_STOCK_MAC_BASE` | *(empty)* | Stock + Pricol only. Empty = the built-in temporary addresses `0A:FF:00:00:00:01` (slot 1) to `…:08` (slot 8). Set an address only if engineering asks for other temporary MACs; slot N then uses that address + N - 1. |
    | `AUTH_MODE` | `server` | **Must be `server` in production.** `test` uses a demo box in memory, for testing only. |
    | `GOLDEN_RIG_CA_CERTIFICATE` | `./config/certificates/golden_rig_ca.pem` | The CA file from step 2. |
@@ -440,10 +438,16 @@ Open the **Production settings** tab. These settings are kept until a Supervisor
 1. **Programming mode:** **Stock only**, or **Stock + Pricol**.
 2. **Firmware images:** choose the **Stock firmware** file (and the **Pricol firmware** file for Stock + Pricol) with **Browse...**.
 3. **Lot:** the lot or batch reference recorded with every batch.
-4. **Enabled jig slots:** tick the slots that may be used. Each one shows its COM port. Untick a slot whose fixture is damaged; Operators will then not be able to use it.
-5. Press **Save settings** (or **Discard changes**).
+4. **Box MAC blocks:** where the final MAC addresses come from. Type the names **exactly** as they appear on the Box console under **Pools**:
+   - **Stock Only range:** the pool for Stock only modules (they keep their Stock MAC). Required in Stock only mode.
+   - **Stock + Pricol range:** the pool for Stock + Pricol modules (they keep their Pricol MAC). Required in Stock + Pricol mode.
+   - **Block size:** how many addresses the station asks the Box for at a time (100–20000; `5000` is a good default). Smaller blocks waste fewer addresses when the mode or range is changed often. A new size is used for the next block; blocks the station already holds keep their size.
+5. **Enabled jig slots:** tick the slots that may be used. Each one shows its COM port. Untick a slot whose fixture is damaged; Operators will then not be able to use it.
+6. Press **Save settings** (or **Discard changes**). You are asked for a reason; the change is recorded.
 
 > **Changing the programming mode** (Stock only ↔ Stock + Pricol) changes where the final MACs come from. The Box lets a station hold blocks for one mode at a time, so the station gives up the remaining addresses of the old mode's blocks and fetches a new block at the next **Check station**. That needs the Box to be reachable. Plan mode changes, and do not switch back and forth during a shift.
+
+> **Changing a range name** works the same way: the station stops using the addresses left from the old range at once, and fetches a block from the new range at the next **Check station**. A misspelt name shows *the box has no master range of that name* on **Check station**; correct it here.
 
 ## C6. Start of every shift — open the session (Supervisor)
 
@@ -610,19 +614,20 @@ Use the table in [B3](#b3-changes-to-the-rig-that-need-re-approval) to decide wh
 
 ## C10. Line stopped: holds (Operator / Supervisor)
 
-When the line is on hold, the top bar shows a red **LINE STOPPED - Clear hold** button, **Check station** shows **Station hold** in red, and no new batch can start. The hold stays after a restart. **Only a Supervisor (or Admin) can clear it**, with their own phone number and PIN; the Box checks the PIN, so the Box must be reachable.
+When the line is on hold, the **hold screen** opens at once over the whole application. It has no Cancel and cannot be closed: nothing can be done on the station until a Supervisor clears the hold. The top bar also shows a red **LINE STOPPED - Clear hold** button, **Check station** shows **Station hold** in red, and no new batch can start. The hold stays after a restart. **Only a Supervisor (or Admin) can clear it**, with their own phone number and PIN; the Box checks the PIN, so the Box must be reachable.
 
-There are two kinds of hold:
+There are three kinds of hold:
 
 | Hold | Why | What the Operator does | What the Supervisor does |
 |---|---|---|---|
 | **Box hold** (window title *"Line stopped by the box"*) | After a report, the Box rejected a module: its MAC is already on another module, or the MAC was never given to this station. A hold can also be set from the Box console. | Take the listed modules out, keep them apart, call the Supervisor. | Read the reason and the list of rejected modules. Make sure they are set apart. What happens to them is decided on the Box console. Then clear the hold. |
 | **QR scanned again** (window title *"Line stopped: QR scanned again"*) | A QR label that is already linked to a module made at this station was scanned again in a new batch. The module would get a **new** MAC under the **same** QR. | Leave the module in its slot. Stop scanning and call the Supervisor. | Check the module. **Re-worked module:** clear the hold and tell the Operator to scan the same QR again. It is then linked to the module's new MAC, and the Box records the module as re-programmed. **Wrong label:** clear the hold, put the correct label on the module, and have that one scanned. |
+| **Batch Code not accepted** (window title *"Line stopped: Batch Code not accepted"*) | A finished module's Batch Code is missing or not 1 to 64 printable ASCII characters, so it cannot be reported to the Box. Nothing more is reported until it is corrected. | Stop and call the Supervisor. | Type the correct Batch Code for each listed module in **Corrected Batch Code** (or type it once and press **Fill all**), then your phone number and PIN, and press **Correct Batch Codes and clear hold**. The waiting trays are reported straight away. Every correction is recorded with the old and new code. |
 
 **To clear a hold** 🔵
-1. Press **LINE STOPPED - Clear hold** (top bar), or **Clear hold** in **Station configuration → Box**.
-2. Read the reason and the listed modules or QRs.
-3. Type **your own** phone number and PIN, then press **Clear hold**.
+1. The hold screen is already open (or press **LINE STOPPED - Clear hold** in the top bar, or **Clear hold** in **Station configuration → Box**).
+2. Read the reason and the listed modules or QRs. For a Batch Code hold, type the corrected codes.
+3. Type **your own** phone number and PIN, then press **Clear hold** (or **Correct Batch Codes and clear hold**).
 4. The message **Hold cleared** appears and the red button disappears. Every clearing is recorded with your phone number.
 
 Clearing a hold does **not** log the Operator out.
@@ -672,7 +677,7 @@ Clearing a hold does **not** log the Operator out.
 | *BOX_URL … must look like http://&lt;box-host&gt;:&lt;port&gt;* or *… is not a valid URL* | `BOX_URL` is mistyped (no `http://`, a letter in the port, …). | Technician corrects `BOX_URL` and restarts the app. |
 | *the box is not answering* | Network cable, Box switched off, or wrong `BOX_URL`. | Production continues while the station has MAC addresses left. Check the cable and call IT. Reports wait and go out by themselves later. |
 | *the box did not accept the station key* | `BOX_STATION_KEY` is wrong, or the station was removed on the Box console. | Technician gets a new key from the Box console (**Stations**). |
-| *the box has no master range of that name* | `BOX_MASTER_RANGE_STOCK` / `…_PRICOL` does not match the Box console (**Pools**). | Technician corrects the name. |
+| *the box has no master range of that name* | The range name in **Production settings → Box MAC blocks** does not match the Box console (**Pools**). | Supervisor corrects the name ([C5](#c5-production-settings-supervisor)). |
 | *every address in this master range has been handed out* | The pool is used up. | Head office must add addresses on the Box. |
 | *N Pricol/Stock MACs in box blocks …* is low or 0, and Check station fails | No block yet (first start, or the mode was just changed) and the Box was not reachable. | Get the Box reachable, then press **Check station** again. |
 | Top bar **Box: N modules wait for a login** | The Box ended the Operator's Box session (idle, end of shift, or a Supervisor logged in). | The Operator logs in again; the waiting modules are then reported. |
@@ -696,10 +701,10 @@ Clearing a hold does **not** log the Operator out.
 |---|---|---|---|
 | 1 | 🟠 | Create the CA (once) and the rig certificate (per rig); note fingerprint, rig ID, rig name | [A2](#a2-create-the-certificates) |
 | 2 | 🟠 | Rename the rig PC, install the certificates, start the rig service, open the firewall | [B1](#b1-first-time-setup-of-the-rig-technician) |
-| 3 | 🟠 | Install StationApp, copy `golden_rig_ca.pem`, set `.env` (Box URL, station key, master ranges); register users at head office | [C1](#c1-first-time-station-setup-technician) |
+| 3 | 🟠 | Install StationApp, copy `golden_rig_ca.pem`, set `.env` (Box URL, station key); register users at head office | [C1](#c1-first-time-station-setup-technician) |
 | 4 | 🔵 | Bind every jig slot to its adapter | [C3](#c3-bind-jig-slots-to-com-ports-supervisor) |
 | 5 | 🔵 | Bind and approve the Golden Rig (compare the fingerprint) | [C4](#c4-bind-the-golden-rig--first-time-supervisor) |
-| 6 | 🔵 | Set programming mode, firmware, lot, enabled slots | [C5](#c5-production-settings-supervisor) |
+| 6 | 🔵 | Set programming mode, firmware, lot, Box master ranges and block size, enabled slots | [C5](#c5-production-settings-supervisor) |
 | 7 | 🔵 | Open the production session | [C6](#c6-start-of-every-shift--open-the-session-supervisor) |
 | 8 | 🟢 | Run a test batch; check each slot's result appears on the right slot | [C7](#c7-normal-production--running-a-batch-operator) |
 

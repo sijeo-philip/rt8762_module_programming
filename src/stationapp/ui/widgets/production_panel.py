@@ -421,6 +421,12 @@ class ProductionPanel(QWidget):
             self._readiness_timer.start()
         self.render()
 
+    def refresh_readiness(self) -> None:
+        """Re-check READY soon, e.g. after the station's hold changed."""
+        if self._snapshot is None or not self._snapshot.has_batch:
+            self._readiness_timer.start()
+        self.render()
+
     def check_station(self, *, top_up: bool = False) -> None:
         """Evaluate READY on a worker; asks the box for MAC blocks if top_up."""
         if self._shut_down:

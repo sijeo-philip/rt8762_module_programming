@@ -161,6 +161,22 @@ class BoxBlockRepository:
                 row.promoted_at = utc_now()
                 session.commit()
 
+    def close_other_ranges(self, purpose: MacPurpose, master_range: str) -> tuple[int, ...]:
+        """Close the open blocks of `purpose` drawn from any master range
+        other than `master_range` (the Supervisor changed the range), so
+        no further address comes from the old range (R7). Addresses a
+        tray has already reserved stay with that tray. An owed promote
+        is kept: the box still expects it. Returns the closed block ids."""
+        with self._session_factory() as session:
+            now = utc_now()
+            closed = []
+            for row in self._open(session, purpose):
+                if row.master_range != master_range:
+                    row.state, row.closed_at = CLOSED, now
+                    closed.append(row.block_id)
+            session.commit()
+            return tuple(closed)
+
     def bind_to_box(self, identity: str) -> int:
         """Blocks belong to the box that issued them. When the station
         now talks to a different box (demo box -> real box, a replaced

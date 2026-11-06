@@ -1,4 +1,5 @@
-"""Supervisor page: programming mode, firmware, lot and enabled slots."""
+"""Supervisor page: programming mode, firmware, lot, box MAC blocks and
+enabled slots."""
 
 from __future__ import annotations
 
@@ -18,13 +19,20 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from stationapp.domain.batch import ProgrammingMode
 from stationapp.domain.users import AccessError
-from stationapp.services.production_settings import ProductionSettings, ProductionSettingsService
+from stationapp.services.production_settings import (
+    MAX_BLOCK_SIZE,
+    MAX_RANGE_NAME,
+    MIN_BLOCK_SIZE,
+    ProductionSettings,
+    ProductionSettingsService,
+)
 from stationapp.ui.dialogs.access_dialogs import ask_reason
 
 logger = logging.getLogger(__name__)
@@ -42,6 +50,7 @@ class ProductionSettingsPage(QWidget):
         self._service = service
         self._jig = jig_configuration
         self._simulation = simulation
+        demo_box = not service.requires_master_ranges
         layout = QVBoxLayout(self)
 
         mode_box = QGroupBox("Programming mode")
@@ -64,6 +73,38 @@ class ProductionSettingsPage(QWidget):
         self.lot_input.setPlaceholderText("Lot / batch identification recorded with every batch")
         form.addRow("Lot", self.lot_input)
         layout.addWidget(firmware_box)
+
+        blocks_box = QGroupBox("Box MAC blocks")
+        blocks_form = QFormLayout(blocks_box)
+        hint = QLabel(
+            "Final MACs come from blocks of a master range on the box. Type the names "
+            "exactly as on the box console (Pools). Changing a range closes the blocks "
+            "held from the old range; their unused addresses are never used."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {GREY};")
+        blocks_form.addRow(hint)
+        self.stock_range_input = QLineEdit()
+        self.stock_range_input.setMaxLength(MAX_RANGE_NAME)
+        self.stock_range_input.setPlaceholderText("Master range for Stock Only modules (their Stock MAC)")
+        blocks_form.addRow("Stock Only range", self.stock_range_input)
+        self.pricol_range_input = QLineEdit()
+        self.pricol_range_input.setMaxLength(MAX_RANGE_NAME)
+        self.pricol_range_input.setPlaceholderText("Master range for Stock + Pricol modules (their Pricol MAC)")
+        blocks_form.addRow("Stock + Pricol range", self.pricol_range_input)
+        self.block_size_input = QSpinBox()
+        self.block_size_input.setRange(MIN_BLOCK_SIZE, MAX_BLOCK_SIZE)
+        self.block_size_input.setSingleStep(500)
+        self.block_size_input.setSuffix(" addresses")
+        self.block_size_input.setToolTip("Addresses asked for in each block request. Applies to the next block; blocks already held keep their size.")
+        blocks_form.addRow("Block size", self.block_size_input)
+        if demo_box:
+            demo_note = QLabel("Demo box: its own range names are used; only the block size applies.")
+            demo_note.setStyleSheet(f"color: {GREY};")
+            blocks_form.addRow(demo_note)
+            self.stock_range_input.setEnabled(False)
+            self.pricol_range_input.setEnabled(False)
+        layout.addWidget(blocks_box)
 
         slots_box = QGroupBox("Enabled jig slots")
         self.slot_grid = QGridLayout(slots_box)
@@ -123,6 +164,9 @@ class ProductionSettingsPage(QWidget):
         self.stock_input.setText(str(settings.stock_firmware or ""))
         self.pricol_input.setText(str(settings.pricol_firmware or ""))
         self.lot_input.setText(settings.lot or "")
+        self.stock_range_input.setText(settings.stock_master_range or "")
+        self.pricol_range_input.setText(settings.pricol_master_range or "")
+        self.block_size_input.setValue(settings.block_size)
         for number, check in self.slot_checks.items():
             check.setChecked(number in settings.enabled_slots)
         self._show_ports()
@@ -166,6 +210,9 @@ class ProductionSettingsPage(QWidget):
             pricol_firmware=Path(pricol) if pricol and mode is ProgrammingMode.STOCK_AND_PRICOL else None,
             enabled_slots=tuple(number for number, check in self.slot_checks.items() if check.isChecked()),
             lot=self.lot_input.text().strip() or None,
+            stock_master_range=self.stock_range_input.text().strip() or None,
+            pricol_master_range=self.pricol_range_input.text().strip() or None,
+            block_size=self.block_size_input.value(),
         )
         for label, path in (("Stock", settings.stock_firmware), ("Pricol", settings.pricol_firmware)):
             if path is not None and not path.is_file():

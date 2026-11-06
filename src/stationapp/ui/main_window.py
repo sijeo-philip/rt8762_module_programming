@@ -78,6 +78,7 @@ _SERIAL_TOPOLOGY_REFRESH_MS = 5_000
 
 class MainWindow(QMainWindow):
     _access_changed = pyqtSignal()
+    _hold_changed = pyqtSignal()
     def __init__(self, context: AppContext) -> None:
         super().__init__()
         self._operation_manager = OperationManager(self)
@@ -110,6 +111,13 @@ class MainWindow(QMainWindow):
             self._view_timer.timeout.connect(self._update_view)
             self._view_timer.start()
         self._update_view()
+        # A hold (box rejection, QR scanned again, Batch Code not accepted)
+        # opens the hold screen at once; reports run on worker threads.
+        self._hold_screen_open = False
+        if self._context.box_reports is not None:
+            self._hold_changed.connect(self._on_hold_changed, Qt.ConnectionType.QueuedConnection)
+            self._context.box_reports.add_listener(self._hold_changed.emit)
+            QTimer.singleShot(0, self._on_hold_changed)
         self._start_pos_scanner()
         #Periodic re-check: Mpcli can be closed, a USB cable pulled. The
         # station's condition is not a startup time fact
@@ -534,6 +542,37 @@ class MainWindow(QMainWindow):
             self._production_panel.shutdown()
         self._operation_manager.cancel_all()
         self._operation_manager.wait_for_all(timeout_ms=timeout_ms)
+
+    def _on_hold_changed(self) -> None:
+        """Open the blocking hold screen while the station is on hold."""
+        if self._closing:
+            return
+        reports = self._context.box_reports
+        try:
+            on_hold = reports.service.hold().on_hold
+        except Exception:  # noqa: BLE001 - the indicator must not crash the window
+            logger.exception("Hold state unavailable")
+            return
+        if on_hold != getattr(self, "_last_on_hold", None):
+            self._last_on_hold = on_hold
+            if self._production_panel is not None:
+                # START follows the hold at once, not at the next check.
+                self._production_panel.refresh_readiness()
+        if not on_hold or self._hold_screen_open:
+            return
+        from stationapp.ui.dialogs.access_dialogs import ClearHoldDialog
+
+        self._hold_screen_open = True
+        try:
+            dialog = ClearHoldDialog(reports.service, self, blocking=True)
+            dialog.resize(max(self.width() - 80, 760), max(self.height() - 120, 560))
+            dialog.exec()
+        finally:
+            self._hold_screen_open = False
+        if self._session_bar is not None:
+            self._session_bar.render()
+        # Another hold may have arrived while the screen was open.
+        QTimer.singleShot(0, self._on_hold_changed)
 
     def _update_view(self) -> None:
         """Login page, Operator view or Supervisor view."""

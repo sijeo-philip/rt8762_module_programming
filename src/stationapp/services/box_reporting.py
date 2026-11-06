@@ -16,6 +16,11 @@ A report answering on_hold stops new trays until a supervisor clears
 the hold at the station with their phone and PIN (R14-R16). The hold
 and the rejected modules are saved, so they survive a restart.
 
+A module whose Batch Code the SDK refuses (InvalidBatchIdError) also
+stops the line: the box would refuse every later tray with it, so nothing
+more is reported until a Supervisor corrects the Batch Code at the hold
+screen and clears the hold with their phone and PIN.
+
 The station also holds itself when a QR already bound here is scanned
 again (a re-worked module: same QR, new MAC). Scanning stops until a
 supervisor clears the hold; clearing it lets that QR be bound once more,
@@ -26,15 +31,16 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+import copy
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
-from unisemble_client import InvalidBatchIdError, InvalidMacError, Module, errors
+from unisemble_client import InvalidBatchIdError, InvalidMacError, Module, errors, normalize_batch_id
 
-from stationapp.data.models import StationSettingModel
+from stationapp.data.models import OutboxModel, StationSettingModel
 from stationapp.data.sync_repository import QrRegistryRepository, ReportQueueRepository
 from stationapp.data.unit_of_work import UnitOfWork
 from stationapp.domain.audit import AuditRecord
@@ -48,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 HOLD_KEY = "box_hold"
 QR_REUSE_KEY = "qr_reuse_hold"
+BATCH_ID_KEY = "batch_id_hold"
 MAX_MODULES_PER_REPORT = 500
 NOTE_LIMIT = 500
 
@@ -64,6 +71,10 @@ def _utc_now() -> datetime:
 
 class ReportInProgress(Exception):
     """A report is already running."""
+
+
+class BatchIdCorrectionError(ValueError):
+    """A corrected Batch Code is missing or breaks the box's rule."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,8 +99,28 @@ class ReusedQr:
 
 
 @dataclass(frozen=True, slots=True)
+class BadBatchId:
+    """A queued module whose Batch Code the SDK refuses (InvalidBatchIdError)."""
+
+    outbox_id: int      # the queued tray's outbox row
+    tray: str           # the tray's batch id
+    jig: str
+    slot: int
+    qr: str
+    mac: str
+    batch_code: str | None
+    problem: str
+    since: str
+
+    @property
+    def key(self) -> tuple[int, int]:
+        return (self.outbox_id, self.slot)
+
+
+@dataclass(frozen=True, slots=True)
 class HoldState:
-    """The line is stopped: on hold by the box, or by a re-used QR."""
+    """The line is stopped: on hold by the box, by a re-used QR, or by a
+    Batch Code the box cannot accept."""
 
     on_hold: bool = False
     reason: str | None = None
@@ -97,6 +128,15 @@ class HoldState:
     since: str | None = None
     box_on_hold: bool = False
     reused_qrs: tuple[ReusedQr, ...] = ()
+    bad_batch_ids: tuple[BadBatchId, ...] = ()
+
+    @property
+    def title(self) -> str:
+        if self.bad_batch_ids:
+            return "Line stopped: Batch Code not accepted"
+        if self.box_on_hold:
+            return "Line stopped by the box"
+        return "Line stopped: QR scanned again"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +148,7 @@ class ReportRun:
     rejected: int = 0
     detail: str = ""
     login_required: bool = False
+    held: bool = False          # not sent: the station is on hold for a Batch Code
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +201,7 @@ class BoxReportService:
         self._login_required = False
         self._last_error: str | None = None
         self._hold_listeners: list[Callable[[], None]] = []
+        self._cleared_listeners: list[Callable[[], None]] = []
 
     @property
     def configured(self) -> bool:
@@ -185,6 +227,10 @@ class BoxReportService:
         """callback() after the station put itself on hold."""
         self._hold_listeners.append(callback)
 
+    def add_cleared_listener(self, callback: Callable[[], None]) -> None:
+        """callback() after a Supervisor cleared the hold."""
+        self._cleared_listeners.append(callback)
+
     # ------------------------------------------------------------------
 
     def report(self, trigger: str) -> ReportRun:
@@ -203,6 +249,10 @@ class BoxReportService:
             return ReportRun(trigger, False, detail="Box not configured")
         if self._blocks is not None:
             self._blocks.send_owed_promotes()
+
+        if self._bad_batch_ids():
+            # The box would refuse the report whole; wait for the Supervisor.
+            return ReportRun(trigger, False, detail="On hold: a Batch Code must be corrected by a Supervisor", held=True)
 
         pending = self._collect()
         if pending.rows and not pending.modules:
@@ -224,9 +274,14 @@ class BoxReportService:
                 self._on_session_ended()
             return ReportRun(trigger, False, modules=len(pending.modules), detail="Box session ended; log in again", login_required=True)
         except InvalidBatchIdError as exc:
-            # Only a tray committed before Batch Codes (SDK 7.0) lacks one.
-            detail = f"{exc}. A tray finished before Batch Codes were introduced cannot be reported to a 7.0 box; call the Supervisor."
+            # Nothing was sent. Hold the line until a Supervisor corrects
+            # the Batch Code: the box would refuse every later report too.
+            detail = f"{exc}. The station is on hold until a Supervisor corrects the Batch Code."
             self._failed(trigger, pending, detail)
+            bad = self._find_bad_batch_ids(pending)
+            if bad:
+                self._hold_for_batch_ids(bad, str(exc))
+                return ReportRun(trigger, False, modules=len(pending.modules), detail=detail, held=True)
             return ReportRun(trigger, False, modules=len(pending.modules), detail=detail)
         except (errors.UnisembleError, InvalidMacError) as exc:
             detail = describe_box_error(exc) if isinstance(exc, errors.UnisembleError) else str(exc)
@@ -328,18 +383,71 @@ class BoxReportService:
             row = session.get(StationSettingModel, HOLD_KEY)
             box = row.value if row is not None and row.value.get("on_hold") else {}
             reused = tuple(ReusedQr(**item) for item in _qr_reuse_value(session)["held"])
-        if not box and not reused:
+            bad = _bad_batch_ids(session)
+        if not box and not reused and not bad:
             return HoldState()
         reasons = [box["reason"]] if box.get("reason") else []
         reasons += [f"QR {item.qr} scanned again; already bound at {item.previous}" for item in reused]
+        if bad:
+            reasons.append(
+                f"{len(bad)} module(s) have a Batch Code the box cannot accept ({bad[0].problem}). "
+                "No tray is reported until a Supervisor corrects it"
+            )
         return HoldState(
             on_hold=True,
             reason="; ".join(reasons) or "On hold by the box",
             rejected=tuple(RejectedModule(**item) for item in box.get("rejected", [])),
-            since=box.get("since") or (reused[0].since if reused else None),
+            since=box.get("since") or (bad[0].since if bad else None) or (reused[0].since if reused else None),
             box_on_hold=bool(box),
             reused_qrs=reused,
+            bad_batch_ids=bad,
         )
+
+    # -- Batch Code the box cannot accept ----------------------------------
+
+    def _bad_batch_ids(self) -> tuple[BadBatchId, ...]:
+        with self._session_factory() as session:
+            return _bad_batch_ids(session)
+
+    @staticmethod
+    def _find_bad_batch_ids(pending: _Pending) -> list[BadBatchId]:
+        """Every module of the refused report whose Batch Code breaks the box's rule."""
+        since = _utc_now().isoformat()
+        rows = {row.aggregate_id: row for row in pending.rows}
+        bad = []
+        for index, module in enumerate(pending.modules):
+            try:
+                normalize_batch_id(module.qr, module.batch_id)
+            except InvalidBatchIdError as exc:
+                tray, jig, slot = pending.where[index]
+                bad.append(BadBatchId(
+                    outbox_id=rows[tray].id, tray=tray, jig=jig, slot=slot, qr=module.qr, mac=module.mac,
+                    batch_code=module.batch_id, problem=str(exc), since=since,
+                ))
+        return bad
+
+    def _hold_for_batch_ids(self, bad: list[BadBatchId], error: str) -> None:
+        with UnitOfWork(self._session_factory) as uow:
+            _save_bad_batch_ids(uow.session, bad, "STATION")
+            uow.audit.append(AuditRecord(
+                user_id="SYSTEM",
+                station_id=self._station_id,
+                record_type="BATCH_ID_HOLD",
+                record_id=self._station_id,
+                action="HOLD_SET",
+                reason=f"Report refused before sending: {error}",
+                new_value={"modules": [_bad_json(item) for item in bad]},
+            ))
+            uow.commit()
+        logger.error("Station on hold: %d module(s) with a Batch Code the box cannot accept (%s)", len(bad), error)
+        self._call_listeners(self._hold_listeners)
+
+    def _call_listeners(self, listeners: list[Callable[[], None]]) -> None:
+        for callback in tuple(listeners):
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - an indicator must not stop the hold
+                logger.exception("Hold listener failed")
 
     # -- QR scanned again (same QR, new MAC) -------------------------------
 
@@ -361,11 +469,7 @@ class BoxReportService:
             ))
             uow.commit()
         logger.warning("Station on hold: QR %s scanned again in batch %s (already bound at %s)", qr, batch_id, previous)
-        for callback in tuple(self._hold_listeners):
-            try:
-                callback()
-            except Exception:  # noqa: BLE001 - an indicator must not stop the hold
-                logger.exception("Hold listener failed")
+        self._call_listeners(self._hold_listeners)
 
     def scanning_stopped(self) -> bool:
         """True while a re-used QR waits for a supervisor."""
@@ -385,14 +489,21 @@ class BoxReportService:
                 _save_qr_reuse(uow.session, value, "STATION")
                 uow.commit()
 
-    def clear_hold(self, phone: str, pin: str) -> None:
+    def clear_hold(self, phone: str, pin: str, corrections: Mapping[tuple[int, int], str] | None = None) -> None:
         """A supervisor's phone and PIN, typed at the station (R16).
 
-        Raises AuthenticationFailed or AuthorizationError when the hold
-        stays; the line restarts only when this returns.
+        corrections: the corrected Batch Code of every module held for one
+        the box cannot accept, keyed by BadBatchId.key. They are checked
+        before the box is asked, and saved only once the box has accepted
+        the Supervisor.
+
+        Raises AuthenticationFailed, AuthorizationError or
+        BatchIdCorrectionError when the hold stays; the line restarts only
+        when this returns.
         """
         if self._gateway is None:
             raise AuthenticationFailed("The box is not configured")
+        fixed = self._check_corrections(corrections or {})
         try:
             cleared = self._gateway.clear_hold(phone.strip(), pin)
         except errors.WrongPin as exc:
@@ -410,6 +521,8 @@ class BoxReportService:
         previous = self.hold()
         with UnitOfWork(self._session_factory) as uow:
             self._save_hold(uow.session, False, None, [])
+            if previous.bad_batch_ids:
+                self._apply_corrections(uow, previous.bad_batch_ids, fixed, phone.strip() or "SUPERVISOR")
             reuse = _qr_reuse_value(uow.session)
             if reuse["held"]:
                 # The supervisor has seen the module: its QR may be bound again.
@@ -427,11 +540,52 @@ class BoxReportService:
                     "reason": previous.reason,
                     "rejected": [_rejected_json(item) for item in previous.rejected],
                     "reused_qrs": [item.qr for item in previous.reused_qrs],
+                    "bad_batch_ids": [_bad_json(item) for item in previous.bad_batch_ids],
                 },
                 new_value={"on_hold": False},
             ))
             uow.commit()
         logger.info("Station hold cleared by a supervisor")
+        self._call_listeners(self._cleared_listeners)
+
+    def _check_corrections(self, corrections: Mapping[tuple[int, int], str]) -> dict[tuple[int, int], str]:
+        """The corrected Batch Codes, trimmed and checked against the box's rule."""
+        fixed: dict[tuple[int, int], str] = {}
+        for item in self._bad_batch_ids():
+            text = corrections.get(item.key)
+            if text is None or not str(text).strip():
+                raise BatchIdCorrectionError(f"Enter the corrected Batch Code for module {item.qr} (tray {item.tray}, slot {item.slot}).")
+            try:
+                fixed[item.key] = normalize_batch_id(item.qr, text)
+            except InvalidBatchIdError as exc:
+                raise BatchIdCorrectionError(f"{exc}. Use 1 to 64 letters, digits, spaces or punctuation (e.g. S5A01).") from exc
+        return fixed
+
+    def _apply_corrections(self, uow: UnitOfWork, bad: tuple[BadBatchId, ...], fixed: dict[tuple[int, int], str], by: str) -> None:
+        """Write the corrected Batch Codes into the queued trays; the next
+        report sends them."""
+        for outbox_id in sorted({item.outbox_id for item in bad}):
+            row = uow.session.get(OutboxModel, outbox_id)
+            if row is None:
+                continue
+            payload = copy.deepcopy(row.payload)
+            for slot in payload.get("slots", []):
+                key = (outbox_id, slot.get("slot_number"))
+                if key in fixed:
+                    slot["batch_code"] = fixed[key]
+            row.payload = payload            # a new object, so the JSON column is saved
+        for item in bad:
+            uow.audit.append(AuditRecord(
+                user_id=by,
+                station_id=self._station_id,
+                record_type="BATCH_CODE",
+                record_id=item.qr,
+                action="BATCH_CODE_CORRECTED",
+                reason=f"Batch Code refused before reporting ({item.problem}); corrected by a Supervisor at the hold screen",
+                previous_value={"tray": item.tray, "slot": item.slot, "batch_code": item.batch_code},
+                new_value={"tray": item.tray, "slot": item.slot, "batch_code": fixed[item.key]},
+            ))
+        _save_bad_batch_ids(uow.session, [], by)
 
     def _save_hold(self, session: Session, on_hold: bool, reason: str | None, rejected: list[RejectedModule]) -> None:
         row = session.get(StationSettingModel, HOLD_KEY)
@@ -478,6 +632,29 @@ def _rejected_json(item: RejectedModule) -> dict[str, str]:
     return {"qr": item.qr, "mac": item.mac, "reason": item.reason}
 
 
+def _bad_json(item: BadBatchId) -> dict[str, Any]:
+    return {
+        "outbox_id": item.outbox_id, "tray": item.tray, "jig": item.jig, "slot": item.slot, "qr": item.qr,
+        "mac": item.mac, "batch_code": item.batch_code, "problem": item.problem, "since": item.since,
+    }
+
+
+def _bad_batch_ids(session: Session) -> tuple[BadBatchId, ...]:
+    row = session.get(StationSettingModel, BATCH_ID_KEY)
+    held = row.value.get("held", []) if row is not None else []
+    return tuple(BadBatchId(**item) for item in held)
+
+
+def _save_bad_batch_ids(session: Session, bad: list[BadBatchId], updated_by: str) -> None:
+    value = {"held": [_bad_json(item) for item in bad]}
+    row = session.get(StationSettingModel, BATCH_ID_KEY)
+    if row is None:
+        session.add(StationSettingModel(key=BATCH_ID_KEY, value=value, updated_at=_utc_now(), updated_by=updated_by))
+    else:
+        row.value, row.updated_at, row.updated_by = value, _utc_now(), updated_by
+    session.flush()
+
+
 def _qr_reuse_value(session: Session) -> dict[str, list]:
     row = session.get(StationSettingModel, QR_REUSE_KEY)
     value = dict(row.value) if row is not None else {}
@@ -505,6 +682,8 @@ class BoxReportScheduler:
         self._lock = threading.Lock()
         self.last_report: ReportRun | None = None
         service.add_hold_listener(self._notify)
+        # Trays held back by the hold go out as soon as it is cleared.
+        service.add_cleared_listener(lambda: self.request("HOLD_CLEARED"))
 
     @property
     def service(self) -> BoxReportService:
@@ -560,7 +739,7 @@ class BoxReportScheduler:
             logger.exception("Background box report failed")
             run = ReportRun(trigger, False, detail="Unexpected error")
         self.last_report = run
-        if not run.success and not run.login_required:
+        if not run.success and not run.login_required and not run.held:
             with self._lock:
                 self._cancel_timer()
                 self._timer = threading.Timer(self._retry_seconds, lambda: self.request("RETRY"))

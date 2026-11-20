@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: unisemble-client
+Version: 7.0.0
+Summary: Station-facing Python SDK for the UnisemBLE box. 7.0.0: every reported module carries its batch_id (required). login (returns the User), request_block, promote_block, one report() per finished tray, clear_hold, logout.
+Requires-Python: >=3.9
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"

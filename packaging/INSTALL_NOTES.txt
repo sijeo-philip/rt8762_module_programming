@@ -1,0 +1,64 @@
+STATION APP - READ ME FIRST
+===========================
+
+Station App is installed. Start it with the "Station App" icon on the
+desktop (or Start menu -> Station App).
+
+What is in the install folder (default C:\StationApp)
+-----------------------------------------------------
+  StationApp.exe          The application (Python and all libraries included).
+  GoldenRigCertTool.exe   Creates the Golden Rig CA, rig certificate, key and
+                          fingerprint for the rig ID / name you choose.
+  .env                    This station's settings, written by the installer.
+  data\station.db         Local database (created empty for a new station).
+  logs\                   stationapp.log and startup-errors.log.
+  config\certificates\    golden_rig_ca.pem (Golden Rig CA certificate).
+  MPCliTool_v1.0.4.25_Windows\   Realtek MPCLI programming tool.
+  Firmware\               Firmware images (.bin) for batch setup.
+  docs\                   Operator / Supervisor guide, site test plan, box guide.
+
+Start menu -> Station App also has: Edit configuration (.env), Logs folder,
+Install folder, Documentation and Uninstall.
+
+First start on this PC
+----------------------
+ 1. Plug in the jig (USB serial adapters) and the USB QR scanner. Install the
+    USB-serial driver (for example FTDI) if Windows does not.
+ 2. Check the settings: Start menu -> Station App -> Edit configuration.
+    STATION_ID and JIG_ID must be unique on the line. Save, then restart.
+ 3. Golden Rig certificates: config\certificates\golden_rig_ca.pem must be
+    your line's CA. To create the CA, a rig's certificate + key and its
+    fingerprint for the rig ID and name you choose, use Start menu ->
+    Station App -> Golden Rig certificate tool, and follow
+    docs\golden_rig_certificates.html (also in the Start menu).
+ 4. Start the app and log in as a Supervisor, then follow
+    docs\operator_supervisor_guide.md, Part C:
+      C3  Bind jig slots to COM ports (slot bindings are per jig and are
+          NOT copied from another PC)
+      C4  Bind the Golden Rig
+      C5  Production settings (box MAC ranges and block size)
+      C6  Open the session, then run a batch (C7).
+ 5. Use docs\site_test_plan.md to record the test on this PC.
+
+Station modes (chosen during install, changed in .env)
+------------------------------------------------------
+  Production          AUTH_MODE=server  SIMULATION_MODE=false
+  Hardware test       AUTH_MODE=test    SIMULATION_MODE=false   (demo Box)
+  Training            AUTH_MODE=test    SIMULATION_MODE=true
+                      DATABASE_URL=sqlite:///./data/training.db
+  Demo Box logins (AUTH_MODE=test only):
+    Operator 9000000001 / 123456     Supervisor 9000000003 / 246810
+
+If something goes wrong
+-----------------------
+  * If the app cannot start, it shows a message box. The same text is kept
+    in logs\startup-errors.log. A typical cause is a wrong value in .env.
+  * Send logs\stationapp.log and logs\startup-errors.log with the problem
+    report, together with the station's .env (remove BOX_STATION_KEY first).
+  * Only one copy of the app can run at a time.
+
+Updating and uninstalling
+-------------------------
+  Running a newer installer keeps .env, data\ and logs\; only program files
+  are replaced. Uninstall also keeps .env, data\ and logs\ (the
+  traceability record); delete the folder by hand if you need to.

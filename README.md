@@ -794,3 +794,49 @@ STOCK RF TEST
 - Production history is append-only; retries and rework create additional records rather than overwriting previous results.
 - Local production may continue while completed records are waiting to synchronize with the LAN Server, subject to availability of authorized local MAC allocations.
 - Finally the Application have to converted to installable application so that it can be installed on each test Jig/station
+## Building the installer
+
+One command builds `dist\installer\StationApp-Setup-<version>.exe` (version from `src/stationapp/__init__.py`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\build_installer.ps1            # add -RunTests to run pytest first
+```
+
+Needs the project `.venv` (`pip install -e .[dev]`) and Inno Setup 6 (`winget install JRSoftware.InnoSetup`). Files in `packaging/`:
+
+| File | Purpose |
+|---|---|
+| `build_installer.ps1` | PyInstaller build, empty database, HTML docs, VC++ runtimes, Inno Setup compile |
+| `stationapp.spec` | PyInstaller one-folder, windowed build (bundles Python, Qt, all libraries and `alembic/`) |
+| `launcher.py` | Frozen entry point: runs from the install folder, single instance, shows startup errors in a message box and `logs\startup-errors.log` |
+| `StationApp.iss` | Inno Setup script: wizard pages for station identity, jig size and mode; writes `.env`; shortcuts |
+| `station.env.template` | `.env` written on a new install (`{{...}}` filled in by setup) |
+| `build_support.py` | Version info, fresh `station.db` at schema head, Markdown to HTML |
+| `INSTALL_NOTES.txt` | Shown after install; installed as `READ ME FIRST.txt` |
+| `../src/stationapp/tools/golden_rig_certs.py` | Built as `GoldenRigCertTool.exe` (console) next to `StationApp.exe` |
+
+What the installer does on a station PC (default folder `C:\StationApp`, admin rights):
+
+- Installs `StationApp.exe` (no Python needed), MPCLI, `Firmware\`, the Golden Rig CA certificate, `.env.example`, the guides (Markdown and HTML) and an empty `data\station.db`. Slot bindings and data from the development PC are **not** copied: each jig is bound on its own PC (guide C3).
+- Asks for STATION_ID, JIG_ID, box URL and station key, 4 or 8 positions, and the mode (Production / Hardware test with demo box / Training), then writes `.env` with `MPCLI_PATH` pointing at the installed `mpcli.exe`.
+- Installs the Microsoft VC++ 2015-2022 runtimes when missing (`mpcli.exe` is 32-bit and needs the x86 one).
+- Creates the desktop shortcut and Start menu entries (app, guides, Golden Rig certificate tool, edit `.env`, logs, uninstall).
+- Gives Windows Users write access to `data\`, `logs\`, `config\` and `.env`.
+- Upgrade (newer installer over an old one) replaces program files only; `.env`, `data\` and `logs\` are kept, also on uninstall.
+
+Silent install (for example for several test PCs):
+
+```
+StationApp-Setup-0.1.0.exe /SILENT /STATIONID=STN-02 /JIGID=JIG-02 /POSITIONS=8 /MODE=production /BOXURL=http://192.168.0.64:3001 /BOXKEY=stn_...
+```
+
+`/MODE` is `production`, `hardware-test` or `training`. `/CURRENTUSER` installs without admin rights (quick tests only).
+
+## Golden Rig certificates
+
+The CA, each rig's certificate and key, and the fingerprint Supervisors compare are made for the rig ID and name the technician chooses: see [docs/golden_rig_certificates.md](docs/golden_rig_certificates.md). The *Golden Rig certificate tool* does it in one step and checks the result with the station's own TLS rules:
+
+```powershell
+GoldenRigCertTool.exe                                                   # installed station: asks the questions
+python -m stationapp.tools.golden_rig_certs --rig-id GOLDEN-RIG-01 --name golden-rig-01 --ip 192.168.10.50
+```

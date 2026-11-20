@@ -85,6 +85,8 @@ Consequences:
 
 Do this once, on a secured machine; the CA private key must not stay on the rig.
 
+> **Recommended:** the *Golden Rig certificate tool* shipped with Station App (`GoldenRigCertTool.exe`, or `python -m stationapp.tools.golden_rig_certs`) does all of this for a given rig ID and name, checks the result the way a station does, and writes the fingerprint in the station's format to `RIG-INFO.txt`. Step-by-step instructions for both methods: [golden_rig_certificates.md](golden_rig_certificates.md).
+
 ```bash
 # 1. Golden Rig CA (keep golden_rig_ca.key offline)
 openssl req -new -newkey rsa:3072 -sha256 -nodes \
@@ -114,8 +116,9 @@ openssl x509 -req -in rig.csr -CA golden_rig_ca.pem -CAkey golden_rig_ca.key \
   -CAcreateserial -days 1095 -sha256 -extfile rig.ext -out rig.pem
 
 # 4. Check, then show the fingerprint the Supervisor will see on the station
-openssl verify -CAfile golden_rig_ca.pem rig.pem
-openssl x509 -in rig.pem -noout -fingerprint -sha256
+openssl verify -CAfile golden_rig_ca.pem -verify_hostname golden-rig-01.local rig.pem
+openssl x509 -in rig.pem -outform DER | openssl dgst -sha256   # lowercase hex, as on the station
+# (openssl x509 -in rig.pem -noout -fingerprint -sha256 prints the same value as E4:34:CB:...)
 ```
 
 Use extension files as shown. Do not use `req -x509 -addext` for the CA: on OpenSSL 1.1.1 it adds a second Basic Constraints extension, and the station then rejects every rig certificate with "unable to get local issuer certificate". On Git Bash for Windows, prefix the `-subj` commands with `MSYS_NO_PATHCONV=1`.

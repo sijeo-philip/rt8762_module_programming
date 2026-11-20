@@ -16,3 +16,7 @@ data/bench_mac_state.json
 
 # Vendor SDK handover folders: what StationApp needs is copied to vendor/unisemble/
 unisemble-sdk-handover-*/
+
+# Installer build (packaging/build_installer.ps1)
+!packaging/stationapp.spec
+packaging/redist/

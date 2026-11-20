@@ -116,7 +116,7 @@ This part is done **once for the whole line**, before any station is bound to a 
 
 ## A2. Create the certificates
 
-Use any Windows PC with **Git for Windows** installed; it includes the `openssl` tool. Work in a new, empty folder, for example `C:\rig-certs`.
+Full instructions, including the by-hand OpenSSL method: **[golden_rig_certificates.md](golden_rig_certificates.md)** (Start menu → Station App → *Golden Rig certificates*). In short:
 
 ### Step 1 — Choose the rig's ID and name
 
@@ -125,70 +125,29 @@ Write these down before you start:
 | Item | Example | Rule |
 |---|---|---|
 | **Rig ID** | `GOLDEN-RIG-01` | Unique per rig. Shown to Supervisors on every station. |
-| **Rig name (mDNS)** | `golden-rig-01.local` | The rig PC's computer name + `.local`. Letters, digits and `-` only. **Recommended.** |
+| **Rig name** | `golden-rig-01` | The rig PC's computer name. Letters, digits and `-` only. Stations connect to `golden-rig-01.local`. **Recommended.** |
 | **Fixed IP (optional)** | `192.168.10.50` | Only if IT gives the rig a fixed IP. Leave it out otherwise. |
 
 > **Why the name matters:** the station checks that the name or IP it connects to is written inside the rig's certificate. If Supervisors will type `golden-rig-01.local`, that name must be in the certificate. If they might type the IP, the IP must be in it too.
 
-### Step 2 — Open Git Bash in the folder
+### Step 2 — Run the Golden Rig certificate tool
 
-Right-click inside `C:\rig-certs` → **Open Git Bash here**. Copy and paste the following commands one block at a time.
+On any PC with Station App: **Start menu → Station App → Golden Rig certificate tool** (`GoldenRigCertTool.exe` in the StationApp folder). Answer the questions:
 
-### Step 3 — Create the CA (once for the whole line)
+1. **Rig ID** and **rig PC name** from Step 1, and the **fixed IP** if any.
+2. **CA folder:** for the line's **first** rig, accept the default; a new CA is created. For every **later** rig, give the folder that holds the line's existing `golden_rig_ca.pem` + `golden_rig_ca.key` (the offline USB stick). One CA serves the whole line.
+3. Check the summary and confirm.
 
-Skip this step if your line already has a CA. Reuse the existing `golden_rig_ca.pem` and `golden_rig_ca.key`.
+The tool creates the CA (once), the rig's `rig.pem` and `rig.key` for exactly that rig ID and name, and **checks them the way a station will** (every name and IP must show *Station check OK*). The CA certificate is valid for 10 years, the rig certificate for 3 years. Put the expiry date in the maintenance calendar: renewing it means re-approving the rig on every station (see [B3](#b3-changes-to-the-rig-that-need-re-approval)).
 
-```bash
-MSYS_NO_PATHCONV=1 openssl req -new -newkey rsa:3072 -sha256 -nodes \
-  -keyout golden_rig_ca.key -out ca.csr -subj "/CN=Golden Rig CA"
+### Step 3 — Note the fingerprint
 
-cat > ca.ext <<'EOF'
-basicConstraints=critical,CA:TRUE,pathlen:0
-keyUsage=critical,keyCertSign,cRLSign
-subjectKeyIdentifier=hash
-EOF
+The tool prints the rig's **SHA-256 fingerprint exactly as the station shows it** (64 lowercase characters) and writes it, with the rig ID, names, expiry date and the rig/station settings, to **`RIG-INFO.txt`** in the rig's folder.
 
-openssl x509 -req -in ca.csr -signkey golden_rig_ca.key -days 3650 -sha256 \
-  -extfile ca.ext -out golden_rig_ca.pem
-```
+- **Give the fingerprint to the Supervisors.** When they bind the rig, they compare it with the one on screen ([C4](#c4-bind-the-golden-rig--first-time-supervisor), step 6).
+- Then **move the CA folder** (`golden_rig_ca.key`) to the offline USB stick and delete it from the PC.
 
-Result: `golden_rig_ca.pem` (public, goes to stations) and `golden_rig_ca.key` (secret, keep offline). The CA is valid for 10 years.
-
-### Step 4 — Create the rig's certificate (once per rig)
-
-Replace `GOLDEN-RIG-01`, `golden-rig-01.local` and the IP with your values from Step 1. If you have no fixed IP, use `subjectAltName=DNS:golden-rig-01.local`.
-
-```bash
-MSYS_NO_PATHCONV=1 openssl req -new -newkey rsa:3072 -sha256 -nodes \
-  -keyout rig.key -out rig.csr -subj "/CN=GOLDEN-RIG-01"
-
-cat > rig.ext <<'EOF'
-basicConstraints=critical,CA:FALSE
-keyUsage=critical,digitalSignature,keyEncipherment
-extendedKeyUsage=serverAuth
-subjectKeyIdentifier=hash
-authorityKeyIdentifier=keyid,issuer
-subjectAltName=DNS:golden-rig-01.local
-EOF
-
-openssl x509 -req -in rig.csr -CA golden_rig_ca.pem -CAkey golden_rig_ca.key \
-  -CAcreateserial -days 1095 -sha256 -extfile rig.ext -out rig.pem
-```
-
-The rig certificate is valid for 3 years (1095 days). Put the expiry date in the maintenance calendar: renewing it means re-approving the rig on every station (see [B3](#b3-changes-to-the-rig-that-need-re-approval)).
-
-### Step 5 — Check the result and note the fingerprint
-
-```bash
-openssl verify -CAfile golden_rig_ca.pem rig.pem
-openssl x509 -in rig.pem -noout -subject -ext subjectAltName -enddate -fingerprint -sha256
-```
-
-- The first command must print `rig.pem: OK`.
-- The second shows the rig ID (CN), the names and IPs, the expiry date, and the **SHA-256 fingerprint**.
-- **Write the fingerprint down** and give it to the Supervisors. When they bind the rig, they compare it with the one on screen ([C4](#c4-bind-the-golden-rig--first-time-supervisor), step 6).
-
-> Do **not** create the CA with `openssl req -x509 -addext …`. On some OpenSSL versions, it makes a CA that the station rejects with *"unable to get local issuer certificate"*. Use the commands above exactly.
+> Without the tool, use the OpenSSL commands in [golden_rig_certificates.md, section 4](golden_rig_certificates.md#4-method-2-by-hand-with-openssl-git-bash). There you type the rig ID, name and IP once, and `openssl x509 -outform DER | openssl dgst -sha256` prints the fingerprint in the station's format.
 
 ## A3. Hand out the files
 
@@ -198,8 +157,8 @@ openssl x509 -in rig.pem -noout -subject -ext subjectAltName -enddate -fingerpri
 | `rig.pem` | That **Golden Rig** only | No |
 | `rig.key` | That **Golden Rig** only | **Yes.** Readable only by the rig service account. |
 | `golden_rig_ca.key` | **Nowhere.** Kept offline. | **Yes, most secret.** |
-| `ca.csr`, `rig.csr`, `*.ext`, `*.srl` | Can be deleted | — |
-| Fingerprint + rig ID + rig name | Supervisors (on paper or by email) | No |
+| `ca.csr`, `rig.csr`, `*.ext`, `*.srl` (OpenSSL method only) | Can be deleted | — |
+| Fingerprint + rig ID + rig name (`RIG-INFO.txt`) | Supervisors (on paper or by email) | No |
 
 ---
 
@@ -246,7 +205,7 @@ There is nothing to do on the rig itself in normal production.
 | IP address changes, rig bound **by name** | Nothing. Stations find it by name. | Nothing. |
 | IP address changes, rig bound **by IP** | RF tests and session start fail ("Cannot reach …"). | Supervisor re-binds with the new IP or, better, by name ([C8.3](#c83-the-rigs-address-or-certificate-changed)). The new IP must be in the certificate. |
 | Certificate renewed or replaced | Session start shows *"presents a different certificate than the approved one"*. | Supervisor re-approves on **every** station ([C8.3](#c83-the-rigs-address-or-certificate-changed)). |
-| Rig renamed | Stations cannot find it, or the certificate no longer matches. | Technician makes a new certificate with the new name ([A2](#a2-create-the-certificates), step 4). Supervisor re-approves on every station. |
+| Rig renamed | Stations cannot find it, or the certificate no longer matches. | Technician makes a new certificate with the new name ([A2](#a2-create-the-certificates), step 2). Supervisor re-approves on every station. |
 | Rig replaced by another PC | As above. | New certificate with a new rig ID (and add it to the approved inventory if one is used). Supervisor approves on every station. |
 | Port changed | Stations cannot connect. | Supervisor re-binds with the new port on every station. |
 
@@ -402,7 +361,7 @@ Nothing is saved if you press **Cancel**. Slots marked *not found* keep their pr
 
 **When:** once per station, after the technician has finished [Part A](#part-a--one-time-certificate-setup-technician) and [B1](#b1-first-time-setup-of-the-rig-technician). The station will not run RF tests or open a session until it is bound to an approved rig.
 
-**You need:** the rig's **name** (e.g. `golden-rig-01.local`) or IP, its **port** (normally `8762`), and the **fingerprint** the technician wrote down ([A2](#a2-create-the-certificates), step 5).
+**You need:** the rig's **name** (e.g. `golden-rig-01.local`) or IP, its **port** (normally `8762`), and the **fingerprint** the technician wrote down ([A2](#a2-create-the-certificates), step 3, or `RIG-INFO.txt`).
 
 **Steps**
 

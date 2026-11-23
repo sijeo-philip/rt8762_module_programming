@@ -28,6 +28,7 @@ import hashlib
 import logging
 import re
 import threading
+import time
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -40,7 +41,7 @@ from stationapp.domain.batch import Batch, BatchState, ProgrammingMode, SlotDisp
 from stationapp.domain.batch_code import BatchCodeError, BatchCodeState
 from stationapp.domain.errors import DomainError, DuplicateModuleQr, VerificationMismatch
 from stationapp.domain.events import EventType, ManufacturingEvent
-from stationapp.domain.golden_rig import GoldenRigTarget
+from stationapp.domain.golden_rig import GoldenRigOutcome, GoldenRigSlotResult, GoldenRigTarget
 from stationapp.domain.mac import TEMPORARY_ALLOCATION_ID, AllocatedMac, MacAddress, MacPurpose, temporary_stock_mac
 from stationapp.domain.slot import DeviceState
 from stationapp.domain.users import AccessError, AuthenticatedUser
@@ -65,6 +66,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_QR_PATTERN = r"^[!-~]{4,128}$"
 
 ProgrammerFactory = Callable[[Path | None, Path | None], "SlotProgrammer"]
+
+# Attempts per slot at each automatic step before the slot is marked
+# failed (see ProductionSettings.stage_attempts), and the pause before a
+# retry so the module and its COM port settle.
+DEFAULT_STAGE_ATTEMPTS = 3
+DEFAULT_RETRY_PAUSE_SECONDS = 1.0
+
+# Step names recorded with STAGE_RETRY events.
+STAGE_STOCK_PROGRAMMING = "STOCK_PROGRAMMING"
+STAGE_STOCK_READBACK = "STOCK_MAC_READBACK"
+STAGE_STOCK_RF = "STOCK_RF_TEST"
+STAGE_PRICOL_PROGRAMMING = "PRICOL_PROGRAMMING"
+STAGE_PRICOL_READBACK = "PRICOL_MAC_READBACK"
 
 
 class ProductionError(Exception):
@@ -216,7 +230,7 @@ _FINISHED_STATES = frozenset({
 class ProductionController:
     """Owns the active batch and executes the production workflow."""
 
-    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, temporary_stock_mac_base: MacAddress | None = None, enabled_slots: Callable[[], tuple[int, ...]] | None = None, qr_format: ScanFormat | None = None, qr_reuse: QrReuseGate | None = None, batch_codes: BatchCodes | None = None) -> None:
+    def __init__(self, *, station_id: str, jig_id: str, slot_count: int, store: ProductionStore, rf_tester: RfTester, functional_tester: FunctionalTester, programmer: SlotProgrammer | None = None, programmer_factory: ProgrammerFactory | None = None, readiness_gate: Callable[[ProgrammingMode, tuple[int, ...]], tuple[str, ...]] | None = None, qr_pattern: str = DEFAULT_QR_PATTERN, require_firmware: bool = True, access: ProductionAccess | None = None, temporary_stock_mac_base: MacAddress | None = None, enabled_slots: Callable[[], tuple[int, ...]] | None = None, qr_format: ScanFormat | None = None, qr_reuse: QrReuseGate | None = None, batch_codes: BatchCodes | None = None, stage_attempts: int | Callable[[], int] = DEFAULT_STAGE_ATTEMPTS, retry_pause_seconds: float = DEFAULT_RETRY_PAUSE_SECONDS) -> None:
         """programmer_factory builds a programmer for the firmware images
         chosen at batch setup; programmer is a fixed alternative.
 
@@ -231,7 +245,13 @@ class ProductionController:
 
         batch_codes: with it, a tray starts only once the session's Batch
         Code series is entered, and each committed tray's modules are
-        recorded with their Batch Code (SDK 7.0 batch_id)."""
+        recorded with their Batch Code (SDK 7.0 batch_id).
+
+        stage_attempts: attempts per slot (or a callable returning them,
+        read at each step) for Stock/Pricol programming, MAC readback and
+        the Stock RF test. A slot that fails is tried again on its own;
+        slots that passed are never repeated. Each retry is recorded as a
+        STAGE_RETRY event, and only the last attempt decides the slot."""
         if slot_count not in (4, 8):
             raise ValueError("slot_count must be 4 or 8")
         if (programmer is None) == (programmer_factory is None):
@@ -248,6 +268,8 @@ class ProductionController:
         self._temporary_stock_mac_base = temporary_stock_mac_base
         self._qr_reuse = qr_reuse
         self._batch_codes = batch_codes
+        self._stage_attempts = stage_attempts
+        self._retry_pause = max(0.0, float(retry_pause_seconds))
         self._enabled_slots = enabled_slots
         self._qr_format = qr_format
         self._commit_listeners: list[Callable[[Batch], None]] = []
@@ -848,33 +870,42 @@ class ProductionController:
         programmer = self._programmer
         assert programmer is not None
 
+        stage_name = STAGE_STOCK_PROGRAMMING if stock else STAGE_PRICOL_PROGRAMMING
+        attempts = self._attempts()
+
         def run(number: int) -> None:
             target = targets[number]
-            self._set_activity(number, "Programming firmware", None)
+            prefix = ""
 
             def on_phase(phase: str) -> None:
                 if phase == PHASE_ERASING:
-                    self._set_activity(number, "Erasing chip", None)
+                    self._set_activity(number, prefix + "Erasing chip", None)
                 elif phase == PHASE_FLASHING:
-                    self._set_activity(number, "Programming firmware", None)
+                    self._set_activity(number, prefix + "Programming firmware", None)
                 elif phase == PHASE_WRITING_MAC:
-                    self._set_activity(number, "Writing MAC", None)
+                    self._set_activity(number, prefix + "Writing MAC", None)
 
-            try:
-                program = programmer.program_stock if stock else programmer.program_pricol
-                result = program(target, cancellation_token=token, on_phase=on_phase)
-                succeeded = result.programming.succeeded
-                not_detected = result.programming.module_not_detected
-                detail = {
-                    "outcome": result.programming.outcome.value,
-                    "message": result.programming.message,
-                    "duration_seconds": round(result.programming.process.duration_seconds, 3),
-                }
-            except Exception as exc:  # noqa: BLE001 - per-slot isolation
-                logger.exception("Programming raised | slot=%s", number)
-                succeeded = False
-                not_detected = False
-                detail = {"outcome": "UNCERTAIN", "message": f"{type(exc).__name__}: {exc}"}
+            for attempt in range(1, attempts + 1):
+                prefix = _retry_prefix(attempt, attempts)
+                self._set_activity(number, prefix + "Programming firmware", None)
+                try:
+                    program = programmer.program_stock if stock else programmer.program_pricol
+                    result = program(target, cancellation_token=token, on_phase=on_phase)
+                    succeeded = result.programming.succeeded
+                    not_detected = result.programming.module_not_detected
+                    detail = {
+                        "outcome": result.programming.outcome.value,
+                        "message": result.programming.message,
+                        "duration_seconds": round(result.programming.process.duration_seconds, 3),
+                    }
+                except Exception as exc:  # noqa: BLE001 - per-slot isolation
+                    logger.exception("Programming raised | slot=%s attempt=%d", number, attempt)
+                    succeeded = False
+                    not_detected = False
+                    detail = {"outcome": "UNCERTAIN", "message": f"{type(exc).__name__}: {exc}"}
+                if succeeded or not self._retry(batch, number, stage_name, attempt, attempts, token, mac=str(target.mac), **detail):
+                    detail["attempt"] = attempt
+                    break
 
             with self._lock:
                 if not_detected:
@@ -921,22 +952,34 @@ class ProductionController:
         programmer = self._programmer
         assert programmer is not None
 
+        stage_name = STAGE_STOCK_READBACK if stock else STAGE_PRICOL_READBACK
+        attempts = self._attempts()
+
         def run(number: int) -> None:
             target = targets[number]
-            self._set_activity(number, "Verifying MAC readback", None)
 
-            reported = None
-            reason = None
-            try:
-                verify = programmer.verify_stock_mac if stock else programmer.verify_pricol_mac
-                result = verify(target, cancellation_token=token)
-                if result.verification.outcome is IdentityOutcome.NOT_VERIFIED or result.readback.mac is None:
-                    reason = result.verification.message or result.readback.message
-                else:
-                    reported = result.readback.mac
-            except Exception as exc:  # noqa: BLE001 - per-slot isolation
-                logger.exception("Readback raised | slot=%s", number)
-                reason = f"{type(exc).__name__}: {exc}"
+            for attempt in range(1, attempts + 1):
+                self._set_activity(number, _retry_prefix(attempt, attempts) + "Verifying MAC readback", None)
+                reported = None
+                reason = None
+                try:
+                    verify = programmer.verify_stock_mac if stock else programmer.verify_pricol_mac
+                    result = verify(target, cancellation_token=token)
+                    if result.verification.outcome is IdentityOutcome.NOT_VERIFIED or result.readback.mac is None:
+                        reason = result.verification.message or result.readback.message
+                    else:
+                        reported = result.readback.mac
+                except Exception as exc:  # noqa: BLE001 - per-slot isolation
+                    logger.exception("Readback raised | slot=%s attempt=%d", number, attempt)
+                    reason = f"{type(exc).__name__}: {exc}"
+
+                if reported is not None and _same_mac(reported, target.mac):
+                    break
+                failure = reason or "readback failed"
+                if reported is not None:
+                    failure = f"read back {reported}, expected {target.mac}"
+                if not self._retry(batch, number, stage_name, attempt, attempts, token, expected_mac=str(target.mac), reported_mac=str(reported) if reported is not None else None, message=failure):
+                    break
 
             with self._lock:
                 if reported is not None:
@@ -993,6 +1036,8 @@ class ProductionController:
                 "Supervisor intervention required; press RETRY once the rig is available."
             ) from exc
 
+        report, attempts_by_slot, request_by_slot = self._retry_rf(batch, targets, report, token)
+
         with self._lock:
             self._rf_processor.apply(batch, report)
             events = []
@@ -1001,7 +1046,7 @@ class ProductionController:
                     batch,
                     EventType.STOCK_RF_RESULT,
                     slot=result.slot_number,
-                    request_id=report.request.request_id,
+                    request_id=request_by_slot.get(result.slot_number, report.request.request_id),
                     rig_id=report.response.rig_id,
                     outcome=result.outcome.value,
                     expected_mac=str(result.expected_mac),
@@ -1010,11 +1055,74 @@ class ProductionController:
                     disconnected=result.disconnected,
                     error_code=result.error_code,
                     detail=result.detail,
+                    attempt=attempts_by_slot.get(result.slot_number, 1),
                 ))
                 if batch.slots[result.slot_number].state is DeviceState.STOCK_RF_CONFIRMED:
                     events.append(self._event(batch, EventType.STOCK_RF_CONFIRMED, slot=result.slot_number, mac=str(result.expected_mac)))
             self._store.save(batch, events)
             self._activity = {}
+
+    def _retry_rf(self, batch: Batch, targets: tuple[GoldenRigTarget, ...], report: GoldenRigTestReport, token: CancellationToken | None) -> tuple[GoldenRigTestReport, dict[int, int], dict[int, str]]:
+        """Test again, on their own, the slots that did not PASS.
+
+        Returns the first report with each retried slot's result replaced
+        by its last attempt, so the result processor sees one complete
+        answer for the original request. A rig that cannot run a retry
+        leaves the earlier results in place."""
+        attempts = self._attempts()
+        final: dict[int, GoldenRigSlotResult] = {result.slot_number: result for result in report.response.results}
+        attempts_by_slot = {number: 1 for number in final}
+        request_by_slot = {number: report.request.request_id for number in final}
+        changed = False
+
+        for attempt in range(2, attempts + 1):
+            failed = tuple(target for target in targets if target.slot_number in final and final[target.slot_number].outcome is not GoldenRigOutcome.PASS)
+            if not failed:
+                break
+            retrying = []
+            for target in failed:
+                last = final[target.slot_number]
+                if self._retry(
+                    batch, target.slot_number, STAGE_STOCK_RF, attempt - 1, attempts, token, pause=False,
+                    outcome=last.outcome.value,
+                    expected_mac=str(target.expected_mac),
+                    reported_mac=str(last.reported_mac) if last.reported_mac else None,
+                    error_code=last.error_code,
+                    message=last.detail or last.error_code or last.outcome.value,
+                ):
+                    retrying.append(target)
+            if not retrying:
+                break
+            with self._lock:
+                for target in retrying:
+                    self._activity[target.slot_number] = SlotActivity(f"Retry {attempt}/{attempts}: Golden Rig RF test")
+            self._notify()
+            self._pause(token)
+            if token is not None and token.is_cancelled:
+                break
+            try:
+                retry = self._rf_tester.run_test(
+                    batch_id=batch.batch_id,
+                    station_id=batch.station_id,
+                    jig_id=batch.jig_id,
+                    targets=tuple(retrying),
+                    cancel_event=token.event if token is not None else None,
+                )
+                retry.response.validate_against(retry.request)
+            except Exception as exc:  # noqa: BLE001 - keep the results already in hand
+                logger.warning("Golden Rig RF retry could not run | batch_id=%s attempt=%d: %s", batch.batch_id, attempt, exc)
+                break
+            for result in retry.response.results:
+                if result.slot_number in final and result.expected_mac == final[result.slot_number].expected_mac:
+                    final[result.slot_number] = result
+                    attempts_by_slot[result.slot_number] = attempt
+                    request_by_slot[result.slot_number] = retry.request.request_id
+                    changed = True
+
+        if not changed:
+            return report, attempts_by_slot, request_by_slot
+        merged = replace(report.response, results=tuple(final[result.slot_number] for result in report.response.results))
+        return GoldenRigTestReport(request=report.request, response=merged), attempts_by_slot, request_by_slot
 
     def _after_rf(self, batch: Batch) -> None:
         with self._lock:
@@ -1173,6 +1281,40 @@ class ProductionController:
             # controller defect, not a DUT failure. Surface it.
             raise errors[0]
 
+    def _attempts(self) -> int:
+        """Attempts per slot for the step about to run (Supervisor setting)."""
+        value = self._stage_attempts
+        try:
+            value = value() if callable(value) else value
+            return max(1, int(value))
+        except Exception:  # noqa: BLE001 - a settings problem must not stop production
+            logger.exception("Could not read the attempts setting; using %d", DEFAULT_STAGE_ATTEMPTS)
+            return DEFAULT_STAGE_ATTEMPTS
+
+    def _retry(self, batch: Batch, number: int, stage: str, attempt: int, attempts: int, token: CancellationToken | None, *, pause: bool = True, **payload: Any) -> bool:
+        """After a failed attempt: record it and say whether to try again.
+
+        False when no attempt is left or the step is being cancelled; the
+        caller then records the last attempt as the slot's result."""
+        if attempt >= attempts or (token is not None and token.is_cancelled):
+            return False
+        logger.warning("Slot %s failed %s attempt %d/%d; retrying: %s", number, stage, attempt, attempts, payload.get("message"))
+        with self._lock:
+            self._store.save(batch, [self._event(batch, EventType.STAGE_RETRY, slot=number, stage=stage, attempt=attempt, attempts=attempts, **payload)])
+            self._activity[number] = SlotActivity(f"Failed - retrying ({attempt + 1}/{attempts})")
+        self._notify()
+        if pause:
+            self._pause(token)
+        return not (token is not None and token.is_cancelled)
+
+    def _pause(self, token: CancellationToken | None) -> None:
+        if self._retry_pause <= 0:
+            return
+        if token is not None:
+            token.event.wait(self._retry_pause)
+        else:
+            time.sleep(self._retry_pause)
+
     def _target(self, batch: Batch, number: int, purpose: MacPurpose) -> ProgrammingTarget:
         slot = batch.slots[number]
         mac = slot.stock_mac if purpose is MacPurpose.STOCK_RF_TEST else slot.pricol_mac
@@ -1232,6 +1374,17 @@ class ProductionController:
             for number, disposition in batch.dispositions.items()
             if disposition is not SlotDisposition.EMPTY
         ]
+
+
+def _retry_prefix(attempt: int, attempts: int) -> str:
+    return f"Retry {attempt}/{attempts}: " if attempt > 1 else ""
+
+
+def _same_mac(reported: Any, expected: MacAddress) -> bool:
+    try:
+        return MacAddress.parse(str(reported)) == expected
+    except Exception:  # noqa: BLE001 - an unreadable readback is a mismatch
+        return False
 
 
 def _firmware_identity(path: Path | None) -> dict[str, str] | None:

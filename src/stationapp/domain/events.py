@@ -32,6 +32,8 @@ class EventType(str, Enum):
 
     # No module answered on the slot's port; its reserved MAC was released.
     MODULE_NOT_DETECTED = "MODULE_NOT_DETECTED"
+    # A slot failed an automatic step and is being tried again.
+    STAGE_RETRY = "STAGE_RETRY"
 
     PRICOLAPP_RESULT = "PRICOLAPP_RESULT"
     PRICOLDFU_RESULT = "PRICOLDFU_RESULT"

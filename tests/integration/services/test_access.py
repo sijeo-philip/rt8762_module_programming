@@ -252,6 +252,7 @@ def test_production_requires_logged_in_operator_and_records_it(env):
 
     none = frozenset()
     controller = ProductionController(
+        retry_pause_seconds=0,
         station_id=STATION,
         jig_id="JIG-01",
         slot_count=4,

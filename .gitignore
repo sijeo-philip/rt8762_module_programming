@@ -6,7 +6,7 @@ __pycache__/
 *.db-journal
 logs/
 build/
-#dist/
+dist/
 *.spec
 .pytest_cache/
 *.db-wal

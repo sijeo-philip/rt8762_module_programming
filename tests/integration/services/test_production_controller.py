@@ -57,6 +57,7 @@ def session_factory(tmp_path: Path):
 def make_controller(session_factory, *, failures: str = "", rf_tester=None, readiness_gate=None):
     failure_set = parse_failures(failures)
     return ProductionController(
+        retry_pause_seconds=0,
         station_id=STATION,
         jig_id=JIG,
         slot_count=8,
@@ -280,6 +281,7 @@ class RecordingProgrammer(SimulatedProgrammer):
 def test_mac_is_persisted_as_programming_before_mpcli_runs(session_factory):
     programmer = RecordingProgrammer(session_factory)
     controller = ProductionController(
+        retry_pause_seconds=0,
         station_id=STATION,
         jig_id=JIG,
         slot_count=8,
@@ -355,6 +357,7 @@ def test_pricol_functional_test_over_uart_records_evidence(session_factory):
     )
     none = frozenset()
     controller = ProductionController(
+        retry_pause_seconds=0,
         station_id=STATION,
         jig_id=JIG,
         slot_count=8,
@@ -455,6 +458,7 @@ class CountingFunctional:
 def test_pricol_programming_and_tests_start_only_on_operator_buttons(session_factory):
     programmer, functional = CountingProgrammer(), CountingFunctional()
     controller = ProductionController(
+        retry_pause_seconds=0,
         station_id=STATION,
         jig_id=JIG,
         slot_count=8,

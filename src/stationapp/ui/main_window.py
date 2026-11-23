@@ -46,6 +46,7 @@ from stationapp.ui.widgets.production_panel import ProductionPanel
 from stationapp.ui.widgets.session_bar import SessionBar
 from stationapp.ui.widgets.login_page import LoginPage
 from stationapp.ui.widgets.production_settings_page import ProductionSettingsPage
+from stationapp.ui.widgets.production_records_page import ProductionRecordsPage
 from stationapp.ui.widgets.station_configuration import StationConfigurationWidget
 
 logger = logging.getLogger(__name__)
@@ -185,6 +186,13 @@ class MainWindow(QMainWindow):
                 parent=self,
             )
             tabs.addTab(self._station_configuration, "Station configuration")
+
+        # Supervisor-only (like every tab but Production): search the
+        # local records by date, MAC, Operator, QR and Batch Code.
+        self._records_page: ProductionRecordsPage | None = None
+        if context.production_records is not None:
+            self._records_page = ProductionRecordsPage(context.production_records, context.device_history, parent=self)
+            tabs.addTab(self._records_page, "Production records")
 
         central = QWidget()
         tabs.addTab(central, "Station status")

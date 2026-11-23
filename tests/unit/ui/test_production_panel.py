@@ -58,6 +58,7 @@ def panel(qtbot, tmp_path: Path):
     )
     none = frozenset()
     controller = ProductionController(
+        retry_pause_seconds=0,
         station_id=settings.station_id,
         jig_id=settings.jig_id,
         slot_count=4,

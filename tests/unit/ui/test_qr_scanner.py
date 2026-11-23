@@ -132,6 +132,7 @@ def test_controller_normalises_and_validates_scans(tmp_path):
     MacCacheService(session_factory=factory, station_id="S", jig_id="J", jig_positions=4, threshold=8, gateway=SimulatedMacAllocationGateway(), request_size=8).ensure(MacPurpose.STOCK_RF_TEST)
     none = frozenset()
     controller = ProductionController(
+        retry_pause_seconds=0,
         station_id="S", jig_id="J", slot_count=4, store=SqlProductionStore(factory),
         programmer=SimulatedProgrammer(delay_seconds=0, failures=none),
         rf_tester=SimulatedGoldenRig(delay_seconds=0, failures=none),

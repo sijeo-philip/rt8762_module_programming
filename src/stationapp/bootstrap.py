@@ -71,6 +71,8 @@ class AppContext:
     production_settings: object | None = None       # ProductionSettingsService
     batch_codes: object | None = None               # BatchCodeService
     authentication: object | None = None            # BoxAuthenticationService
+    production_records: object | None = None        # ProductionRecordService (Supervisor browser)
+    device_history: object | None = None            # DeviceHistoryService
 
 
     @property
@@ -116,6 +118,9 @@ def bootstrap() -> AppContext:
         )
     serial_topology_service = (StationSerialTopologyService(binding_service=binding_service))
 
+    from stationapp.services.history import DeviceHistoryService
+    from stationapp.services.production_records import ProductionRecordService
+
     session_factory, recovered = _prepare_database(settings)
     box = _build_box(settings, session_factory)
     access, users, jig_configuration, golden_rig_configuration = _build_access(
@@ -147,6 +152,8 @@ def bootstrap() -> AppContext:
             production_settings=production_settings,
             batch_codes=batch_codes,
             authentication=access.authentication,
+            production_records=ProductionRecordService(session_factory),
+            device_history=DeviceHistoryService(session_factory),
         )
     logger.debug("Bootstrap Complete")
     return context
@@ -484,6 +491,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         qr_format=ScanFormat(length=settings.qr_code_length, hex_only=settings.qr_hex_only),
         qr_reuse=box.reports.service,
         batch_codes=batch_codes,
+        stage_attempts=lambda: production_settings.current().stage_attempts,
     )
 
     return production, readiness, mac_cache

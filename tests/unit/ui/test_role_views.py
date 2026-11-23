@@ -70,7 +70,7 @@ def test_role_based_screens(app_window, qtbot):
     # Supervisor (role from the box): full view with every tab.
     log_in(login, *SUPERVISOR)
     qtbot.waitUntil(lambda: window._stack.currentWidget() is window._work_page, timeout=3_000)
-    assert visible_tabs(window) == ["Production", "Production settings", "Station configuration", "Station status"]
+    assert visible_tabs(window) == ["Production", "Production settings", "Station configuration", "Production records", "Station status"]
     assert window._tabs.tabBar().isVisible() or not window.isVisible()
     assert panel.supervisor_view
     access.start_session(access.current_configuration(), batch_code_threshold=100)

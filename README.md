@@ -783,6 +783,8 @@ STOCK RF TEST
 - All physical slots do not have to be populated for a batch.
 - Empty slots are allowed and do not cause the batch to fail.
 - A failure on one slot does not automatically stop successfully progressing slots.
+- Stock programming, Stock MAC readback, Stock RF test, Pricol programming and Pricol MAC readback are retried automatically on the failed slots only (the failed step only; 3 attempts by default, set by the Supervisor in Production settings) before a slot is marked failed and the tray moves to the next step. Every retry is recorded as a `STAGE_RETRY` event; the last attempt decides the slot.
+- Supervisors can search the local production records (Production records tab) by date, MAC, Operator, module QR and Batch Code, view each module's history and export to CSV. The tab is read-only.
 - Only slots that satisfy the previous stage's acceptance criteria are eligible for the next stage.
 - Multiple DUTs may be programmed in parallel, but each slot retains its own subprocess, progress indication, result and traceability record.
 - The UI shall show one independent progress/status indicator per physical slot during programming and verification activities.

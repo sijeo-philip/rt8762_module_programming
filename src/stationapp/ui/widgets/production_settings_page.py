@@ -29,7 +29,9 @@ from stationapp.domain.users import AccessError
 from stationapp.services.production_settings import (
     MAX_BLOCK_SIZE,
     MAX_RANGE_NAME,
+    MAX_STAGE_ATTEMPTS,
     MIN_BLOCK_SIZE,
+    MIN_STAGE_ATTEMPTS,
     ProductionSettings,
     ProductionSettingsService,
 )
@@ -106,6 +108,22 @@ class ProductionSettingsPage(QWidget):
             self.pricol_range_input.setEnabled(False)
         layout.addWidget(blocks_box)
 
+        retry_box = QGroupBox("Automatic retries")
+        retry_form = QFormLayout(retry_box)
+        retry_hint = QLabel(
+            "Stock programming, Stock MAC readback, Stock RF test, Pricol programming and "
+            "Pricol MAC readback are tried this many times on a slot before it is marked "
+            "failed. Only the slots that failed are tried again; slots that passed are not touched."
+        )
+        retry_hint.setWordWrap(True)
+        retry_hint.setStyleSheet(f"color: {GREY};")
+        retry_form.addRow(retry_hint)
+        self.attempts_input = QSpinBox()
+        self.attempts_input.setRange(MIN_STAGE_ATTEMPTS, MAX_STAGE_ATTEMPTS)
+        self.attempts_input.setSuffix(" attempts")
+        retry_form.addRow("Attempts per step", self.attempts_input)
+        layout.addWidget(retry_box)
+
         slots_box = QGroupBox("Enabled jig slots")
         self.slot_grid = QGridLayout(slots_box)
         self.slot_checks: dict[int, QCheckBox] = {}
@@ -167,6 +185,7 @@ class ProductionSettingsPage(QWidget):
         self.stock_range_input.setText(settings.stock_master_range or "")
         self.pricol_range_input.setText(settings.pricol_master_range or "")
         self.block_size_input.setValue(settings.block_size)
+        self.attempts_input.setValue(settings.stage_attempts)
         for number, check in self.slot_checks.items():
             check.setChecked(number in settings.enabled_slots)
         self._show_ports()
@@ -213,6 +232,7 @@ class ProductionSettingsPage(QWidget):
             stock_master_range=self.stock_range_input.text().strip() or None,
             pricol_master_range=self.pricol_range_input.text().strip() or None,
             block_size=self.block_size_input.value(),
+            stage_attempts=self.attempts_input.value(),
         )
         for label, path in (("Stock", settings.stock_firmware), ("Pricol", settings.pricol_firmware)):
             if path is not None and not path.is_file():

@@ -43,6 +43,7 @@ Each step says who does it:
   - [C8. Golden Rig — after the first time (Supervisor)](#c8-golden-rig--after-the-first-time-supervisor)
   - [C9. End of shift (Supervisor)](#c9-end-of-shift-supervisor)
   - [C10. Line stopped: holds (Operator / Supervisor)](#c10-line-stopped-holds-operator--supervisor)
+  - [C11. Production records: look up modules (Supervisor)](#c11-production-records-look-up-modules-supervisor)
 - [D. Problems and what to do](#d-problems-and-what-to-do)
 - [E. Checklists](#e-checklists)
 - [F. Bench tool: test the whole flow without the Box](#f-bench-tool-test-the-whole-flow-without-the-box)
@@ -401,8 +402,9 @@ Open the **Production settings** tab. These settings are kept until a Supervisor
    - **Stock Only range:** the pool for Stock only modules (they keep their Stock MAC). Required in Stock only mode.
    - **Stock + Pricol range:** the pool for Stock + Pricol modules (they keep their Pricol MAC). Required in Stock + Pricol mode.
    - **Block size:** how many addresses the station asks the Box for at a time (100–20000; `5000` is a good default). Smaller blocks waste fewer addresses when the mode or range is changed often. A new size is used for the next block; blocks the station already holds keep their size.
-5. **Enabled jig slots:** tick the slots that may be used. Each one shows its COM port. Untick a slot whose fixture is damaged; Operators will then not be able to use it.
-6. Press **Save settings** (or **Discard changes**). You are asked for a reason; the change is recorded.
+5. **Automatic retries — Attempts per step:** how many times the station tries a module at **Stock programming**, **Stock MAC readback**, **Stock RF test**, **Pricol programming** and **Pricol MAC readback** before it marks the module failed (1–5; default `3`). Only the modules that failed are tried again, and only the step that failed; modules that passed are not touched. `1` turns retries off.
+6. **Enabled jig slots:** tick the slots that may be used. Each one shows its COM port. Untick a slot whose fixture is damaged; Operators will then not be able to use it.
+7. Press **Save settings** (or **Discard changes**). You are asked for a reason; the change is recorded.
 
 > **Changing the programming mode** (Stock only ↔ Stock + Pricol) changes where the final MACs come from. The Box lets a station hold blocks for one mode at a time, so the station gives up the remaining addresses of the old mode's blocks and fetches a new block at the next **Check station**. That needs the Box to be reachable. Plan mode changes, and do not switch back and forth during a shift.
 
@@ -477,6 +479,8 @@ The line above the error messages shows **Batch Code: S5A01 · 37 of 100 passed*
 | **TESTING MODULES** | Wait. The Golden Rig is checking each module. |
 | **RF TEST COMPLETE** | Wait. |
 
+> **Automatic retries.** If a module fails Stock programming, Stock MAC readback or the RF test, the station tries **that module only**, at **that step only**, again (3 attempts in all unless the Supervisor changed it). The slot shows *Failed - retrying (2/3)* and then *Retry 2/3: ...*. The other modules wait; nothing is needed from you. A module that fails every attempt is marked failed and the tray carries on.
+
 ### Pricol programming and functional test (only in Stock + Pricol mode)
 
 Each of these steps needs you to switch or reset the modules by hand. Nothing starts until you press the button.
@@ -490,6 +494,8 @@ Each of these steps needs you to switch or reset the modules by hand. Nothing st
 | **READY FOR DFU TEST** | Press **RUN DFU TEST**. **Do not reset yet.** |
 | **RESET ALL MODULES NOW** | **Reset** every module again. The station waits for each start-up message, then sends *PRICOLDFU*. |
 | **TESTS COMPLETE** | Wait. |
+
+Pricol programming and Pricol MAC readback are retried automatically in the same way (failed modules only). The application and DFU tests are **not** retried automatically, because each needs you to reset the modules; use **RESTART TRAY** for those.
 
 > **Order matters.** For **PROGRAM PRICOL FIRMWARE**: switch and reset first, then press. For **RUN APP TEST** and **RUN DFU TEST**: press first, then reset when the screen says **RESET ALL MODULES NOW**. The module accepts the test command only right after it starts. A module reset too early, or not at all, fails with *"no start-up message"*. To test it again, press **RESTART TRAY** ([below](#restart-the-tray)).
 
@@ -590,6 +596,22 @@ There are three kinds of hold:
 4. The message **Hold cleared** appears and the red button disappears. Every clearing is recorded with your phone number.
 
 Clearing a hold does **not** log the Operator out.
+
+## C11. Production records: look up modules (Supervisor)
+
+The **Production records** tab (Supervisor only) searches the station's own database. Each row is one module: date and time, tray ID, lot, Operator, mode, tray state, slot, **Module QR**, **Stock MAC**, **Pricol MAC**, **Batch Code**, result, RF result, APP and DFU tests, **Retries** (automatic retries the module needed) and the failure or hold reason. Nothing can be changed from this tab.
+
+1. Choose the **Date**: *Today*, *Yesterday*, *Last 7 days*, *Last 30 days*, *Custom dates* (then set **From** and **To**), or *All dates*.
+2. Fill in any of the other boxes. Leave a box empty to not filter on it. Boxes can be combined (e.g. one Operator and one Batch Code):
+   - **MAC ID:** a full MAC in any notation (`02:5B:00:12:34:56`, `02-5b-...`, `025B00123456`) or only its last bytes (`12:34:56`). Matches the Stock or the Pricol MAC.
+   - **Operator:** pick from the list, or type part of the Operator's ID or name.
+   - **QR Code:** the full module QR or part of it.
+   - **Batch Code:** the exact Batch Code (upper/lower case does not matter).
+3. Press **Search** (or **Enter**). The line above the table counts the modules, trays and results. At most 5000 modules are shown, newest first; narrow the search to see older ones.
+4. Click a column heading to sort by it. Click a row to see the module's full history underneath (every step, retry, result and the QR scan, with times).
+5. **Export CSV...** saves the rows shown to a file that opens in Excel.
+
+Times are shown in the station PC's local time. Trays that were aborted or are still running are included; their **Batch Code** is empty because a Batch Code is given only when a tray is completed.
 
 ---
 

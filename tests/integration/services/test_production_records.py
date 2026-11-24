@@ -50,7 +50,7 @@ class FixedCodes:
         pass
 
 
-def run_tray(session_factory, *, operator: str, qrs: dict[int, str], code: str, failures: str = "", mode=ProgrammingMode.STOCK_AND_PRICOL):
+def run_tray(session_factory, *, operator: str, qrs: dict[int, str], code: str, failures: str = "", mode=ProgrammingMode.STOCK_AND_PRICOL, rf_retries: dict[int, int] | None = None):
     failure_set = parse_failures(failures)
     controller = ProductionController(
         station_id=STATION,
@@ -62,10 +62,16 @@ def run_tray(session_factory, *, operator: str, qrs: dict[int, str], code: str, 
         functional_tester=SimulatedFunctionalTester(delay_seconds=0, failures=failure_set),
         temporary_stock_mac_base=TEMP_BASE,
         batch_codes=FixedCodes(code),
-        retry_pause_seconds=0,
     )
     slots = tuple(sorted(qrs))
     batch = controller.start_batch(occupied=slots, ports=ports(*slots), mode=mode, operator_id=operator, batch_label="LOT-7")
+    if rf_retries:
+        # The operator presses RETRY on each RF-failed slot while the tray
+        # waits for Pricol programming.
+        run_until(controller, BatchState.PRICOL_MACS_RESERVED)
+        for number, times in rf_retries.items():
+            for _ in range(times):
+                controller.retry_slot(number)
     run_until(controller, BatchState.QR_SCANNING)
     while batch.next_qr_slot is not None:
         controller.scan_qr(qrs[batch.next_qr_slot])
@@ -76,7 +82,7 @@ def run_tray(session_factory, *, operator: str, qrs: dict[int, str], code: str, 
 
 @pytest.mark.integration
 def test_search_by_operator_qr_mac_code_and_date(session_factory):
-    first = run_tray(session_factory, operator="OP-ANU", qrs={1: "QRA001", 2: "QRA002"}, code="S5A01", failures="rf:2")
+    first = run_tray(session_factory, operator="OP-ANU", qrs={1: "QRA001", 2: "QRA002"}, code="S5A01", failures="rf:2", rf_retries={2: 2})
     second = run_tray(session_factory, operator="OP-RAVI", qrs={1: "QRB001"}, code="S5B07")
     service = ProductionRecordService(session_factory)
 
@@ -95,7 +101,7 @@ def test_search_by_operator_qr_mac_code_and_date(session_factory):
     assert record.batch_label == "LOT-7"
     assert record.rf_outcome == "FAIL"
     assert record.result != "PASS"
-    assert record.retries == 2           # RF tried three times on slot 2 only
+    assert record.retries == 2           # operator retried RF twice on slot 2 only
     assert record.stock_mac is not None and record.pricol_mac is None
 
     good = next(r for r in service.search(RecordFilter(module_qr="QRA001")).records)

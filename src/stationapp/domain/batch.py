@@ -18,7 +18,7 @@ from stationapp.domain.errors import (
 )
 
 from stationapp.domain.mac import AllocatedMac, MacPurpose, MacStatus
-from stationapp.domain.slot import DeviceState, JigSlot
+from stationapp.domain.slot import DeviceState, FunctionalResults, JigSlot
 
 from stationapp.domain.golden_rig import (
     GoldenRigOutcome,
@@ -86,8 +86,26 @@ class BatchState(str, Enum):
     HOLD = "HOLD"
     ABORTED = "ABORTED"
 
-    
-    
+
+class RetryStep(str, Enum):
+    """The step a failed slot repeats when the operator presses its RETRY."""
+
+    STOCK = "STOCK"              # Stock programming + Stock MAC readback
+    STOCK_RF = "STOCK_RF"        # Golden Rig RF test
+    PRICOL = "PRICOL"            # Pricol programming + Pricol MAC readback
+    PRICOL_APP = "PRICOL_APP"    # PRICOLAPP functional test
+    PRICOL_DFU = "PRICOL_DFU"    # PRICOLDFU functional test
+
+
+# A slot is retried only while the rest of the tray waits for the operator
+# at the step that follows the one the slot failed.
+_WAIT_AFTER_STOCK = frozenset({BatchState.STOCK_READBACK_VERIFIED, BatchState.AWAITING_STOCK_RF_MODE})
+_WAIT_AFTER_RF = frozenset({BatchState.PRICOL_MACS_RESERVED, BatchState.AWAITING_PRICOL_PROGRAM_MODE})
+_WAIT_AFTER_PRICOL = frozenset({BatchState.PRICOL_READBACK_VERIFIED, BatchState.AWAITING_FUNCTIONAL_TEST_MODE, BatchState.AWAITING_PRICOLAPP_RESET})
+_WAIT_AFTER_APP = frozenset({BatchState.AWAITING_PRICOLDFU_RESET})
+
+
+
 @dataclass(slots=True)
 class Batch:
     """One complete 4-up or 8-up production cycle."""
@@ -320,16 +338,19 @@ class Batch:
         released and it gets no test and no QR - so batches need not be
         full jigs."""
         self._require_state(BatchState.STOCK_PROGRAMMING)
+        self._drop_not_detected(slot_number, reason)
+        if not self.occupied_slot_numbers:
+            self.abort("No module was detected in any loaded slot - check that modules are mounted, seated and in boot mode")
+            return
+        self._complete_stock_programming_stage()
+
+    def _drop_not_detected(self, slot_number: int, reason: str) -> None:
         if slot_number not in self.occupied_slot_numbers:
             raise InvalidBatchTransition(f"Slot {slot_number} is not populated")
         slot = self._get_slot(slot_number)
         self.released_macs.append(slot.release_not_detected())
         self.not_detected_slots[slot_number] = reason.strip() or "module not detected"
         self.occupied_slot_numbers = tuple(number for number in self.occupied_slot_numbers if number != slot_number)
-        if not self.occupied_slot_numbers:
-            self.abort("No module was detected in any loaded slot - check that modules are mounted, seated and in boot mode")
-            return
-        self._complete_stock_programming_stage()
 
     def _complete_stock_programming_stage(self) -> None:
         # Wait until all occupied slots have reported an outcome.
@@ -778,6 +799,181 @@ class Batch:
             self.state = BatchState.QR_BOUND
 
         return slot_number
+
+    #--------------------------------------------------------------------------------------
+    # Manual retry of one failed slot
+    #--------------------------------------------------------------------------------------
+
+    def retry_step(self, slot_number: int) -> RetryStep | None:
+        """The step slot_number may repeat now, or None.
+
+        A slot that failed (or was not detected) may be retried only while
+        the rest of the tray waits for the operator at the step right after
+        the failed one; the retry brings it level with the other modules.
+        Once the operator moves the tray on, the failure is final for this
+        tray (RESTART TRAY repeats every step). A QR already scanned for the
+        slot closes its retry.
+        """
+        slot = self.slots.get(slot_number)
+        if slot is None:
+            return None
+        state = self.state
+        occupied = slot_number in (self.occupied_slot_numbers or ())
+
+        if state in _WAIT_AFTER_STOCK:
+            if slot_number in self.not_detected_slots:
+                return RetryStep.STOCK
+            if occupied and slot.is_held and slot.golden_rf_result is None:
+                return RetryStep.STOCK
+            return None
+
+        if not occupied:
+            return None
+
+        stock_confirmed = slot.stock_mac_record is not None and slot.stock_mac_record.status is MacStatus.CONFIRMED
+        pricol_confirmed = slot.pricol_mac_record is not None and slot.pricol_mac_record.status is MacStatus.CONFIRMED
+        app = slot.functional.pricol_app_passed
+        dfu = slot.functional.pricol_dfu_passed
+
+        if not self.requires_pricol:
+            # Stock only: QR scanning follows the RF test.
+            if (
+                state is BatchState.QR_SCANNING
+                and slot.module_qr is None
+                and slot.is_held
+                and slot.golden_rf_result is not None
+                and not stock_confirmed
+            ):
+                return RetryStep.STOCK_RF
+            return None
+
+        if state in _WAIT_AFTER_RF:
+            if slot.is_held and slot.golden_rf_result is not None and not stock_confirmed and slot.pricol_mac_record is None:
+                return RetryStep.STOCK_RF
+            return None
+
+        if state in _WAIT_AFTER_PRICOL:
+            if slot.is_held and stock_confirmed and not pricol_confirmed:
+                return RetryStep.PRICOL
+            return None
+
+        if state in _WAIT_AFTER_APP:
+            if pricol_confirmed and dfu is None and (
+                (slot.is_held and app is None)
+                or (slot.state is DeviceState.PRICOL_MAC_CONFIRMED and app is False)
+            ):
+                return RetryStep.PRICOL_APP
+            return None
+
+        if state is BatchState.QR_SCANNING and slot.module_qr is None:
+            # QR scanning follows the DFU test.
+            if pricol_confirmed and app is True and (
+                (slot.state is DeviceState.FUNCTIONAL_TEST_FAILED and dfu is False)
+                or (slot.is_held and dfu is None)
+            ):
+                return RetryStep.PRICOL_DFU
+        return None
+
+    def reopen_for_retry(self, slot_number: int, step: RetryStep, *, port_identity: str | None = None, record: AllocatedMac | None = None) -> JigSlot:
+        """Put a failed slot back at the start of step, ready to run it.
+
+        STOCK: the slot is set up again (port, Stock MAC) and left
+        STOCK_PROGRAMMING; a not-detected slot rejoins the tray with record
+        (a newly reserved Stock MAC), a failed one keeps its own MAC.
+        STOCK_RF: left STOCK_READBACK_VERIFIED, its RF result cleared.
+        PRICOL: left PRICOL_PROGRAMMING with its own Pricol MAC, or with
+        record when its MAC was released (module not detected).
+        PRICOL_APP / PRICOL_DFU: left PRICOL_MAC_CONFIRMED without that
+        test's result. The batch state does not change.
+        """
+        if self.retry_step(slot_number) is not step:
+            raise InvalidBatchTransition(f"Slot {slot_number} cannot repeat {step.value} now")
+        slot = self._get_slot(slot_number)
+
+        if step is RetryStep.STOCK:
+            if slot_number in self.not_detected_slots:
+                if record is None:
+                    raise InvalidBatchTransition(f"Slot {slot_number} needs a new Stock MAC")
+                stock = record
+            else:
+                stock = slot.stock_mac_record
+                assert stock is not None
+                stock.rewind_for_restart()
+            identity = port_identity or slot.port_identity
+            if not identity:
+                raise InvalidBatchTransition(f"Slot {slot_number} has no port")
+            fresh = JigSlot(slot_number)
+            fresh.bind_port(identity)
+            fresh.assign_stock_mac(stock)
+            fresh.begin_stock_programming()
+            self.slots[slot_number] = fresh
+            if slot_number in self.not_detected_slots:
+                del self.not_detected_slots[slot_number]
+                self.occupied_slot_numbers = tuple(sorted((*self.occupied_slot_numbers, slot_number)))
+                self._forget_released(stock)
+            return fresh
+
+        if step is RetryStep.STOCK_RF:
+            assert slot.stock_mac_record is not None
+            slot.stock_mac_record.reopen_for_retest()
+            slot.golden_rf_result = None
+            slot.golden_reported_mac = None
+            slot.hold_reason = None
+            slot.state = DeviceState.STOCK_READBACK_VERIFIED
+            return slot
+
+        if step is RetryStep.PRICOL:
+            pricol = slot.pricol_mac_record
+            if pricol is None:
+                if record is None:
+                    raise InvalidBatchTransition(f"Slot {slot_number} needs a new Pricol MAC")
+                pricol = record
+                self._forget_released(pricol)
+            else:
+                pricol.rewind_for_restart()
+            slot.pricol_mac_record = None
+            slot.pricol_readback_mac = None
+            slot.hold_reason = None
+            slot.state = DeviceState.STOCK_RF_CONFIRMED
+            slot.assign_pricol_mac(pricol)
+            slot.begin_pricol_programming()
+            self.carried_pricol_macs.pop(slot_number, None)
+            return slot
+
+        if step is RetryStep.PRICOL_APP:
+            slot.functional = FunctionalResults()
+        else:
+            slot.functional.pricol_dfu_passed = None
+        slot.hold_reason = None
+        slot.state = DeviceState.PRICOL_MAC_CONFIRMED
+        return slot
+
+    def record_retry_stock_not_detected(self, slot_number: int, *, reason: str) -> None:
+        """A retried slot still has no module: it leaves the tray again."""
+        self._drop_not_detected(slot_number, reason)
+
+    def record_retry_pricol_not_detected(self, slot_number: int, *, reason: str) -> None:
+        """The retried module did not answer for Pricol: MAC released, held."""
+        self.released_macs.append(self._get_slot(slot_number).release_pricol_not_detected(reason))
+
+    def assign_retry_pricol_mac(self, slot_number: int, record: AllocatedMac) -> None:
+        """Pricol MAC of a slot that passed the RF test on a retry, so it
+        joins the Pricol step with the rest of the tray."""
+        if self.state not in _WAIT_AFTER_RF:
+            raise InvalidBatchTransition("The tray is not waiting for Pricol programming")
+        self._get_slot(slot_number).assign_pricol_mac(record)
+        self.carried_pricol_macs.pop(slot_number, None)
+        self._forget_released(record)
+
+    def release_retry_mac(self, record: AllocatedMac) -> None:
+        """A MAC reserved for a retry that did not need it (never written)."""
+        record.release_unused()
+        self.released_macs.append(record)
+
+    def _forget_released(self, record: AllocatedMac) -> None:
+        # The same address may be reserved again; the released copy must
+        # not overwrite its new status when the batch is saved.
+        self.released_macs = [item for item in self.released_macs if item.address != record.address]
 
     #--------------------------------------------------------------------------------------
     # Commit and upload lifecycle

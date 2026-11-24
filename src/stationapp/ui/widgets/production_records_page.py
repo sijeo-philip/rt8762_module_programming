@@ -261,7 +261,7 @@ class ProductionRecordsPage(QWidget):
         retried = sum(1 for row in rows if row.retries)
         text = f"{len(rows)} module(s) on {trays} tray(s): {parts}."
         if retried:
-            text += f" {retried} module(s) needed automatic retries."
+            text += f" {retried} module(s) were retried by the operator."
         if truncated:
             text += f" Only the newest {len(rows)} are shown; narrow the filters to see the rest."
         return text

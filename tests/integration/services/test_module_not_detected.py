@@ -95,7 +95,6 @@ class PricolAbsentProgrammer:
 @pytest.mark.integration
 def test_module_lost_before_pricol_releases_the_pricol_mac_and_is_held(session_factory):  # noqa: F811
     controller = ProductionController(
-        retry_pause_seconds=0,
         station_id=STATION, jig_id=JIG, slot_count=8,
         store=SqlProductionStore(session_factory),
         programmer=PricolAbsentProgrammer(),

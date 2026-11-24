@@ -36,7 +36,7 @@ from PyQt6.QtWidgets import (
 )
 
 from stationapp.concurrency.manager import OperationManager
-from stationapp.domain.batch import BatchState, ProgrammingMode
+from stationapp.domain.batch import BatchState, ProgrammingMode, RetryStep
 from stationapp.domain.users import AccessError
 from stationapp.services.health import Severity
 from stationapp.services.production import ProductionController, ProductionError, ProductionSnapshot
@@ -51,6 +51,9 @@ from stationapp.ui.widgets.scanner_input import ScannerLineEdit
 logger = logging.getLogger(__name__)
 
 ADVANCE_OPERATION = "production-advance"
+# Operator RETRY of one failed slot; never runs beside ADVANCE_OPERATION.
+RETRY_OPERATION = "production-slot-retry"
+PRODUCTION_OPERATIONS = (ADVANCE_OPERATION, RETRY_OPERATION)
 READINESS_OPERATION = "station-readiness"
 
 BLUE = "#1d4ed8"
@@ -74,6 +77,15 @@ STEPS = (
     "UPLOAD QUEUED",
 )
 PRICOL_STEPS = frozenset({"PRICOL PROGRAM", "PRICOL READBACK", "FUNCTIONAL TEST"})
+
+# What a slot RETRY repeats, and how the module must be set first.
+RETRY_STEPS = {
+    RetryStep.STOCK: ("Stock programming + MAC readback", "Check that the module is seated, in boot (download) mode, and reset it."),
+    RetryStep.STOCK_RF: ("Golden Rig RF test", "The module must run the application: switch it to application mode and reset it."),
+    RetryStep.PRICOL: ("Pricol programming + MAC readback", "Switch the module to boot (download) mode and reset it."),
+    RetryStep.PRICOL_APP: ("PRICOLAPP test", "The module must be in application mode. When the slot shows 'Reset this module now', reset (power-cycle) it."),
+    RetryStep.PRICOL_DFU: ("PRICOLDFU test", "The module must be in application mode. When the slot shows 'Reset this module now', reset (power-cycle) it."),
+}
 
 # A tray in these states cannot be restarted.
 _FINISHED = frozenset({BatchState.COMMITTED, BatchState.UPLOAD_PENDING, BatchState.UPLOADED, BatchState.ABORTED})
@@ -220,6 +232,7 @@ class ProductionPanel(QWidget):
 
         # Operators mark loaded/empty slots by tapping the slot cards.
         jig_grid.slot_clicked.connect(self._on_slot_clicked)
+        jig_grid.retry_clicked.connect(self._on_slot_retry)
 
         # The advance worker is only gone once its thread is cleaned up.
         operations.operation_removed.connect(self._on_operation_removed)
@@ -709,7 +722,7 @@ class ProductionPanel(QWidget):
             if not dialog.exec() or dialog.result_user is None:
                 return
             supervisor = dialog.result_user
-        running = snapshot.running or self._operations.get(ADVANCE_OPERATION) is not None
+        running = self._busy(snapshot)
         text = (
             "Start this tray again from the first step?\n\n"
             "Every module is programmed and tested again and keeps the MAC "
@@ -724,13 +737,55 @@ class ProductionPanel(QWidget):
             return
         if running:
             self._restart_request = (supervisor,)
-            self._operations.cancel(ADVANCE_OPERATION)
+            for operation_id in PRODUCTION_OPERATIONS:
+                if self._operations.get(operation_id) is not None:
+                    self._operations.cancel(operation_id)
             self.render()
             return
         self._restart(supervisor)
 
+    def _busy(self, snapshot: ProductionSnapshot) -> bool:
+        """A production step or a slot retry is running."""
+        return snapshot.running or any(self._operations.get(operation_id) is not None for operation_id in PRODUCTION_OPERATIONS)
+
+    def _on_slot_retry(self, number: int) -> None:
+        """RETRY on a failed slot: repeat its failed step on that slot only,
+        while the rest of the tray waits. The controller re-checks that
+        nothing else runs and that the tray still waits at the next step."""
+        snapshot = self._controller.snapshot()
+        step = dict(snapshot.retry_slots).get(number)
+        if step is None or self._busy(snapshot) or self._restart_request is not None:
+            self._action_error(f"Slot {number} cannot be retried now: wait until the other modules are waiting for the next step.")
+            self.render()
+            return
+        what, how = RETRY_STEPS[step]
+        answer = QMessageBox.question(
+            self,
+            f"Retry slot {number}",
+            f"Repeat the {what} on the module in SLOT {number} only?\n\n"
+            f"{how}\n\n"
+            "The other modules are not touched and keep waiting for the next step. "
+            "You may retry as many times as needed until you move the tray on.",
+        )
+        if answer is not QMessageBox.StandardButton.Yes:
+            return
+        controller = self._controller
+
+        def operation(_operation_id, token, _progress):
+            controller.retry_slot(number, token)
+
+        try:
+            self._operations.start(operation, operation_id=RETRY_OPERATION)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Could not start slot retry")
+            self._action_error(f"Could not start the retry: {exc}")
+            return
+        logger.info("Operator retry started | slot=%s step=%s", number, step.value)
+        self._local_error = None
+        self.render()
+
     def _on_operation_removed(self, operation_id: str) -> None:
-        if operation_id == ADVANCE_OPERATION and self._restart_request is not None:
+        if operation_id in PRODUCTION_OPERATIONS and self._restart_request is not None and not self._busy(self._controller.snapshot()):
             (supervisor,) = self._restart_request
             self._restart(supervisor)
             return
@@ -799,7 +854,7 @@ class ProductionPanel(QWidget):
         self._render_pending = False
         snapshot = self._controller.snapshot()
         self._snapshot = snapshot
-        running = snapshot.running or self._operations.get(ADVANCE_OPERATION) is not None
+        running = self._busy(snapshot)
 
         if not snapshot.has_batch:
             self._render_setup(snapshot)
@@ -865,6 +920,10 @@ class ProductionPanel(QWidget):
 
         if snapshot.jig is not None and snapshot.jig.station_id == self._station_id:
             self._jig_grid.update_view(snapshot.jig)
+        self._jig_grid.set_retry_slots(
+            {number: RETRY_STEPS[step][0] for number, step in snapshot.retry_slots},
+            enabled=not running and self._restart_request is None,
+        )
 
     def _render_setup(self, snapshot: ProductionSnapshot) -> None:
         if self._access is not None:

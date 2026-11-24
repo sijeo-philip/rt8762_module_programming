@@ -493,8 +493,6 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         qr_format=ScanFormat(length=settings.qr_code_length, hex_only=settings.qr_hex_only),
         qr_reuse=box.reports.service,
         batch_codes=batch_codes,
-        stage_attempts=lambda: production_settings.current().stage_attempts,
-        retry_pause_seconds=settings.retry_pause_seconds,
     )
 
     return production, readiness, mac_cache

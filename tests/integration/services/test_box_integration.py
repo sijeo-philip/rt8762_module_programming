@@ -81,7 +81,6 @@ def controller_for(station, *, failures: frozenset = frozenset(), qr_reuse=None)
     # Trays get Batch Codes once a session is open (login_operator).
     batch_codes = station["batch_codes"] if station["access"].session is not None else None
     return ProductionController(
-        retry_pause_seconds=0,
         station_id=STATION,
         jig_id=JIG,
         slot_count=8,
@@ -747,7 +746,6 @@ def test_restart_refused_once_the_tray_is_committed_or_on_hold_without_a_supervi
     station["blocks"].ensure(MacPurpose.STOCK_RF_TEST)
     login_operator(station)
     controller = ProductionController(
-        retry_pause_seconds=0,
         station_id=STATION,
         jig_id=JIG,
         slot_count=8,

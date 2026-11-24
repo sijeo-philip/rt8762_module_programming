@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QProgressBar,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -78,11 +79,34 @@ class JigSlotCard(QFrame):
         self.progress_bar.setTextVisible(False)
         self.progress_bar.hide()
         layout.addWidget(self.progress_bar)
+        # Shown on a failed slot while the rest of the tray waits for the
+        # next step; the operator repeats the failed step on this slot.
+        self.retry_button = QPushButton("RETRY")
+        self.retry_button.setObjectName(f"jigSlotRetry{number}")
+        self.retry_button.setMinimumHeight(34)
+        self.retry_button.setStyleSheet(
+            "QPushButton { font-weight: 700; color: white; background: #b45309;"
+            " border-radius: 5px; padding: 4px 10px; }"
+            "QPushButton:disabled { background: #cbd5e1; color: #475569; }"
+        )
+        self.retry_button.clicked.connect(self._on_retry)
+        self.retry_button.hide()
+        layout.addWidget(self.retry_button)
         self.setStyleSheet("JigSlotCard {"
             "border: 1px solid #94a3b8;"
             "border-radius: 8px;"
             "}"
         )
+
+    def _on_retry(self) -> None:
+        grid = self.parent()
+        if isinstance(grid, JigSlotGrid):
+            grid.retry_clicked.emit(self.number)
+
+    def set_retry(self, *, visible: bool, enabled: bool, tooltip: str = "") -> None:
+        self.retry_button.setVisible(visible)
+        self.retry_button.setEnabled(visible and enabled)
+        self.retry_button.setToolTip(tooltip)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
         grid = self.parent()
@@ -131,6 +155,8 @@ class JigSlotGrid(QWidget):
     """Physical 4-up or 8-up graphical jig layout."""
 
     slot_clicked = pyqtSignal(int)
+    # RETRY pressed on a failed slot's card.
+    retry_clicked = pyqtSignal(int)
 
     def __init__(self, slot_count: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -151,8 +177,20 @@ class JigSlotGrid(QWidget):
             grid.addWidget(card, (number - 1) // columns, (number - 1) % columns)
         self.clear_batch()
 
+    def set_retry_slots(self, retry: dict[int, str], *, enabled: bool) -> None:
+        """Show RETRY on the slots in retry (slot -> what it repeats);
+        enabled is False while any step or retry is running."""
+        for number, card in self.cards.items():
+            step = retry.get(number)
+            card.set_retry(
+                visible=step is not None,
+                enabled=enabled,
+                tooltip=f"Repeat {step} on slot {number} only" if step else "",
+            )
+
     def clear_batch(self) -> None:
         self.summary_label.setText("No active production batch")
+        self.set_retry_slots({}, enabled=False)
 
         for number, card in self.cards.items():
             card.render(
@@ -166,6 +204,7 @@ class JigSlotGrid(QWidget):
     def show_slots(self, views: list[SlotView], summary: str) -> None:
         """Render slot views outside a batch (e.g. loading the jig)."""
         self.summary_label.setText(summary)
+        self.set_retry_slots({}, enabled=False)
         for slot in views:
             self.cards[slot.number].render(slot)
 

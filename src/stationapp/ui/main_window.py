@@ -468,9 +468,9 @@ class MainWindow(QMainWindow):
         
         # Only a running production step needs the operator's decision;
         # background checks (readiness, rig identity) are simply stopped.
-        from stationapp.ui.widgets.production_panel import ADVANCE_OPERATION
+        from stationapp.ui.widgets.production_panel import PRODUCTION_OPERATIONS
 
-        if self._operation_manager.get(ADVANCE_OPERATION) is None:
+        if all(self._operation_manager.get(operation_id) is None for operation_id in PRODUCTION_OPERATIONS):
             self.shutdown()
             event.accept()
             return

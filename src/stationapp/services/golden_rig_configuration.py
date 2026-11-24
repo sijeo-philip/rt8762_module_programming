@@ -27,6 +27,7 @@ from typing import Any
 from stationapp.domain.audit import AuditRecord
 from stationapp.domain.golden_rig_binding import normalise_rig_host
 from stationapp.infrastructure.golden_rig.resolver import DEFAULT_RESOLVER, HostResolutionError, HostResolver
+from stationapp.services.golden_rig_lock import GoldenRigBusy, golden_rig_exchange
 from stationapp.domain.golden_rig_binding import GoldenRigBinding
 from stationapp.domain.session import StationConfiguration
 from stationapp.domain.users import AuthorizationError
@@ -110,6 +111,16 @@ class GoldenRigIdentityProbe:
     def probe(self, endpoint: RigEndpoint) -> GoldenRigIdentity:
         if not self._ca_certificate.is_file():
             raise GoldenRigIdentityError(f"Golden Rig CA certificate not found: {self._ca_certificate}")
+        # Never connect while an RF test talks to the rig: it would clash.
+        try:
+            with golden_rig_exchange(f"identity check of {endpoint}", wait=False):
+                return self._probe(endpoint)
+        except GoldenRigBusy as exc:
+            raise GoldenRigIdentityError(
+                f"{endpoint} not checked: an RF test is running on the Golden Rig. Try again when it has finished."
+            ) from exc
+
+    def _probe(self, endpoint: RigEndpoint) -> GoldenRigIdentity:
 
         context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=str(self._ca_certificate))
         context.verify_mode = ssl.CERT_REQUIRED

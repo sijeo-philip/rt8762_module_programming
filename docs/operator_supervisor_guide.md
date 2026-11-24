@@ -92,6 +92,7 @@ Each step says who does it:
 | **Programming mode** | **Stock only**: the module gets the Stock firmware and keeps its Stock MAC. **Stock + Pricol**: the module first gets the Stock firmware with a **temporary** MAC for the RF test, then the Pricol firmware with its final **Pricol MAC**. |
 | **Temporary Stock MAC** | In Stock + Pricol mode only: the same short list of addresses (one per slot) used on every batch, only until the Pricol MAC is written. It is never reported to the Box. |
 | **RESTART TRAY** | Starts the batch again from the first step with the same modules and the **same MAC addresses**. Possible at any step until **COMPLETE BATCH** is pressed. |
+| **RETRY** (on a slot) | Repeats the failed step on **one** failed or NOT DETECTED slot only, while the other modules wait for the next step. Press it as many times as needed ([C7](#retry-a-failed-slot)). The station never retries by itself. |
 | **Hold / LINE STOPPED** | The station refuses to continue until a Supervisor checks a problem and clears it with their phone number and PIN ([C10](#c10-line-stopped-holds-operator--supervisor)). |
 
 ---
@@ -402,9 +403,8 @@ Open the **Production settings** tab. These settings are kept until a Supervisor
    - **Stock Only range:** the pool for Stock only modules (they keep their Stock MAC). Required in Stock only mode.
    - **Stock + Pricol range:** the pool for Stock + Pricol modules (they keep their Pricol MAC). Required in Stock + Pricol mode.
    - **Block size:** how many addresses the station asks the Box for at a time (100–20000; `5000` is a good default). Smaller blocks waste fewer addresses when the mode or range is changed often. A new size is used for the next block; blocks the station already holds keep their size.
-5. **Automatic retries — Attempts per step:** how many times the station tries a module at **Stock programming**, **Stock MAC readback**, **Stock RF test**, **Pricol programming** and **Pricol MAC readback** before it marks the module failed (1–5; default `3`). Only the modules that failed are tried again, and only the step that failed; modules that passed are not touched. `1` turns retries off. This setting can be saved while a tray is running (change only this field): it applies from the next attempt, also to the step already running. Every other setting waits until the tray is finished or aborted.
-6. **Enabled jig slots:** tick the slots that may be used. Each one shows its COM port. Untick a slot whose fixture is damaged; Operators will then not be able to use it.
-7. Press **Save settings** (or **Discard changes**). You are asked for a reason; the change is recorded.
+5. **Enabled jig slots:** tick the slots that may be used. Each one shows its COM port. Untick a slot whose fixture is damaged; Operators will then not be able to use it.
+6. Press **Save settings** (or **Discard changes**). You are asked for a reason; the change is recorded.
 
 > **Changing the programming mode** (Stock only ↔ Stock + Pricol) changes where the final MACs come from. The Box lets a station hold blocks for one mode at a time, so the station gives up the remaining addresses of the old mode's blocks and fetches a new block at the next **Check station**. That needs the Box to be reachable. Plan mode changes, and do not switch back and forth during a shift.
 
@@ -447,7 +447,7 @@ The Operator screen shows a large coloured **headline**, an **instruction** unde
    - **JIG READY - LOAD MODULES** (blue): continue.
    - **JIG NOT READY** or **STATION NOT READY** (red): call the Supervisor. The reason is shown in brackets.
 4. **Load modules** into the jig. You can load only some slots: empty slots are simply skipped. A batch does not have to be a full jig.
-   - If a slot you tapped has no module, or the module is not seated or not in boot mode, the station cannot detect it (MPCLI **ERR 6**). That slot shows **NOT DETECTED - skipped**: it gets **no MAC address**, no tests, and **no QR scan**, and the MAC goes back for the next batch. The other slots carry on.
+   - If a slot you tapped has no module, or the module is not seated or not in boot mode, the station cannot detect it (MPCLI **ERR 6**). That slot shows **NOT DETECTED - skipped**: it gets **no MAC address**, no tests, and **no QR scan**, and the MAC goes back for the next batch. The other slots carry on. If a module *is* there, re-seat it and press **RETRY** on the slot while the others wait ([Retry a failed slot](#retry-a-failed-slot)).
    - If no slot has a detectable module, the batch ends as **BATCH ABORTED** without using any MAC. Check the modules, then press **PREPARE NEXT BATCH**.
 5. **Tap each slot on screen that holds a module.** The headline becomes **JIG READY - PRESS START** (green) and lists the loaded slots.
 6. Press **START**.
@@ -479,7 +479,7 @@ The line above the error messages shows **Batch Code: S5A01 · 37 of 100 passed*
 | **TESTING MODULES** | Wait. The Golden Rig is checking each module. |
 | **RF TEST COMPLETE** | Wait. |
 
-> **Automatic retries.** If a module fails Stock programming, Stock MAC readback or the RF test, the station tries **that module only**, at **that step only**, again (3 attempts in all unless the Supervisor changed it). The slot shows *Failed - retrying (2/3)* for about 10 seconds (the module settles first) and then *Retry 2/3: ...*. The other modules wait; nothing is needed from you. A module that fails every attempt is marked failed and the tray carries on.
+> **A module failed or was NOT DETECTED?** The station does not try again by itself. While the other modules wait at the next step (for example **RESET MODULES FOR RF TEST**), the failed slot shows a **RETRY** button: fix the module and press it ([Retry a failed slot](#retry-a-failed-slot)).
 
 ### Pricol programming and functional test (only in Stock + Pricol mode)
 
@@ -495,9 +495,9 @@ Each of these steps needs you to switch or reset the modules by hand. Nothing st
 | **RESET ALL MODULES NOW** | **Reset** every module again. The station waits for each start-up message, then sends *PRICOLDFU*. |
 | **TESTS COMPLETE** | Wait. |
 
-Pricol programming and Pricol MAC readback are retried automatically in the same way (failed modules only). The application and DFU tests are **not** retried automatically, because each needs you to reset the modules; use **RESTART TRAY** for those.
+A module that fails Pricol programming, Pricol MAC readback, the APP test or the DFU test can be retried on its own with its slot's **RETRY** button while the other modules wait for the next step ([Retry a failed slot](#retry-a-failed-slot)).
 
-> **Order matters.** For **PROGRAM PRICOL FIRMWARE**: switch and reset first, then press. For **RUN APP TEST** and **RUN DFU TEST**: press first, then reset when the screen says **RESET ALL MODULES NOW**. The module accepts the test command only right after it starts. A module reset too early, or not at all, fails with *"no start-up message"*. To test it again, press **RESTART TRAY** ([below](#restart-the-tray)).
+> **Order matters.** For **PROGRAM PRICOL FIRMWARE**: switch and reset first, then press. For **RUN APP TEST** and **RUN DFU TEST**: press first, then reset when the screen says **RESET ALL MODULES NOW**. The module accepts the test command only right after it starts. A module reset too early, or not at all, fails with *"no start-up message"*. To test it again, press **RETRY** on its slot before you move on ([below](#retry-a-failed-slot)), or **RESTART TRAY** ([below](#restart-the-tray)).
 
 ### QR scan and finish
 
@@ -516,12 +516,37 @@ Pricol programming and Pricol MAC readback are retried automatically in the same
 
 **If the headline says SUPERVISOR REQUIRED** (or anything you do not understand): stop and call the Supervisor. Do not remove modules unless told to.
 
+### Retry a failed slot
+
+The station runs every step **once** on each module. When a module fails a step, or its slot shows **NOT DETECTED - skipped**, that slot's card shows a **RETRY** button. Pressing it repeats the failed step on **that slot only**; the other modules are not touched.
+
+**When RETRY can be pressed.** Only while the other modules are **waiting for you at the next step**, and nothing else is running. While a step or another retry runs, the button is grey. Once you press the main button and the tray moves on, the failure is final for this batch and the button disappears (use **RESTART TRAY** to run everything again).
+
+| Failed at | RETRY is shown while the headline says | RETRY repeats | Before pressing RETRY |
+|---|---|---|---|
+| Stock programming, Stock MAC readback, or NOT DETECTED | **RESET MODULES FOR RF TEST** | Stock programming + MAC readback | Re-seat the module, put it in **boot (download) mode** and reset it. |
+| RF test (Stock + Pricol) | **SWITCH MODULES TO BOOT MODE** | Golden Rig RF test | Leave that module in **application mode** (reset it). Retry **before** you switch it to boot mode. |
+| RF test (Stock only) | **SCAN MODULE QR**, until that slot's QR is scanned | Golden Rig RF test | Module in **application mode** (reset it). |
+| Pricol programming or Pricol MAC readback | **SWITCH MODULES TO APPLICATION MODE** | Pricol programming + MAC readback | Module in **boot (download) mode** (reset it). Retry **before** you switch it to application mode. |
+| APP test | **READY FOR DFU TEST** | APP test | Module in application mode. Press RETRY, then reset it when the slot says *Reset this module now*. |
+| DFU test | **SCAN MODULE QR**, until that slot's QR is scanned | DFU test | Same as the APP test. |
+
+**To retry**
+1. Fix the cause (re-seat the module, set the mode shown above).
+2. Press **RETRY** on the slot and answer **Yes**. The slot shows *Retry 1: ...* while it runs.
+3. If it passes, the module joins the others at the step they are waiting for. If it fails again, the button comes back: you may retry as many times as you need.
+4. Carry on with the main button as usual.
+
+**RF test retries go to the Golden Rig one slot at a time.** Each RETRY sends only its own slot, and never while the tray's RF test or another retry is talking to the rig, so requests cannot clash. A Supervisor's rig check pressed during an RF test answers *RF test is running* instead of connecting; press it again afterwards.
+
+A retried module keeps its MAC address (a NOT DETECTED slot gets an address again). Every retry is recorded with the slot and the step. When **every** module failed the same step there is nothing waiting, so RETRY is not offered: use **RESTART TRAY**.
+
 ### Restart the tray
 
 The **RESTART TRAY** button (next to the main button) is shown from **START** until you press **COMPLETE BATCH**. It sends the whole batch back to the first step (**PREPARE FOR STOCK PROGRAMMING**). Use it when:
 - a step was done wrongly, for example the modules were not switched or reset before a button was pressed, and the modules failed because of it;
 - a module's **QR label cannot be read** (damaged, smudged, missing);
-- a slot showed **NOT DETECTED - skipped** and you have re-seated the module.
+- a slot showed **NOT DETECTED - skipped** and you have re-seated the module, but the batch has already moved on (while the other modules still wait, **RETRY** on the slot is quicker).
 
 What happens:
 - **Every module keeps its MAC address.** The batch got its MAC addresses at START and keeps them until it is complete and reported to the Box. A restart does not use up new addresses.
@@ -599,7 +624,7 @@ Clearing a hold does **not** log the Operator out.
 
 ## C11. Production records: look up modules (Supervisor)
 
-The **Production records** tab (Supervisor only) searches the station's own database. Each row is one module: date and time, tray ID, lot, Operator, mode, tray state, slot, **Module QR**, **Stock MAC**, **Pricol MAC**, **Batch Code**, result, RF result, APP and DFU tests, **Retries** (automatic retries the module needed) and the failure or hold reason. Nothing can be changed from this tab.
+The **Production records** tab (Supervisor only) searches the station's own database. Each row is one module: date and time, tray ID, lot, Operator, mode, tray state, slot, **Module QR**, **Stock MAC**, **Pricol MAC**, **Batch Code**, result, RF result, APP and DFU tests, **Retries** (how many times the Operator pressed **RETRY** on the module) and the failure or hold reason. Nothing can be changed from this tab.
 
 1. Choose the **Date**: *Today*, *Yesterday*, *Last 7 days*, *Last 30 days*, *Custom dates* (then set **From** and **To**), or *All dates*.
 2. Fill in any of the other boxes. Leave a box empty to not filter on it. Boxes can be combined (e.g. one Operator and one Batch Code):
@@ -639,10 +664,10 @@ Times are shown in the station PC's local time. Trays that were aborted or are s
 | Slot shows **NOT DETECTED** | The adapter is unplugged, faulty, or moved to another USB socket. | Re-plug it into the same socket and press **Rescan ports**. If it was replaced or moved, re-bind the slot ([C3](#c3-bind-jig-slots-to-com-ports-supervisor)). |
 | **JIG NOT READY** (Operator screen) | A slot or the jig is not detected. | Supervisor checks [C3](#c3-bind-jig-slots-to-com-ports-supervisor) and [C6](#c6-start-of-every-shift--open-the-session-supervisor). |
 | An adapter does not appear in **Detected interface** | It has no USB identity the station can use (some cheap adapters), or its driver is not installed. | Try another adapter. Ask the technician to check Windows Device Manager. |
-| Slot shows **NOT DETECTED - skipped** (ERR 6 at the start) | MPCLI found no module on that slot's port: empty slot, module not seated, no power, or not in boot mode. Nothing was written and the slot's MAC was not used. | Nothing to record: the slot is left out of the batch (no QR). If a module *is* in that slot, re-seat it, check boot mode, and run it in the next batch. If one slot is always NOT DETECTED, call the Supervisor (wiring / binding). |
+| Slot shows **NOT DETECTED - skipped** (ERR 6 at the start) | MPCLI found no module on that slot's port: empty slot, module not seated, no power, or not in boot mode. Nothing was written and the slot's MAC was not used. | Nothing to record: the slot is left out of the batch (no QR). If a module *is* in that slot, re-seat it, check boot mode, and press **RETRY** on the slot while the others wait at **RESET MODULES FOR RF TEST** (or run it in the next batch). If one slot is always NOT DETECTED, call the Supervisor (wiring / binding). |
 | Slot fails with **ERR: 6** after programming started, or another number | Programming error from the module once MPCLI was talking to it. | Press **Error codes** for the meaning. The module is held and its QR is scanned. If one slot keeps failing, call the Supervisor. |
 | Every module fails Pricol programming or the RF test at once | The button was pressed before the modules were switched: Pricol programming needs **boot mode**, the RF test needs **application mode** after a reset. | Press **RESTART TRAY** ([C7](#restart-the-tray)) and this time switch and reset as the screen says **before** pressing the button. |
-| APP / DFU test fails with *"no start-up message"* | The modules were reset **before** RUN APP TEST / RUN DFU TEST was pressed, not reset at all, or are still in boot mode. | Press **RESTART TRAY**. At the test step put the modules in application mode, press the button **first**, then reset them when the screen says **RESET ALL MODULES NOW**. |
+| APP / DFU test fails with *"no start-up message"* | The modules were reset **before** RUN APP TEST / RUN DFU TEST was pressed, not reset at all, or are still in boot mode. | For one module: press **RETRY** on its slot (before moving on), then reset it when the slot says *Reset this module now*. For all of them: press **RESTART TRAY**; at the test step put the modules in application mode, press the button **first**, then reset them when the screen says **RESET ALL MODULES NOW**. |
 | **ENTER BATCH CODE** | No starting Batch Code yet in this session. | Press **ENTER BATCH CODE** and type the code the Supervisor gave you ([C7](#batch-code)). |
 | *The Batch Code must end in a number …* | The code typed has no number at the end (e.g. `S5A`). | Type it again with its number, e.g. `S5A01`. |
 | **Batch Code: no threshold for this session** | The session was opened without a threshold. | Supervisor: close the session and open it again with a threshold ([C6](#c6-start-of-every-shift--open-the-session-supervisor)). |

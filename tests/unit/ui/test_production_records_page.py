@@ -52,7 +52,7 @@ def test_page_searches_with_filters_and_lists_records(qtbot):
 
     assert page.table.rowCount() == 2          # first search on show
     assert "2 module(s) on 1 tray(s)" in page.summary.text()
-    assert "1 module(s) needed automatic retries" in page.summary.text()
+    assert "1 module(s) were retried by the operator" in page.summary.text()
     assert page.export_button.isEnabled()
 
     page.range_input.setCurrentText(RANGE_ALL)

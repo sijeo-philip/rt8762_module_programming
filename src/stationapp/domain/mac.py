@@ -220,6 +220,17 @@ class AllocatedMac:
         self.module_qr = None
         self.hold_reason = None
 
+    def reopen_for_retest(self) -> None:
+        """HOLD back to ISSUED for the same batch and slot: the module
+        failed a test after this address was written and verified, and
+        the operator is testing it again (manual slot retry)."""
+        if self.batch_id is None or self.slot_number is None:
+            raise InvalidMacTransition(f"MAC {self.address} does not belong to a tray")
+        if self.status is not MacStatus.HOLD:
+            raise InvalidMacTransition(f"MAC {self.address} is {self.status.value}, not HOLD")
+        self.status = MacStatus.ISSUED
+        self.hold_reason = None
+
     def mark_issued(self) -> None:
         self._transition(MacStatus.ISSUED)
         

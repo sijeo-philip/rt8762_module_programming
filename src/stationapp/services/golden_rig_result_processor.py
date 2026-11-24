@@ -56,21 +56,7 @@ class GoldenRigResultProcessor:
         if set(request.targets) != set(expected_targets):
             raise GoldenRigProtocolError("RF targets do not match eligible jig slots")
 
-        # Reject infrastructure and unknown error codes
-        # before committing any individual result.
-        for result in response.results:
-            code = result.error_code
-
-            if code in INFRASTRUCTURE_ERROR_CODES:
-                raise GoldenRigInfrastructureError(f"Golden Rig infrastructure fault: {code}")
-
-            if code is not None and code not in DUT_ERROR_CODES:
-                raise GoldenRigProtocolError(f"Unknown Golden Rig error code: {code}")
-
-            # A successful connection/disconnection without
-            # a verified peer identity must never pass.
-            if (result.outcome is GoldenRigOutcome.PASS and result.reported_mac != result.expected_mac):
-                raise GoldenRigProtocolError("PASS has inconsistent MAC evidence")
+        self._validate_results(response.results)
 
         # All results are now structurally validated.
         # Each slot is updated independently.
@@ -85,3 +71,41 @@ class GoldenRigResultProcessor:
         else:
             # Every module failed RF: still scan and record their QRs.
             batch.begin_qr_scanning_without_survivors()
+
+    def validate_retry(self, batch: Batch, report: GoldenRigTestReport, slot_number: int):
+        """Validate the RF report of one slot tested again on its own
+        (manual retry) and return its result; nothing is changed, so a
+        report that cannot be trusted leaves the slot as it was."""
+        request = report.request
+        response = report.response
+
+        if (request.batch_id != batch.batch_id or request.station_id != batch.station_id or request.jig_id != batch.jig_id):
+            raise GoldenRigProtocolError("RF report belongs to another batch or station")
+
+        response.validate_against(request)
+
+        slot = batch.slots[slot_number]
+        if tuple(target.slot_number for target in request.targets) != (slot_number,) or request.targets[0].expected_mac != slot.stock_mac:
+            raise GoldenRigProtocolError(f"RF retry targets do not match slot {slot_number}")
+
+        self._validate_results(response.results)
+        (result,) = response.results
+        return result
+
+    @staticmethod
+    def _validate_results(results) -> None:
+        # Reject infrastructure and unknown error codes
+        # before committing any individual result.
+        for result in results:
+            code = result.error_code
+
+            if code in INFRASTRUCTURE_ERROR_CODES:
+                raise GoldenRigInfrastructureError(f"Golden Rig infrastructure fault: {code}")
+
+            if code is not None and code not in DUT_ERROR_CODES:
+                raise GoldenRigProtocolError(f"Unknown Golden Rig error code: {code}")
+
+            # A successful connection/disconnection without
+            # a verified peer identity must never pass.
+            if (result.outcome is GoldenRigOutcome.PASS and result.reported_mac != result.expected_mac):
+                raise GoldenRigProtocolError("PASS has inconsistent MAC evidence")

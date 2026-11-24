@@ -19,6 +19,7 @@ from stationapp.domain.batch import ProgrammingMode
 from stationapp.domain.mac import TEMPORARY_STOCK_MACS, MacPurpose
 from stationapp.drivers.box.gateway import box_url_problem
 from stationapp.infrastructure.golden_rig.resolver import DEFAULT_RESOLVER
+from stationapp.services.golden_rig_lock import GoldenRigBusy, golden_rig_exchange
 from stationapp.services.health import HealthCheck, Severity
 from stationapp.services.production import SlotPort
 from stationapp.services.serial_topology import SerialTopology
@@ -247,8 +248,11 @@ def approved_golden_rig_check(binding_service, ca_certificate: Path, *, probe_ti
             return HealthCheck("Golden Rig", Severity.FAIL, f"CA certificate missing: {ca_certificate}")
 
         try:
-            with DEFAULT_RESOLVER.connect(binding.host, binding.port, timeout=probe_timeout):
+            # Never connect while an RF test talks to the rig: it would clash.
+            with golden_rig_exchange("READY reachability probe", wait=False), DEFAULT_RESOLVER.connect(binding.host, binding.port, timeout=probe_timeout):
                 pass
+        except GoldenRigBusy:
+            return HealthCheck("Golden Rig", Severity.OK, f"{binding.rig_id} at {binding.host}:{binding.port} - RF test in progress")
         except OSError as exc:
             return HealthCheck(
                 "Golden Rig",

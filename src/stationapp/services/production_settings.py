@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,13 +37,6 @@ MAX_BLOCK_SIZE = 20000
 DEFAULT_BLOCK_SIZE = 5000
 MAX_RANGE_NAME = 128
 
-# Attempts per slot at each automatic step (Stock programming, Stock MAC
-# readback, Stock RF test, Pricol programming, Pricol MAC readback). Only
-# the slots that failed are tried again; the floor asked for three.
-MIN_STAGE_ATTEMPTS = 1
-MAX_STAGE_ATTEMPTS = 5
-DEFAULT_STAGE_ATTEMPTS = 3
-
 
 @dataclass(frozen=True, slots=True)
 class ProductionSettings:
@@ -57,7 +50,6 @@ class ProductionSettings:
     stock_master_range: str | None = None
     pricol_master_range: str | None = None
     block_size: int = DEFAULT_BLOCK_SIZE
-    stage_attempts: int = DEFAULT_STAGE_ATTEMPTS
 
     def master_range(self, purpose: MacPurpose) -> str | None:
         if purpose is MacPurpose.STOCK_RF_TEST:
@@ -76,7 +68,6 @@ class ProductionSettings:
             "stock_master_range": self.stock_master_range,
             "pricol_master_range": self.pricol_master_range,
             "block_size": self.block_size,
-            "stage_attempts": self.stage_attempts,
         }
 
     @classmethod
@@ -90,7 +81,6 @@ class ProductionSettings:
             stock_master_range=data.get("stock_master_range") or None,
             pricol_master_range=data.get("pricol_master_range") or None,
             block_size=int(data.get("block_size") or DEFAULT_BLOCK_SIZE),
-            stage_attempts=int(data.get("stage_attempts") or DEFAULT_STAGE_ATTEMPTS),
         )
 
 
@@ -127,21 +117,9 @@ class ProductionSettingsService:
                     self._cached = ProductionSettings.from_dict(row.value) if row is not None else self._defaults
             return self._cached
 
-    def only_attempts_change(self, settings: ProductionSettings) -> bool:
-        """True when settings differ from the saved ones in attempts only."""
-        current = self.current()
-        return settings != current and replace(settings, stage_attempts=current.stage_attempts) == current
-
     def update(self, settings: ProductionSettings, *, reason: str) -> ProductionSettings:
-        """Save new settings. Most changes wait for the batch to finish;
-        the attempts per step may change at any time and apply from the
-        next attempt, also within the step already running."""
-        if self._access is None:
-            actor = None
-        elif self.only_attempts_change(settings):
-            actor = self._access.require_supervisor()
-        else:
-            actor = self._access.ensure_configuration_change_allowed()
+        """Save new settings; they wait for the batch to finish."""
+        actor = self._access.ensure_configuration_change_allowed() if self._access is not None else None
         if not reason.strip():
             raise ValueError("A reason is required")
         self._validate(settings)
@@ -189,8 +167,6 @@ class ProductionSettingsService:
             raise ValueError("Select the Pricol firmware image for Stock + Pricol mode")
         if not MIN_BLOCK_SIZE <= settings.block_size <= MAX_BLOCK_SIZE:
             raise ValueError(f"Block size must be between {MIN_BLOCK_SIZE} and {MAX_BLOCK_SIZE} addresses")
-        if not MIN_STAGE_ATTEMPTS <= settings.stage_attempts <= MAX_STAGE_ATTEMPTS:
-            raise ValueError(f"Attempts per step must be between {MIN_STAGE_ATTEMPTS} and {MAX_STAGE_ATTEMPTS}")
         for label, name in (("Stock Only", settings.stock_master_range), ("Stock + Pricol", settings.pricol_master_range)):
             if name is not None and (name != name.strip() or not name or len(name) > MAX_RANGE_NAME):
                 raise ValueError(f"{label} master range: 1 to {MAX_RANGE_NAME} characters, no leading or trailing spaces")

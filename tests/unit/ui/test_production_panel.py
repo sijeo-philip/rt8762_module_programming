@@ -58,7 +58,6 @@ def panel(qtbot, tmp_path: Path):
     )
     none = frozenset()
     controller = ProductionController(
-        retry_pause_seconds=0,
         station_id=settings.station_id,
         jig_id=settings.jig_id,
         slot_count=4,
@@ -291,3 +290,34 @@ def test_start_waits_for_the_batch_code_series(panel, qtbot):
     assert widget.primary_button.isEnabled()
     assert "S5A01" in widget.batch_code_label.text() and "0 of 100" in widget.batch_code_label.text()
     assert widget.batch_code_button.text() == "Change Batch Code (Supervisor)"
+
+
+@pytest.mark.unit
+def test_retry_button_repeats_only_the_failed_slot(panel, qtbot, monkeypatch):
+    from stationapp.domain.slot import DeviceState
+    from stationapp.ui.widgets.production_panel import RETRY_OPERATION
+
+    widget, controller, operations = panel
+    controller._programmer = SimulatedProgrammer(delay_seconds=0, failures=frozenset({("stock_program", 2)}))
+    widget.check_station(top_up=True)
+    qtbot.waitUntil(lambda: widget.primary_button.isEnabled(), timeout=5_000)
+    widget.stock_only_radio.setChecked(True)
+    check_after_setup_change(qtbot, widget)
+    widget.primary_button.click()
+
+    press_until(qtbot, widget, controller, BatchState.STOCK_READBACK_VERIFIED)
+
+    cards = widget._jig_grid.cards
+    retry = cards[2].retry_button
+    qtbot.waitUntil(lambda: not retry.isHidden() and retry.isEnabled(), timeout=5_000)
+    assert all(cards[n].retry_button.isHidden() for n in (1, 3, 4))
+
+    # Module re-seated; the operator confirms the retry.
+    controller._programmer = SimulatedProgrammer(delay_seconds=0, failures=frozenset())
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    retry.click()
+
+    qtbot.waitUntil(lambda: operations.get(RETRY_OPERATION) is None and controller.batch.slots[2].state is DeviceState.STOCK_READBACK_VERIFIED, timeout=5_000)
+    qtbot.waitUntil(retry.isHidden, timeout=5_000)
+    assert controller.batch.state is BatchState.STOCK_READBACK_VERIFIED
+    assert widget.primary_button.text() == "RUN RF TEST" and widget.primary_button.isEnabled()

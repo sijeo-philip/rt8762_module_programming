@@ -107,11 +107,6 @@ class Settings(BaseSettings):
     auth_max_failures: int = Field(5, ge=1)
     auth_lockout_minutes: int = Field(5, ge=1)
 
-    # --- Automatic retries ---
-    # Pause before a failed slot is tried again, so the module and its COM
-    # port settle after a failed erase/programming. 0 = no pause.
-    retry_pause_seconds: float = Field(10.0, ge=0, le=120)
-
     # --- Golden Rig binding ---
     # Approved rig IDs (certificate common names). Empty = any rig whose
     # certificate is signed by GOLDEN_RIG_CA_CERTIFICATE.

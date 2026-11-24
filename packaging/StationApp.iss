@@ -4,10 +4,10 @@
 ;   build\fresh-db\station.db    empty database at the current schema
 ;   build\docs-html\             HTML copies of the guides
 ;   packaging\redist\            VC_redist.x86.exe / VC_redist.x64.exe
-; Compile by hand:  ISCC.exe /DAppVersion=0.2.1 packaging\StationApp.iss
+; Compile by hand:  ISCC.exe /DAppVersion=0.2.2 packaging\StationApp.iss
 
 #ifndef AppVersion
-  #define AppVersion "0.2.1"
+  #define AppVersion "0.2.2"
 #endif
 #define AppName "Station App"
 #define AppExe "StationApp.exe"

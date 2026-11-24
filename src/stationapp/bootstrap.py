@@ -494,6 +494,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         qr_reuse=box.reports.service,
         batch_codes=batch_codes,
         stage_attempts=lambda: production_settings.current().stage_attempts,
+        retry_pause_seconds=settings.retry_pause_seconds,
     )
 
     return production, readiness, mac_cache

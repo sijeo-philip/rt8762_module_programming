@@ -479,7 +479,7 @@ The line above the error messages shows **Batch Code: S5A01 · 37 of 100 passed*
 | **TESTING MODULES** | Wait. The Golden Rig is checking each module. |
 | **RF TEST COMPLETE** | Wait. |
 
-> **Automatic retries.** If a module fails Stock programming, Stock MAC readback or the RF test, the station tries **that module only**, at **that step only**, again (3 attempts in all unless the Supervisor changed it). The slot shows *Failed - retrying (2/3)* and then *Retry 2/3: ...*. The other modules wait; nothing is needed from you. A module that fails every attempt is marked failed and the tray carries on.
+> **Automatic retries.** If a module fails Stock programming, Stock MAC readback or the RF test, the station tries **that module only**, at **that step only**, again (3 attempts in all unless the Supervisor changed it). The slot shows *Failed - retrying (2/3)* for about 10 seconds (the module settles first) and then *Retry 2/3: ...*. The other modules wait; nothing is needed from you. A module that fails every attempt is marked failed and the tray carries on.
 
 ### Pricol programming and functional test (only in Stock + Pricol mode)
 

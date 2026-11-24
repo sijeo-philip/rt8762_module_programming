@@ -69,9 +69,11 @@ ProgrammerFactory = Callable[[Path | None, Path | None], "SlotProgrammer"]
 
 # Attempts per slot at each automatic step before the slot is marked
 # failed (see ProductionSettings.stage_attempts), and the pause before a
-# retry so the module and its COM port settle.
+# retry so the module and its COM port settle (RETRY_PAUSE_SECONDS). Ten
+# seconds: shorter pauses gave repeated erase/programming failures (module
+# not detected) on the jig.
 DEFAULT_STAGE_ATTEMPTS = 3
-DEFAULT_RETRY_PAUSE_SECONDS = 1.0
+DEFAULT_RETRY_PAUSE_SECONDS = 10.0
 
 # Step names recorded with STAGE_RETRY events.
 STAGE_STOCK_PROGRAMMING = "STOCK_PROGRAMMING"

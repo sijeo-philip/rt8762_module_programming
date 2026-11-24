@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -127,8 +127,21 @@ class ProductionSettingsService:
                     self._cached = ProductionSettings.from_dict(row.value) if row is not None else self._defaults
             return self._cached
 
+    def only_attempts_change(self, settings: ProductionSettings) -> bool:
+        """True when settings differ from the saved ones in attempts only."""
+        current = self.current()
+        return settings != current and replace(settings, stage_attempts=current.stage_attempts) == current
+
     def update(self, settings: ProductionSettings, *, reason: str) -> ProductionSettings:
-        actor = self._access.ensure_configuration_change_allowed() if self._access is not None else None
+        """Save new settings. Most changes wait for the batch to finish;
+        the attempts per step may change at any time and apply from the
+        next attempt, also within the step already running."""
+        if self._access is None:
+            actor = None
+        elif self.only_attempts_change(settings):
+            actor = self._access.require_supervisor()
+        else:
+            actor = self._access.ensure_configuration_change_allowed()
         if not reason.strip():
             raise ValueError("A reason is required")
         self._validate(settings)

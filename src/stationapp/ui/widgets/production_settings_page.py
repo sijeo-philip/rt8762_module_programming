@@ -113,7 +113,8 @@ class ProductionSettingsPage(QWidget):
         retry_hint = QLabel(
             "Stock programming, Stock MAC readback, Stock RF test, Pricol programming and "
             "Pricol MAC readback are tried this many times on a slot before it is marked "
-            "failed. Only the slots that failed are tried again; slots that passed are not touched."
+            "failed. Only the slots that failed are tried again; slots that passed are not touched. "
+            "This can be changed while a tray is running: it applies from the next attempt."
         )
         retry_hint.setWordWrap(True)
         retry_hint.setStyleSheet(f"color: {GREY};")
@@ -241,12 +242,16 @@ class ProductionSettingsPage(QWidget):
         reason = ask_reason(self, "Save production settings")
         if reason is None:
             return
+        attempts_only = self._service.only_attempts_change(settings)
         try:
             self._service.update(settings, reason=reason)
         except (AccessError, ValueError) as exc:
             self._notice(str(exc), error=True)
             return
-        self._notice("Production settings saved. Operators use them from the next batch.")
+        if attempts_only:
+            self._notice(f"Attempts per step set to {settings.stage_attempts}. Applies from the next attempt, also in the tray now running.")
+        else:
+            self._notice("Production settings saved. Operators use them from the next batch.")
 
     def _notice(self, text: str, *, error: bool = False) -> None:
         self.message.setText(text)

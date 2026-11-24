@@ -289,7 +289,7 @@ From then on the box accepts only the new PIN, on every station. The same happen
 2. When finished, press **Log out Supervisor**.
 3. The box allows one person logged in per station, so the **Operator must log in again** afterwards. Finished trays are kept and reported after that login.
 
-The Supervisor login lapses on its own after 15 minutes of no Supervisor use. Too many wrong PINs lock the phone number for a while; the screen says how long.
+Any login (Supervisor, Admin or Operator) ends on its own after 15 minutes with nobody using the station (no key, click, touch or scan). While a tray's automatic steps are running the station counts as in use. Trays and the session are kept; log in again to carry on. Too many wrong PINs lock the phone number for a while; the screen says how long.
 
 **Red LINE STOPPED button in the top bar** 🟢🔵
 The line is on hold. See [C10](#c10-line-stopped-holds-operator--supervisor).
@@ -402,7 +402,7 @@ Open the **Production settings** tab. These settings are kept until a Supervisor
    - **Stock Only range:** the pool for Stock only modules (they keep their Stock MAC). Required in Stock only mode.
    - **Stock + Pricol range:** the pool for Stock + Pricol modules (they keep their Pricol MAC). Required in Stock + Pricol mode.
    - **Block size:** how many addresses the station asks the Box for at a time (100–20000; `5000` is a good default). Smaller blocks waste fewer addresses when the mode or range is changed often. A new size is used for the next block; blocks the station already holds keep their size.
-5. **Automatic retries — Attempts per step:** how many times the station tries a module at **Stock programming**, **Stock MAC readback**, **Stock RF test**, **Pricol programming** and **Pricol MAC readback** before it marks the module failed (1–5; default `3`). Only the modules that failed are tried again, and only the step that failed; modules that passed are not touched. `1` turns retries off.
+5. **Automatic retries — Attempts per step:** how many times the station tries a module at **Stock programming**, **Stock MAC readback**, **Stock RF test**, **Pricol programming** and **Pricol MAC readback** before it marks the module failed (1–5; default `3`). Only the modules that failed are tried again, and only the step that failed; modules that passed are not touched. `1` turns retries off. This setting can be saved while a tray is running (change only this field): it applies from the next attempt, also to the step already running. Every other setting waits until the tray is finished or aborted.
 6. **Enabled jig slots:** tick the slots that may be used. Each one shows its COM port. Untick a slot whose fixture is damaged; Operators will then not be able to use it.
 7. Press **Save settings** (or **Discard changes**). You are asked for a reason; the change is recorded.
 

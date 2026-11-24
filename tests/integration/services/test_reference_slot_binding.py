@@ -38,7 +38,7 @@ def station(tmp_path: Path):
     access = StationAccessService(
         session_factory=factory, station_id=STATION, authentication=auth,
         configuration_provider=lambda: StationConfiguration("JIG-01", 4, (), None, None),
-        supervisor_timeout=timedelta(minutes=15),
+        inactivity_timeout=timedelta(minutes=15),
     )
     # Jig: COM numbers deliberately not in slot order.
     ports = [port("COM4", "AAA"), port("COM6", "BBB"), port("COM7", "CCC"), port("COM8", "DDD")]

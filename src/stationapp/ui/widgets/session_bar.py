@@ -71,7 +71,7 @@ class SessionBar(QFrame):
         self._changed.connect(self.render, Qt.ConnectionType.QueuedConnection)
         access.add_listener(self._changed.emit)
 
-        # Supervisor elevation expires with inactivity; keep the label honest.
+        # Logins end after inactivity; keep the labels honest.
         self._timer = QTimer(self)
         self._timer.setInterval(30_000)
         self._timer.timeout.connect(self.render)

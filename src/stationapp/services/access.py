@@ -367,21 +367,25 @@ class UserAdministrationService:
 class StationAccessService:
     """Current Supervisor/Operator logins and the production session."""
 
-    def __init__(self, *, session_factory: sessionmaker[Session], station_id: str, authentication: AuthenticationService, configuration_provider: Callable[[], StationConfiguration], rig_verifier: Callable[[StationConfiguration], tuple[str, ...]] | None = None, supervisor_timeout: timedelta = timedelta(minutes=15), clock: Clock = _utc_now) -> None:
+    def __init__(self, *, session_factory: sessionmaker[Session], station_id: str, authentication: AuthenticationService, configuration_provider: Callable[[], StationConfiguration], rig_verifier: Callable[[StationConfiguration], tuple[str, ...]] | None = None, inactivity_timeout: timedelta = timedelta(minutes=15), clock: Clock = _utc_now) -> None:
         self._session_factory = session_factory
         self._station_id = station_id
         self._auth = authentication
         self._configuration_provider = configuration_provider
         self._rig_verifier = rig_verifier
-        self._supervisor_timeout = supervisor_timeout
+        # Every login (Supervisor/Admin and Operator) ends after this long
+        # with no activity at the station: input, scans or automatic steps.
+        self._inactivity_timeout = inactivity_timeout
         self._clock = clock
 
         self._lock = threading.RLock()
         self._listeners: list[Callable[[], None]] = []
         self._supervisor: AuthenticatedUser | None = None
-        self._supervisor_seen: datetime | None = None
         self._operator: AuthenticatedUser | None = None
+        self._last_activity: datetime = clock()
         self._batch_active: Callable[[], bool] = lambda: False
+        # True while automatic steps run: the station is working, not idle.
+        self._busy: Callable[[], bool] = lambda: False
 
         # A session survives an application restart; logins do not.
         with session_factory() as session:
@@ -400,23 +404,60 @@ class StationAccessService:
         """Tells the service whether a batch is currently in progress."""
         self._batch_active = probe
 
+    def set_busy_probe(self, probe: Callable[[], bool]) -> None:
+        """Tells the service when automatic steps are running (not idle)."""
+        self._busy = probe
+
+    @property
+    def inactivity_timeout(self) -> timedelta:
+        return self._inactivity_timeout
+
+    # -- inactivity ------------------------------------------------------
+
+    def note_activity(self) -> bool:
+        """Someone used the station (key, click, touch, scan).
+
+        Logins that had already lapsed are ended first and stay ended: the
+        input that wakes an idle station does not revive them. Returns True
+        when such a logout happened, so the caller can drop that input."""
+        logged_out = self.expire_if_idle()
+        with self._lock:
+            self._last_activity = self._clock()
+        return logged_out
+
+    def expire_if_idle(self) -> bool:
+        """End every login after the inactivity timeout; True if any ended."""
+        with self._lock:
+            if not self._idle():
+                return False
+            supervisor, self._supervisor = self._supervisor, None
+            operator, self._operator = self._operator, None
+        if supervisor is None and operator is None:
+            return False
+        minutes = int(self._inactivity_timeout.total_seconds() // 60)
+        reason = f"Logged out after {minutes} min of inactivity"
+        for user in (supervisor, operator):
+            if user is not None:
+                self._auth.record_logout(user, reason)
+                logger.info("%s %s: %s", user.role.value, user.user_id, reason)
+        self._notify()
+        return True
+
     @property
     def session(self) -> ProductionSession | None:
         return self._session
 
     @property
     def operator(self) -> AuthenticatedUser | None:
-        return self._operator
+        """None once the login has lapsed; expire_if_idle() records it."""
+        with self._lock:
+            return None if self._idle() else self._operator
 
     @property
     def supervisor(self) -> AuthenticatedUser | None:
+        """None once the login has lapsed; expire_if_idle() records it."""
         with self._lock:
-            if self._supervisor is not None and self._supervisor_expired():
-                expired = self._supervisor
-                self._supervisor = None
-                self._supervisor_seen = None
-                self._auth.record_logout(expired, "Supervisor session timed out")
-            return self._supervisor
+            return None if self._idle() else self._supervisor
 
     # -- logins ----------------------------------------------------------
 
@@ -439,13 +480,13 @@ class StationAccessService:
         self._box_session_taken_by(user)
         with self._lock:
             self._supervisor = user
-            self._supervisor_seen = self._clock()
+            self._last_activity = self._clock()
         self._notify()
         return user
 
     def logout_supervisor(self) -> None:
         with self._lock:
-            user, self._supervisor, self._supervisor_seen = self._supervisor, None, None
+            user, self._supervisor = self._supervisor, None
         if user is not None:
             self._auth.record_logout(user, "Supervisor logout")
         self._notify()
@@ -455,7 +496,7 @@ class StationAccessService:
             user = self.supervisor
             if user is None:
                 raise AuthorizationError("Supervisor login required")
-            self._supervisor_seen = self._clock()
+            self._last_activity = self._clock()
             return user
 
     def authorize_supervisor(self, user_id: str, password: str, *, new_pin: str | None = None) -> AuthenticatedUser:
@@ -505,7 +546,7 @@ class StationAccessService:
             self._box_session_taken_by(user)
             with self._lock:
                 self._supervisor = user
-                self._supervisor_seen = self._clock()
+                self._last_activity = self._clock()
             self._notify()
             return user
         if self._session is None:
@@ -535,6 +576,7 @@ class StationAccessService:
     def _set_operator(self, user: AuthenticatedUser) -> AuthenticatedUser:
         with self._lock:
             previous, self._operator = self._operator, user
+            self._last_activity = self._clock()
         if previous is not None and previous.user_id != user.user_id:
             self._auth.record_logout(previous, f"Replaced by operator {user.user_id}")
         self._notify()
@@ -667,7 +709,7 @@ class StationAccessService:
         session = self._session
         if session is None:
             raise AuthorizationError("No production session is open")
-        operator = self._operator or self.supervisor
+        operator = self.operator or self.supervisor
         if operator is None:
             raise AuthorizationError("Operator login required")
         problems = self.configuration_problems()
@@ -682,15 +724,28 @@ class StationAccessService:
         problems = self.configuration_problems()
         if problems:
             return HealthCheck("Session", Severity.FAIL, "; ".join(problems))
-        user = self._operator or self.supervisor
+        user = self.operator or self.supervisor
         if user is None:
             return HealthCheck("Session", Severity.FAIL, f"Session open (Supervisor {session.supervisor_id}); Operator login required")
         return HealthCheck("Session", Severity.OK, f"Session by {session.supervisor_id}; operating as {user.user_id}")
 
     # -- helpers ---------------------------------------------------------
 
-    def _supervisor_expired(self) -> bool:
-        return self._supervisor_seen is not None and self._clock() - self._supervisor_seen > self._supervisor_timeout
+    def _idle(self) -> bool:
+        """Call with the lock held. Running steps count as activity, so the
+        countdown starts again when they finish."""
+        if self._supervisor is None and self._operator is None:
+            return False
+        now = self._clock()
+        try:
+            busy = bool(self._busy())
+        except Exception:  # noqa: BLE001 - a probe fault must not log anyone out
+            logger.exception("Busy probe failed")
+            busy = True
+        if busy:
+            self._last_activity = now
+            return False
+        return now - self._last_activity > self._inactivity_timeout
 
     def _audit(self, actor_id: str, session: ProductionSession, action: str, reason: str, previous: dict | None, new: dict | None) -> AuditRecord:
         return AuditRecord(

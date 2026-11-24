@@ -71,7 +71,7 @@ def env(tmp_path: Path):
         station_id=STATION,
         authentication=auth,
         configuration_provider=lambda: live["config"],
-        supervisor_timeout=timedelta(minutes=15),
+        inactivity_timeout=timedelta(minutes=15),
         clock=clock,
     )
 
@@ -208,6 +208,87 @@ def test_supervisor_login_times_out(env):
     assert access.supervisor is None
     with pytest.raises(AuthorizationError):
         access.require_supervisor()
+
+
+def logout_reasons(factory) -> list[str]:
+    with factory() as session:
+        return [row.reason for row in session.scalars(select(AuditRecordModel).where(AuditRecordModel.action == "LOGOUT").order_by(AuditRecordModel.id))]
+
+
+def operator_on_shift(env):
+    access = env["access"]
+    access.login_supervisor("sup1", "supervisor-pw")
+    access.start_session(config())
+    access.logout_supervisor()
+    access.login_operator("op1", "1234")
+    return access
+
+
+@pytest.mark.integration
+def test_activity_keeps_the_supervisor_logged_in(env):
+    access, clock = env["access"], env["clock"]
+    access.login_supervisor("sup1", "supervisor-pw")
+    for _ in range(4):  # 40 minutes of work, never 15 idle
+        clock.now += timedelta(minutes=10)
+        assert access.note_activity() is False
+
+    assert access.expire_if_idle() is False
+    assert access.supervisor.user_id == "SUP1"
+
+
+@pytest.mark.integration
+def test_operator_login_ends_after_inactivity_and_is_audited(env):
+    access, clock = env["access"], env["clock"]
+    operator_on_shift(env)
+    clock.now += timedelta(minutes=14)
+    assert access.expire_if_idle() is False
+    assert access.operator.user_id == "OP1"
+
+    clock.now += timedelta(minutes=2)
+    assert access.operator is None  # lapsed even before it is recorded
+    assert access.expire_if_idle() is True
+    assert access.expire_if_idle() is False  # recorded once
+    assert logout_reasons(env["factory"])[-1] == "Logged out after 15 min of inactivity"
+    assert access.session is not None  # the production session stays open
+
+
+@pytest.mark.integration
+def test_input_after_the_timeout_does_not_revive_the_login(env):
+    access, clock = env["access"], env["clock"]
+    operator_on_shift(env)
+    clock.now += timedelta(minutes=16)
+
+    assert access.note_activity() is True
+    assert access.operator is None
+
+
+@pytest.mark.integration
+def test_inactivity_ends_supervisor_and_operator_together(env):
+    access, clock = env["access"], env["clock"]
+    access.login_supervisor("sup1", "supervisor-pw")
+    access.start_session(config())
+    access.login_operator("op1", "1234")
+    clock.now += timedelta(minutes=16)
+
+    assert access.expire_if_idle() is True
+    assert access.supervisor is None and access.operator is None
+
+
+@pytest.mark.integration
+def test_running_steps_count_as_activity(env):
+    access, clock = env["access"], env["clock"]
+    operator_on_shift(env)
+    running = {"now": True}
+    access.set_busy_probe(lambda: running["now"])
+
+    clock.now += timedelta(minutes=40)  # a long tray, nobody touching
+    assert access.expire_if_idle() is False
+    running["now"] = False
+
+    clock.now += timedelta(minutes=14)  # countdown restarts after the run
+    assert access.expire_if_idle() is False
+    clock.now += timedelta(minutes=2)
+    assert access.expire_if_idle() is True
 
 
 @pytest.mark.integration

@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -99,8 +99,11 @@ class Settings(BaseSettings):
     qr_scanner_hid_pos: bool = True
 
     # --- Access control ---
-    # Supervisor elevation lapses after this much inactivity.
-    supervisor_timeout_minutes: int = Field(15, ge=1)
+    # Every login (Supervisor/Admin and Operator) ends after this many
+    # minutes with no keyboard, mouse, touch or scanner use at the station.
+    # Running automatic steps count as activity. SUPERVISOR_TIMEOUT_MINUTES
+    # is the older name and is still read.
+    inactivity_timeout_minutes: int = Field(15, ge=1, validation_alias=AliasChoices("INACTIVITY_TIMEOUT_MINUTES", "SUPERVISOR_TIMEOUT_MINUTES", "inactivity_timeout_minutes"))
     auth_max_failures: int = Field(5, ge=1)
     auth_lockout_minutes: int = Field(5, ge=1)
 

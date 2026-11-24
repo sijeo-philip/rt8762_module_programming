@@ -10,7 +10,7 @@ renders it. Workflow rules live in ProductionController and the domain.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -31,7 +31,7 @@ from stationapp.services.health import HealthCheck, Severity, run_all_checks, su
 
 import logging
 from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 
 from stationapp.concurrency.manager import OperationManager
@@ -102,15 +102,21 @@ class MainWindow(QMainWindow):
             # Initial READY evaluation, topping up the MAC cache if needed.
             self._production_panel.check_station(top_up=True)
 
-        # The screen follows who is logged in. Supervisor elevation also
-        # lapses with inactivity, so re-evaluate periodically.
+        # The screen follows who is logged in. Logins end after a period
+        # with no input at the station, so check periodically; any key,
+        # click, touch or scan anywhere in the application is activity.
+        self._activity_filter = None
         if self._context.access is not None:
             self._access_changed.connect(self._update_view, Qt.ConnectionType.QueuedConnection)
             self._context.access.add_listener(self._access_changed.emit)
             self._view_timer = QTimer(self)
             self._view_timer.setInterval(15_000)
-            self._view_timer.timeout.connect(self._update_view)
+            self._view_timer.timeout.connect(self._check_inactivity)
             self._view_timer.start()
+            app = QApplication.instance()
+            if app is not None:
+                self._activity_filter = ActivityFilter(self._context.access, self)
+                app.installEventFilter(self._activity_filter)
         self._update_view()
         # A hold (box rejection, QR scanned again, Batch Code not accepted)
         # opens the hold screen at once; reports run on worker threads.
@@ -532,6 +538,10 @@ class MainWindow(QMainWindow):
     def _on_pos_scan(self, raw: str) -> None:
         """A HID POS read goes where a keyboard scan would have gone: the
         module QR field while the batch is waiting for a QR."""
+        access = self._context.access
+        if access is not None and access.note_activity():
+            logger.info("HID POS scan ignored - the login had lapsed: %r", raw)
+            return
         panel = self._production_panel
         if panel is not None and panel.qr_input.isEnabled():
             panel.qr_input.submit(raw)
@@ -541,6 +551,11 @@ class MainWindow(QMainWindow):
     def shutdown(self, timeout_ms: int = 10_000) -> None:
         """Stop timers and background work (application exit, tests)."""
         self._closing = True
+        if getattr(self, "_activity_filter", None) is not None:
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self._activity_filter)
+            self._activity_filter = None
         if getattr(self, "_pos_scanner", None) is not None:
             self._pos_scanner.stop()
         for timer in (self._timer, self._topology_timer, getattr(self, "_view_timer", None)):
@@ -581,6 +596,16 @@ class MainWindow(QMainWindow):
             self._session_bar.render()
         # Another hold may have arrived while the screen was open.
         QTimer.singleShot(0, self._on_hold_changed)
+
+    def _check_inactivity(self) -> None:
+        """End lapsed logins (recorded and audited), then follow the view."""
+        access = self._context.access
+        if access is not None and not self._closing:
+            try:
+                access.expire_if_idle()
+            except Exception:  # noqa: BLE001 - the timer must keep running
+                logger.exception("Inactivity check failed")
+        self._update_view()
 
     def _update_view(self) -> None:
         """Login page, Operator view or Supervisor view."""
@@ -642,3 +667,31 @@ class MainWindow(QMainWindow):
        
             
             
+
+
+class ActivityFilter(QObject):
+    """Application-wide event filter: real input resets the inactivity
+    timer. Input that arrives after the logins lapsed ends them and is
+    dropped, so the click that wakes an idle station acts on nothing."""
+
+    _INPUT = frozenset({
+        QEvent.Type.KeyPress,
+        QEvent.Type.MouseButtonPress,
+        QEvent.Type.MouseButtonDblClick,
+        QEvent.Type.Wheel,
+        QEvent.Type.TouchBegin,
+    })
+
+    def __init__(self, access, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._access = access
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 - Qt API
+        # One event reaches the filter once per widget it propagates
+        # through; only the first delivery (to a widget) counts.
+        if event.type() in self._INPUT and watched.isWidgetType():
+            try:
+                return self._access.note_activity()
+            except Exception:  # noqa: BLE001 - input must never be lost to a fault here
+                logger.exception("Activity tracking failed")
+        return False

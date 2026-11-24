@@ -133,6 +133,8 @@ def bootstrap() -> AppContext:
         settings, session_factory, serial_topology_service, slot_eligibility_service, access, box, production_settings, batch_codes
     )
     access.set_batch_activity_probe(lambda: production.has_active_batch)
+    # Automatic steps keep the logins alive; the countdown restarts after.
+    access.set_busy_probe(lambda: production.is_running)
     _wire_box_reports(box, access, production)
 
     context = AppContext(
@@ -241,7 +243,7 @@ def _build_access(settings: Settings, session_factory, binding_service: SlotBind
         authentication=authentication,
         configuration_provider=configuration,
         rig_verifier=None if settings.simulation_mode else verify_rig,
-        supervisor_timeout=timedelta(minutes=settings.supervisor_timeout_minutes),
+        inactivity_timeout=timedelta(minutes=settings.inactivity_timeout_minutes),
     )
 
     golden_rig = GoldenRigConfigurationService(

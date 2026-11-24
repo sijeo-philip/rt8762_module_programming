@@ -98,7 +98,7 @@ def rig_env(tmp_path: Path):
     UserAdministrationService(session_factory=factory, station_id=STATION, hasher=FAST).create_first_supervisor(user_id="sup1", display_name="Asha", password="supervisor-pw")
 
     probe = GoldenRigIdentityProbe(ca_certificate=ca, inventory=("GOLDEN-RIG-TEST-01",), timeout=2.0)
-    access = StationAccessService(session_factory=factory, station_id=STATION, authentication=auth, configuration_provider=live_configuration, supervisor_timeout=timedelta(minutes=15))
+    access = StationAccessService(session_factory=factory, station_id=STATION, authentication=auth, configuration_provider=live_configuration, inactivity_timeout=timedelta(minutes=15))
     service = GoldenRigConfigurationService(
         station_id=STATION,
         store=store,

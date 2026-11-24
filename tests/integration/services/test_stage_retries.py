@@ -250,3 +250,49 @@ def test_pricol_programming_and_readback_retry_failed_slots(session_factory):
         (2, "PRICOL_MAC_READBACK", 1),
         (2, "PRICOL_MAC_READBACK", 2),
     ]
+
+
+class RaisingAttempts(FlakyProgrammer):
+    """A Supervisor raises the attempts setting during the first attempt."""
+
+    def __init__(self, fail_first, setting: dict) -> None:
+        super().__init__(fail_first)
+        self._setting = setting
+
+    def program_stock(self, target, **kwargs):
+        self._setting["attempts"] = 5
+        return super().program_stock(target, **kwargs)
+
+
+@pytest.mark.integration
+def test_attempts_change_applies_to_the_step_already_running(session_factory):
+    setting = {"attempts": 3}
+    programmer = RaisingAttempts({("stock_program", 1): 4}, setting)
+    controller = make(session_factory, programmer=programmer, attempts=lambda: setting["attempts"])
+    batch = controller.start_batch(occupied=(1,), ports=ports(1), mode=ProgrammingMode.STOCK_ONLY)
+
+    run_until(controller, BatchState.STOCK_READBACK_VERIFIED)
+
+    # Started with 3 attempts; raised to 5, so the 5th attempt passed.
+    assert programmer.calls[("stock_program", 1)] == 5
+    assert batch.slots[1].state is DeviceState.STOCK_READBACK_VERIFIED
+
+
+@pytest.mark.integration
+def test_attempts_lowered_mid_step_stops_retrying(session_factory):
+    setting = {"attempts": 5}
+    programmer = FlakyProgrammer({("stock_program", 1): 99})
+    original = programmer.program_stock
+
+    def lower_after_two(target, **kwargs):
+        if programmer.calls[("stock_program", 1)] >= 1:
+            setting["attempts"] = 2
+        return original(target, **kwargs)
+
+    programmer.program_stock = lower_after_two
+    controller = make(session_factory, programmer=programmer, attempts=lambda: setting["attempts"])
+    controller.start_batch(occupied=(1, 2), ports=ports(1, 2), mode=ProgrammingMode.STOCK_ONLY)
+
+    run_until(controller, BatchState.STOCK_READBACK_VERIFIED)
+
+    assert programmer.calls[("stock_program", 1)] == 2

@@ -56,7 +56,7 @@ def ui(qtbot, tmp_path: Path, monkeypatch):
     users.create_first_supervisor(user_id="sup1", display_name="Asha", password="supervisor-pw")
     users.create_user(auth.authenticate("sup1", "supervisor-pw", purpose="setup"), user_id="op1", display_name="Ravi", role=UserRole.OPERATOR, secret="1234", badge_id="BADGE-77", reason="setup")
 
-    access = StationAccessService(session_factory=factory, station_id=STATION, authentication=auth, configuration_provider=configuration, supervisor_timeout=timedelta(minutes=15))
+    access = StationAccessService(session_factory=factory, station_id=STATION, authentication=auth, configuration_provider=configuration, inactivity_timeout=timedelta(minutes=15))
     golden = GoldenRigConfigurationService(
         station_id=STATION,
         store=store,

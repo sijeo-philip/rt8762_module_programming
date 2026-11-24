@@ -167,3 +167,38 @@ def test_settings_saved_before_this_change_still_load():
     assert loaded.stock_master_range is None and loaded.pricol_master_range is None
     assert loaded.block_size == DEFAULT_BLOCK_SIZE
     assert ProductionSettings.from_dict(settings().to_dict()) == settings()
+
+
+class FakeAccess:
+    """Supervisor present; a batch is running."""
+
+    def __init__(self) -> None:
+        self.configuration_checks = 0
+
+    def require_supervisor(self):
+        from datetime import datetime, timezone
+        from stationapp.domain.users import AuthenticatedUser, AuthenticationMethod, UserRole
+        return AuthenticatedUser(user_id="SUP1", display_name="S", role=UserRole.SUPERVISOR,
+                                 method=AuthenticationMethod.PIN, authenticated_at=datetime.now(timezone.utc))
+
+    def ensure_configuration_change_allowed(self):
+        from stationapp.domain.users import AuthorizationError
+        self.configuration_checks += 1
+        raise AuthorizationError("Finish or abort the current batch before changing the station configuration")
+
+
+def test_attempts_alone_can_change_while_a_batch_runs(factory):
+    service = ProductionSettingsService(session_factory=factory, station_id="STN", jig_positions=8, defaults=settings(), access=FakeAccess())
+
+    service.update(settings(stage_attempts=5), reason="more retries")
+
+    assert service.current().stage_attempts == 5
+
+
+def test_other_changes_still_wait_for_the_batch(factory):
+    from stationapp.domain.users import AuthorizationError
+    service = ProductionSettingsService(session_factory=factory, station_id="STN", jig_positions=8, defaults=settings(), access=FakeAccess())
+
+    with pytest.raises(AuthorizationError, match="Finish or abort"):
+        service.update(settings(stage_attempts=5, block_size=300), reason="both")
+    assert service.current().stage_attempts != 5

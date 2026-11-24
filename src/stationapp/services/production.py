@@ -306,6 +306,11 @@ class ProductionController:
         return self._batch
 
     @property
+    def is_running(self) -> bool:
+        """Automatic steps are running now (no lock: a plain flag read)."""
+        return self._running
+
+    @property
     def has_active_batch(self) -> bool:
         """A batch exists and is not yet committed or aborted."""
         with self._lock:
@@ -871,7 +876,6 @@ class ProductionController:
         assert programmer is not None
 
         stage_name = STAGE_STOCK_PROGRAMMING if stock else STAGE_PRICOL_PROGRAMMING
-        attempts = self._attempts()
 
         def run(number: int) -> None:
             target = targets[number]
@@ -885,7 +889,12 @@ class ProductionController:
                 elif phase == PHASE_WRITING_MAC:
                     self._set_activity(number, prefix + "Writing MAC", None)
 
-            for attempt in range(1, attempts + 1):
+            attempt = 0
+            while True:
+                attempt += 1
+                # Read before every attempt: a Supervisor change of the
+                # attempts setting applies to the step already running.
+                attempts = self._attempts()
                 prefix = _retry_prefix(attempt, attempts)
                 self._set_activity(number, prefix + "Programming firmware", None)
                 try:
@@ -953,12 +962,14 @@ class ProductionController:
         assert programmer is not None
 
         stage_name = STAGE_STOCK_READBACK if stock else STAGE_PRICOL_READBACK
-        attempts = self._attempts()
 
         def run(number: int) -> None:
             target = targets[number]
 
-            for attempt in range(1, attempts + 1):
+            attempt = 0
+            while True:
+                attempt += 1
+                attempts = self._attempts()  # live: see _program_stage
                 self._set_activity(number, _retry_prefix(attempt, attempts) + "Verifying MAC readback", None)
                 reported = None
                 reason = None
@@ -1069,13 +1080,17 @@ class ProductionController:
         by its last attempt, so the result processor sees one complete
         answer for the original request. A rig that cannot run a retry
         leaves the earlier results in place."""
-        attempts = self._attempts()
         final: dict[int, GoldenRigSlotResult] = {result.slot_number: result for result in report.response.results}
         attempts_by_slot = {number: 1 for number in final}
         request_by_slot = {number: report.request.request_id for number in final}
         changed = False
 
-        for attempt in range(2, attempts + 1):
+        attempt = 1
+        while True:
+            attempt += 1
+            attempts = self._attempts()  # live: a change applies mid-step
+            if attempt > attempts:
+                break
             failed = tuple(target for target in targets if target.slot_number in final and final[target.slot_number].outcome is not GoldenRigOutcome.PASS)
             if not failed:
                 break
@@ -1296,6 +1311,8 @@ class ProductionController:
 
         False when no attempt is left or the step is being cancelled; the
         caller then records the last attempt as the slot's result."""
+        # The latest setting decides: a Supervisor may change it mid-step.
+        attempts = self._attempts()
         if attempt >= attempts or (token is not None and token.is_cancelled):
             return False
         logger.warning("Slot %s failed %s attempt %d/%d; retrying: %s", number, stage, attempt, attempts, payload.get("message"))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Sequence
@@ -18,9 +19,15 @@ class MpCliProcessRunner:
     The runner never attempts to terminate the Python worker thread.
 
     Cancellation and timeout operate only on the external MPCLI process.
+
+    limiter: a semaphore shared by every runner of the station; each MPCLI
+    process holds one permit while it runs, so at most that many run at
+    once (MPCLI_MAX_PARALLEL). The wait for a permit is not part of the
+    timeout.
     """
 
-    def __init__(self, executable: Path, *, base_arguments: Sequence[str] = (), termination_grace_seconds: float = 2.0, poll_interval_seconds: float = 0.05) -> None:
+    def __init__(self, executable: Path, *, base_arguments: Sequence[str] = (), termination_grace_seconds: float = 2.0, poll_interval_seconds: float = 0.05, limiter: threading.Semaphore | None = None) -> None:
+        self._limiter = limiter
 
         self._executable = executable
 
@@ -64,6 +71,18 @@ class MpCliProcessRunner:
             *self._base_arguments,
             *tuple(arguments),
         )
+        if self._limiter is None:
+            return self._run(command, timeout_seconds, cancellation_token)
+        waited = time.monotonic()
+        while not self._limiter.acquire(timeout=self._poll_interval_seconds):
+            if cancellation_token is not None and cancellation_token.is_cancelled:
+                return ProcessResult(command=command, outcome=ProcessOutcome.CANCELLED, return_code=None, stdout="", stderr="", duration_seconds=time.monotonic() - waited)
+        try:
+            return self._run(command, timeout_seconds, cancellation_token)
+        finally:
+            self._limiter.release()
+
+    def _run(self, command: tuple[str, ...], timeout_seconds: float, cancellation_token: CancellationToken | None) -> ProcessResult:
         start_time = time.monotonic()
 
         try:
@@ -82,6 +101,19 @@ class MpCliProcessRunner:
             raise MpCliProcessStartError(
                 f"Failed to start MPCLI: {exc}"
             ) from exc
+
+        # Drain stdout/stderr while MPCLI runs. A pipe holds only a few KB
+        # on Windows; one flash prints about 3.5 KB, so an undrained pipe
+        # can fill, MPCLI then blocks on its next print and the run ends as
+        # a timeout although the module was fine.
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        readers = [
+            threading.Thread(target=_drain, args=(process.stdout, stdout_chunks), name="mpcli-stdout", daemon=True),
+            threading.Thread(target=_drain, args=(process.stderr, stderr_chunks), name="mpcli-stderr", daemon=True),
+        ]
+        for reader in readers:
+            reader.start()
 
         outcome: ProcessOutcome | None = None
         deadline = (start_time + timeout_seconds)
@@ -108,7 +140,10 @@ class MpCliProcessRunner:
                 self._poll_interval_seconds
             )
 
-        stdout, stderr = process.communicate()
+        process.wait()
+        for reader in readers:
+            reader.join(timeout=5.0)
+        stdout, stderr = "".join(stdout_chunks), "".join(stderr_chunks)
         duration = (
             time.monotonic()
             - start_time
@@ -154,3 +189,18 @@ class MpCliProcessRunner:
 
 
     
+
+def _drain(stream, chunks: list[str]) -> None:
+    """Read a child's pipe to the end (runs on its own thread)."""
+    if stream is None:
+        return
+    try:
+        for chunk in iter(lambda: stream.read(1024), ""):
+            chunks.append(chunk)
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            stream.close()
+        except OSError:
+            pass

@@ -754,10 +754,22 @@ class ProductionController:
         retried again, any number of times, until the tray moves on.
         Blocking: call on a worker thread.
         """
+        self._retry((slot_number,), cancellation_token)
+
+    def retry_failed(self, cancellation_token: CancellationToken | None = None) -> tuple[int, ...]:
+        """RETRY FAILED: repeat, together, the failed step of every slot that
+        may be retried now (snapshot().retry_slots). Each slot repeats its
+        own step; modules that passed are not touched. Same rules as
+        retry_slot. Returns the slots retried. Blocking: call on a worker
+        thread."""
+        return self._retry(None, cancellation_token)
+
+    def _retry(self, requested: tuple[int, ...] | None, token: CancellationToken | None) -> tuple[int, ...]:
+        """requested None: every slot that may be retried now."""
         with self._lock:
             batch = self._require_batch()
             if self._running:
-                raise ProductionError("Wait for the running step to finish before retrying a slot")
+                raise ProductionError("Wait for the running step to finish before retrying")
             if self._access is not None:
                 try:
                     self._require_access()
@@ -765,22 +777,39 @@ class ProductionController:
                     self._last_error = str(exc)
                     self._notify()
                     raise
-            step = batch.retry_step(slot_number)
-            if step is None:
-                raise ProductionError(
-                    f"Slot {slot_number} cannot be retried now: a slot is retried only while "
-                    "the other modules wait for the next step"
-                )
-            self._retry_counts[(slot_number, step)] += 1
-            count = self._retry_counts[(slot_number, step)]
+            numbers = requested if requested is not None else tuple(sorted(batch.slots))
+            plan: dict[int, tuple[RetryStep, int]] = {}
+            for number in numbers:
+                step = batch.retry_step(number)
+                if step is None:
+                    if requested is not None:
+                        raise ProductionError(
+                            f"Slot {number} cannot be retried now: a slot is retried only while "
+                            "the other modules wait for the next step"
+                        )
+                    continue
+                plan[number] = (step, 0)
+            if not plan:
+                raise ProductionError("No failed module can be retried now")
+            for number, (step, _) in plan.items():
+                self._retry_counts[(number, step)] += 1
+                plan[number] = (step, self._retry_counts[(number, step)])
             self._running = True
             self._last_error = None
 
         self._notify()
-        logger.info("Slot retry | batch_id=%s slot=%s step=%s retry=%d", batch.batch_id, slot_number, step.value, count)
+        slots = tuple(plan)
+        for number, (step, count) in plan.items():
+            logger.info("Slot retry | batch_id=%s slot=%s step=%s retry=%d", batch.batch_id, number, step.value, count)
+
+        def run(number: int) -> None:
+            step, count = plan[number]
+            self._run_slot_retry(batch, number, step, count, token)
 
         try:
-            self._run_slot_retry(batch, slot_number, step, count, cancellation_token)
+            # One worker per slot, as in the automatic steps; MPCLI's own
+            # limit (MPCLI_MAX_PARALLEL) and the rig lock pace them.
+            self._parallel(slots, run)
         except ProductionError as exc:
             self._fail(str(exc))
             raise
@@ -788,18 +817,20 @@ class ProductionController:
             self._fail(str(exc))
             raise ProductionError(str(exc)) from exc
         except Exception as exc:
-            logger.exception("Slot retry failed | batch_id=%s slot=%s", batch.batch_id, slot_number)
+            logger.exception("Slot retry failed | batch_id=%s slots=%s", batch.batch_id, slots)
             self._fail(f"Unexpected error: {exc}")
             raise
         finally:
             with self._lock:
                 self._running = False
-                self._activity.pop(slot_number, None)
+                for number in slots:
+                    self._activity.pop(number, None)
                 try:
                     self._store.save(batch)
                 except Exception:  # noqa: BLE001 - do not mask the original error
                     logger.exception("Could not persist batch state after slot retry")
             self._notify()
+        return slots
 
     def _run_slot_retry(self, batch: Batch, number: int, step: RetryStep, count: int, token: CancellationToken | None) -> None:
         prefix = f"Retry {count}: "
@@ -910,7 +941,7 @@ class ProductionController:
             with self._lock:
                 release_unused()
                 self._store.save(batch)
-            raise ProductionError(f"Golden Rig RF test of slot {number} could not run: {exc}. Check the rig, then press RETRY on the slot again.") from exc
+            raise ProductionError(f"Golden Rig RF test of slot {number} could not run: {exc}. Check the rig, then press RETRY FAILED again.") from exc
 
         with self._lock:
             batch.reopen_for_retry(number, RetryStep.STOCK_RF)

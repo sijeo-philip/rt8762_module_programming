@@ -126,6 +126,17 @@ Use a threshold of **3** so the code changes within a few batches. On the Box co
 | 8.13 | Clear the Week No cell, type `48`, print. Close the pop-up; as Supervisor, **Production records** → Batch Code `S5A01` → **Print Batch MAC list**. | Edited header prints. The list opens again (new file in `dataatch_lists`). |
 | 8.14 | Threshold `1000`, a full Batch/Lot (or bench simulation). Print. | All 1000 MACs on a single A4 landscape sheet and readable. |
 
+## 8B. Programming reliability and RETRY FAILED (0.2.5)
+
+| # | Steps | Expected |
+|---|---|---|
+| 8B.1 | 8 modules, Stock + Pricol, `MPCLI_MAX_PARALLEL=4` (default). Run 10 trays; note failures per tray at Stock and Pricol programming. | Fewer failures than 0.2.4 (was ~2 of 8 per tray). Screens unchanged; slots show *Programming firmware* while waiting their turn. |
+| 8B.2 | Note the time from **PROGRAM STOCK FIRMWARE** to **RESET MODULES FOR RF TEST** for a full tray. | Write it down; compare with 0.2.4. If failures are gone and time matters, try `MPCLI_MAX_PARALLEL=6` in `.env`, restart, repeat 8B.1. If failures remain, try `2`. |
+| 8B.3 | Make slots 2 and 5 fail Stock programming (lift them or leave them out of boot mode). | At **RESET MODULES FOR RF TEST**: amber **RETRY FAILED (2)**; no RETRY on the slot cards. |
+| 8B.4 | Re-seat 2 and 5, press **RETRY FAILED**, answer **Yes**. | The question lists *SLOT 2, 5*. Both run at the same time (*Retry 1: ...*); slots 1, 3, 4, 6–8 are not touched. Button disappears when both pass. |
+| 8B.5 | Repeat 8B.3 but re-seat only slot 2. | After the retry: **RETRY FAILED (1)** for slot 5. Press again after re-seating: *Retry 2* on slot 5 only. |
+| 8B.6 | Two modules fail the APP test; press **RETRY FAILED** and reset both when their slots say *Reset this module now*. | Both re-tested together. |
+
 ## 9. Known items to watch
 
 - The bench tool's automated tests pass, but their test process does not exit on its own (a thread left running; this predates the Box work). On the real jig, check that the bench tool closes cleanly after **RESTART WORKFLOW** during programming (guide F3), and report it if the window closes but the process stays in Task Manager.

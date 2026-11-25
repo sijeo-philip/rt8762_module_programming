@@ -293,12 +293,12 @@ def test_start_waits_for_the_batch_code_series(panel, qtbot):
 
 
 @pytest.mark.unit
-def test_retry_button_repeats_only_the_failed_slot(panel, qtbot, monkeypatch):
+def test_retry_failed_repeats_only_the_failed_slots_together(panel, qtbot, monkeypatch):
     from stationapp.domain.slot import DeviceState
     from stationapp.ui.widgets.production_panel import RETRY_OPERATION
 
     widget, controller, operations = panel
-    controller._programmer = SimulatedProgrammer(delay_seconds=0, failures=frozenset({("stock_program", 2)}))
+    controller._programmer = SimulatedProgrammer(delay_seconds=0, failures=frozenset({("stock_program", 2), ("stock_program", 4)}))
     widget.check_station(top_up=True)
     qtbot.waitUntil(lambda: widget.primary_button.isEnabled(), timeout=5_000)
     widget.stock_only_radio.setChecked(True)
@@ -307,17 +307,21 @@ def test_retry_button_repeats_only_the_failed_slot(panel, qtbot, monkeypatch):
 
     press_until(qtbot, widget, controller, BatchState.STOCK_READBACK_VERIFIED)
 
-    cards = widget._jig_grid.cards
-    retry = cards[2].retry_button
+    retry = widget.retry_failed_button
     qtbot.waitUntil(lambda: not retry.isHidden() and retry.isEnabled(), timeout=5_000)
-    assert all(cards[n].retry_button.isHidden() for n in (1, 3, 4))
+    assert retry.text() == "RETRY FAILED (2)"
+    # No per-slot RETRY buttons any more.
+    assert all(card.retry_button.isHidden() for card in widget._jig_grid.cards.values())
 
-    # Module re-seated; the operator confirms the retry.
+    # Modules re-seated; the operator confirms the retry.
+    asked = []
     controller._programmer = SimulatedProgrammer(delay_seconds=0, failures=frozenset())
-    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: asked.append(args[2]) or QMessageBox.StandardButton.Yes)
     retry.click()
 
-    qtbot.waitUntil(lambda: operations.get(RETRY_OPERATION) is None and controller.batch.slots[2].state is DeviceState.STOCK_READBACK_VERIFIED, timeout=5_000)
+    qtbot.waitUntil(lambda: operations.get(RETRY_OPERATION) is None and all(
+        controller.batch.slots[n].state is DeviceState.STOCK_READBACK_VERIFIED for n in (2, 4)), timeout=5_000)
     qtbot.waitUntil(retry.isHidden, timeout=5_000)
+    assert "SLOT 2, 4" in asked[0]
     assert controller.batch.state is BatchState.STOCK_READBACK_VERIFIED
     assert widget.primary_button.text() == "RUN RF TEST" and widget.primary_button.isEnabled()

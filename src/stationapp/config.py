@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # full (-E, whole flash) | keep_first_4k (-C) | none
     mpcli_chip_erase: str = "full"
     mpcli_programming_timeout_seconds: float = Field(90.0, gt=0)
+    # At most this many MPCLI processes (erase, flash, write MAC, read MAC)
+    # run at once across all slots; the other slots wait their turn. All 8
+    # at once gave frequent "module did not answer" failures. 8 = no limit.
+    mpcli_max_parallel: int = Field(4, ge=1, le=8)
 
     # --- Pricol functional test (PRICOLAPP / PRICOLDFU over the DUT UART) ---
     pricol_uart_baudrate: int = Field(115200, gt=0)

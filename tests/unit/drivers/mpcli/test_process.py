@@ -155,3 +155,62 @@ def test_process_runner_supports_base_arguments(
     assert result.succeeded is True
 
     assert "ARGS=-V" in result.stdout
+
+def test_large_output_does_not_stall_the_process() -> None:
+    # Far more than a Windows pipe holds: an undrained pipe would block the
+    # child until the timeout.
+    runner = make_python_runner()
+    result = runner.run(
+        ("-c", "import sys\nfor i in range(4000): print('flash progress line', i)\nsys.stderr.write('E' * 20000)"),
+        timeout_seconds=10.0,
+    )
+    assert result.outcome is ProcessOutcome.COMPLETED
+    assert "flash progress line 3999" in result.stdout
+    assert len(result.stderr) == 20000
+
+
+def test_limiter_caps_concurrent_processes(tmp_path) -> None:
+    import threading
+    import time
+
+    marker = tmp_path / "running"
+    marker.mkdir()
+    # Each child records itself while running, so the peak is visible.
+    script = (
+        "import os, sys, time, glob\n"
+        "d = sys.argv[1]; me = os.path.join(d, str(os.getpid()))\n"
+        "open(me, 'w').close()\n"
+        "print(len(glob.glob(os.path.join(d, '*'))))\n"
+        "time.sleep(0.4)\n"
+        "os.remove(me)\n"
+    )
+    limiter = threading.BoundedSemaphore(2)
+    runner = MpCliProcessRunner(Path(sys.executable), poll_interval_seconds=0.01, limiter=limiter)
+    results = []
+
+    def run() -> None:
+        results.append(runner.run(("-c", script, str(marker)), timeout_seconds=1.5))
+
+    started = time.monotonic()
+    threads = [threading.Thread(target=run) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert all(result.outcome is ProcessOutcome.COMPLETED for result in results)
+    assert max(int(result.stdout.strip()) for result in results) <= 2
+    # Waiting for a permit is not part of each run's 1.5 s timeout.
+    assert time.monotonic() - started >= 1.2
+
+
+def test_cancelled_while_waiting_for_a_permit() -> None:
+    import threading
+
+    limiter = threading.BoundedSemaphore(1)
+    limiter.acquire()
+    token = CancellationToken()
+    token.cancel()
+    runner = MpCliProcessRunner(Path(sys.executable), poll_interval_seconds=0.01, limiter=limiter)
+    result = runner.run(("-c", "print('never')"), timeout_seconds=2.0, cancellation_token=token)
+    assert result.outcome is ProcessOutcome.CANCELLED and result.stdout == ""

@@ -508,3 +508,65 @@ def test_rig_lock_refuses_a_second_exchange():
                 pass
     with golden_rig_exchange("after", wait=False):
         pass
+
+
+@pytest.mark.integration
+def test_retry_failed_repeats_every_failed_slot_together_and_leaves_passes(session_factory):
+    bench = Bench("stock_program:2,stock_program:5,stock_program:7")
+    controller = make(session_factory, bench)
+    slots = (1, 2, 3, 4, 5, 6, 7, 8)
+    batch = controller.start_batch(occupied=slots, ports=ports(*slots), mode=ProgrammingMode.STOCK_ONLY)
+    run_until(controller, BatchState.STOCK_READBACK_VERIFIED)
+    assert [n for n, _ in controller.snapshot().retry_slots] == [2, 5, 7]
+
+    bench.fix("stock_program:2,stock_program:7")   # slot 5 still faulty
+    assert controller.retry_failed() == (2, 5, 7)
+
+    for number in slots:
+        expected = 2 if number in (2, 5, 7) else 1
+        assert bench.calls[("stock_program", number)] == expected, number
+    assert batch.slots[2].state is DeviceState.STOCK_READBACK_VERIFIED
+    assert batch.slots[7].state is DeviceState.STOCK_READBACK_VERIFIED
+    assert batch.slots[5].is_held
+    assert controller.snapshot().retry_slots == ((5, RetryStep.STOCK),)
+    assert sorted(retry_events(session_factory, batch.batch_id)) == [
+        (2, "STOCK_PROGRAMMING", 1, True), (5, "STOCK_PROGRAMMING", 1, True), (7, "STOCK_PROGRAMMING", 1, True),
+    ]
+    assert not controller.snapshot().running
+
+    # Pressed again: only slot 5, its second retry.
+    bench.fix("stock_program:5")
+    assert controller.retry_failed() == (5,)
+    assert controller.snapshot().retry_slots == ()
+    assert retry_events(session_factory, batch.batch_id)[-1] == (5, "STOCK_PROGRAMMING", 2, True)
+
+    finish(controller, QRS)
+    assert all(batch.disposition_for(n) is SlotDisposition.PASS for n in slots)
+
+
+@pytest.mark.integration
+def test_retry_failed_with_nothing_to_retry_is_refused(session_factory):
+    controller = make(session_factory, Bench())
+    controller.start_batch(occupied=(1, 2), ports=ports(1, 2), mode=ProgrammingMode.STOCK_ONLY)
+    run_until(controller, BatchState.STOCK_READBACK_VERIFIED)
+    with pytest.raises(ProductionError, match="No failed module"):
+        controller.retry_failed()
+    assert not controller.snapshot().running
+
+
+@pytest.mark.integration
+def test_retry_failed_in_the_pricol_step_retries_only_the_pricol_failures(session_factory):
+    bench = Bench("pricol_program:3,pricol_program:6")
+    controller = make(session_factory, bench)
+    slots = (2, 3, 6)
+    batch = controller.start_batch(occupied=slots, ports=ports(*slots), mode=ProgrammingMode.STOCK_AND_PRICOL)
+    run_until(controller, BatchState.PRICOL_READBACK_VERIFIED)
+    assert controller.snapshot().retry_slots == ((3, RetryStep.PRICOL), (6, RetryStep.PRICOL))
+
+    bench.fix("pricol_program:3,pricol_program:6")
+    assert controller.retry_failed() == (3, 6)
+    assert [bench.calls[("pricol_program", n)] for n in slots] == [1, 2, 2]
+    assert batch.slots[3].state is DeviceState.PRICOL_MAC_CONFIRMED
+    assert batch.slots[6].state is DeviceState.PRICOL_MAC_CONFIRMED
+    finish(controller, QRS)
+    assert all(batch.dispositions[n] is SlotDisposition.PASS for n in slots)

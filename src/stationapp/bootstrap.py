@@ -530,7 +530,13 @@ def _mpcli_programmer_factory(settings: Settings):
     from stationapp.drivers.mpcli.configuration import MpCliProgrammingProfile
     from stationapp.drivers.mpcli.driver import MpCliDriver
     from stationapp.drivers.mpcli.process import MpCliProcessRunner
+    import threading
+
     from stationapp.services.programming import ProgrammingService
+
+    # One pool of permits for every programmer the station creates.
+    limiter = threading.BoundedSemaphore(settings.mpcli_max_parallel)
+    logger.info("MPCLI runs at most %d process(es) at once", settings.mpcli_max_parallel)
 
     def profile(image: Path) -> MpCliProgrammingProfile:
         if not Path(image).is_file():
@@ -541,7 +547,7 @@ def _mpcli_programmer_factory(settings: Settings):
         if stock is None:
             raise ValueError("Stock firmware image is required")
         return ProgrammingService(
-            driver=MpCliDriver(MpCliProcessRunner(Path(settings.mpcli_path))),
+            driver=MpCliDriver(MpCliProcessRunner(Path(settings.mpcli_path), limiter=limiter)),
             stock_profile=profile(stock),
             pricol_profile=profile(pricol) if pricol is not None else None,
             programming_timeout_seconds=settings.mpcli_programming_timeout_seconds,

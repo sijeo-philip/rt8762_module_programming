@@ -51,7 +51,8 @@ from stationapp.ui.widgets.scanner_input import ScannerLineEdit
 logger = logging.getLogger(__name__)
 
 ADVANCE_OPERATION = "production-advance"
-# Operator RETRY of one failed slot; never runs beside ADVANCE_OPERATION.
+# Operator RETRY FAILED (every failed slot together); never runs beside
+# ADVANCE_OPERATION.
 RETRY_OPERATION = "production-slot-retry"
 PRODUCTION_OPERATIONS = (ADVANCE_OPERATION, RETRY_OPERATION)
 READINESS_OPERATION = "station-readiness"
@@ -311,6 +312,18 @@ class ProductionPanel(QWidget):
         )
         self.primary_button.clicked.connect(self._on_primary)
         actions.addWidget(self.primary_button)
+
+        # One button retries every failed slot together; passed modules wait.
+        self.retry_failed_button = QPushButton("RETRY FAILED")
+        self.retry_failed_button.setMinimumHeight(52)
+        self.retry_failed_button.setStyleSheet(
+            "QPushButton { font-size: 16px; font-weight: 700; color: white;"
+            f" background: {AMBER}; border-radius: 6px; padding: 8px 18px; }}"
+            "QPushButton:disabled { background: #cbd5e1; color: #475569; }"
+        )
+        self.retry_failed_button.clicked.connect(self._on_retry_failed)
+        self.retry_failed_button.hide()
+        actions.addWidget(self.retry_failed_button)
 
         # USB keyboard-wedge QR scanner: hex-only, last N characters,
         # completes by itself when the scan burst ends.
@@ -803,6 +816,46 @@ class ProductionPanel(QWidget):
         self._local_error = None
         self.render()
 
+    def _on_retry_failed(self) -> None:
+        """RETRY FAILED: repeat, together, the failed step of every slot that
+        may be retried now. Modules that passed keep waiting. The
+        controller re-checks that nothing else runs."""
+        snapshot = self._controller.snapshot()
+        retry = dict(snapshot.retry_slots)
+        if not retry or self._busy(snapshot) or self._restart_request is not None:
+            self._action_error("Nothing can be retried now: wait until the other modules are waiting for the next step.")
+            self.render()
+            return
+        lines = []
+        for step in dict.fromkeys(retry.values()):
+            what, how = RETRY_STEPS[step]
+            numbers = ", ".join(str(n) for n, s in sorted(retry.items()) if s is step)
+            lines.append(f"{what}: SLOT {numbers}\n{how}")
+        answer = QMessageBox.question(
+            self,
+            "Retry failed modules",
+            "Repeat the failed step on these modules, all together?\n\n"
+            + "\n\n".join(lines)
+            + "\n\nModules that passed are not touched. "
+            "You may retry as many times as needed until you move the tray on.",
+        )
+        if answer is not QMessageBox.StandardButton.Yes:
+            return
+        controller = self._controller
+
+        def operation(_operation_id, token, _progress):
+            controller.retry_failed(token)
+
+        try:
+            self._operations.start(operation, operation_id=RETRY_OPERATION)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Could not start the retry of failed slots")
+            self._action_error(f"Could not start the retry: {exc}")
+            return
+        logger.info("Operator retry of failed slots started | slots=%s", sorted(retry))
+        self._local_error = None
+        self.render()
+
     def _on_operation_removed(self, operation_id: str) -> None:
         if operation_id in PRODUCTION_OPERATIONS and self._restart_request is not None and not self._busy(self._controller.snapshot()):
             (supervisor,) = self._restart_request
@@ -939,10 +992,12 @@ class ProductionPanel(QWidget):
 
         if snapshot.jig is not None and snapshot.jig.station_id == self._station_id:
             self._jig_grid.update_view(snapshot.jig)
-        self._jig_grid.set_retry_slots(
-            {number: RETRY_STEPS[step][0] for number, step in snapshot.retry_slots},
-            enabled=not running and self._restart_request is None,
-        )
+        # RETRY FAILED replaces the per-slot RETRY buttons on the cards.
+        self._jig_grid.set_retry_slots({}, enabled=False)
+        failed = len(snapshot.retry_slots)
+        self.retry_failed_button.setVisible(failed > 0)
+        self.retry_failed_button.setText(f"RETRY FAILED ({failed})")
+        self.retry_failed_button.setEnabled(failed > 0 and not running and self._restart_request is None)
 
     def _render_setup(self, snapshot: ProductionSnapshot) -> None:
         if self._access is not None:
@@ -953,6 +1008,7 @@ class ProductionPanel(QWidget):
         self.setup_box.setEnabled(True)
         self.abort_button.hide()
         self.restart_button.hide()
+        self.retry_failed_button.hide()
         self.qr_input.setEnabled(False)
         self.qr_input.setPlaceholderText("Scanner disabled")
         self._render_load_grid()

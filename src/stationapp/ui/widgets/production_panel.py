@@ -175,11 +175,14 @@ class ProductionPanel(QWidget):
     _access_changed = pyqtSignal()
     _settings_changed = pyqtSignal()
     _batch_code_changed = pyqtSignal()
+    _batch_code_completed = pyqtSignal(str)
 
-    def __init__(self, *, controller: ProductionController, readiness: StationReadinessService, operations: OperationManager, jig_grid: JigSlotGrid, station_id: str, default_stock_firmware: Path | None = None, default_pricol_firmware: Path | None = None, simulation: bool = False, access: StationAccessService | None = None, settings_service=None, scan_debounce_ms: int = 2000, batch_codes=None, parent: QWidget | None = None) -> None:
+    def __init__(self, *, controller: ProductionController, readiness: StationReadinessService, operations: OperationManager, jig_grid: JigSlotGrid, station_id: str, default_stock_firmware: Path | None = None, default_pricol_firmware: Path | None = None, simulation: bool = False, access: StationAccessService | None = None, settings_service=None, scan_debounce_ms: int = 2000, batch_codes=None, batch_lists=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._controller = controller
         self._batch_codes = batch_codes
+        # BatchMacListService: the MAC ID list printed when a code is complete.
+        self._batch_lists = batch_lists
         self._readiness = readiness
         self._operations = operations
         self._jig_grid = jig_grid
@@ -229,6 +232,10 @@ class ProductionPanel(QWidget):
         if batch_codes is not None:
             batch_codes.add_listener(self._batch_code_changed.emit)
             self._batch_code_changed.connect(self._schedule_render, Qt.ConnectionType.QueuedConnection)
+            if batch_lists is not None:
+                # Fires on the worker thread that committed the tray.
+                batch_codes.add_completion_listener(lambda _session, code: self._batch_code_completed.emit(code))
+                self._batch_code_completed.connect(self._on_batch_code_completed, Qt.ConnectionType.QueuedConnection)
 
         # Operators mark loaded/empty slots by tapping the slot cards.
         jig_grid.slot_clicked.connect(self._on_slot_clicked)
@@ -639,6 +646,18 @@ class ProductionPanel(QWidget):
             return
         self._local_error = None
         self.render()
+
+    def _on_batch_code_completed(self, code: str) -> None:
+        """A Batch/Lot is full: offer to print its MAC ID list."""
+        if self._shut_down or self._batch_lists is None:
+            return
+        from stationapp.ui.dialogs.batch_complete_dialog import BatchCompleteDialog
+
+        state = self._batch_codes.current() if self._batch_codes is not None else None
+        dialog = BatchCompleteDialog(self._batch_lists, code, state.threshold if state is not None else None, self)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _render_batch_code(self, *, tray_active: bool) -> str | None:
         """Show the running Batch Code; returns why a tray may not start."""

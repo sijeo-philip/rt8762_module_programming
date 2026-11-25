@@ -38,7 +38,7 @@ from typing import Any, Protocol
 
 from stationapp.concurrency.cancellation import CancellationToken
 from stationapp.domain.batch import Batch, BatchState, ProgrammingMode, RetryStep, SlotDisposition
-from stationapp.domain.batch_code import BatchCodeError, BatchCodeState
+from stationapp.domain.batch_code import BatchCodeError, BatchCodeState, completed_codes
 from stationapp.domain.errors import DomainError, DuplicateModuleQr, VerificationMismatch
 from stationapp.domain.events import EventType, ManufacturingEvent
 from stationapp.domain.golden_rig import GoldenRigTarget
@@ -152,6 +152,8 @@ class BatchCodes(Protocol):
     def allocate(self, session_id: str | None, passed: tuple[bool, ...]) -> tuple[tuple[str, ...], BatchCodeState]: ...
 
     def notify(self) -> None: ...
+
+    def codes_completed(self, session_id: str | None, codes: tuple[str, ...]) -> None: ...
 
 
 class ProductionStore(Protocol):
@@ -1383,7 +1385,7 @@ class ProductionController:
 
         # Batch Codes before the commit: if they cannot be given, the tray
         # stays uncommitted and the operator may retry.
-        codes, code_state = self._allocate_batch_codes(batch)
+        codes, code_state, completed = self._allocate_batch_codes(batch)
 
         batch.commit()
         events = list(self._disposition_events(batch))
@@ -1391,6 +1393,8 @@ class ProductionController:
         if code_state is not None:
             committed["batch_codes"] = {str(number): code for number, code in codes.items()}
             committed["batch_code_after"] = {"code": code_state.code, "passed": code_state.passed, "threshold": code_state.threshold}
+            if completed:
+                committed["batch_codes_completed"] = list(completed)
         events.append(self._event(batch, EventType.BATCH_COMMITTED, **committed))
         batch.queue_upload()
         events.append(self._event(batch, EventType.UPLOAD_QUEUED))
@@ -1402,27 +1406,31 @@ class ProductionController:
         logger.info("Batch committed and queued | batch_id=%s batch_codes=%s", batch.batch_id, sorted(set(codes.values())) or "-")
         if self._batch_codes is not None:
             self._batch_codes.notify()
+            if completed:
+                logger.info("Batch Code(s) completed | batch_id=%s codes=%s", batch.batch_id, list(completed))
+                self._batch_codes.codes_completed(batch.session_id, completed)
         for callback in tuple(self._commit_listeners):
             try:
                 callback(batch)
             except Exception:  # noqa: BLE001 - upload problems never fail production
                 logger.exception("Commit listener failed")
 
-    def _allocate_batch_codes(self, batch: Batch) -> tuple[dict[int, str], BatchCodeState | None]:
-        """Batch Code of every module of a tray about to be committed.
+    def _allocate_batch_codes(self, batch: Batch) -> tuple[dict[int, str], BatchCodeState | None, tuple[str, ...]]:
+        """Batch Code of every module of a tray about to be committed,
+        the state after the tray, and the codes the tray filled up.
 
         Only PASS counts toward the threshold; a tray reaches this point
         only when its whole cycle is finished, so aborted trays and the
         earlier attempts of a restarted tray are never counted."""
         if self._batch_codes is None:
-            return {}, None
+            return {}, None, ()
         slots = tuple(number for number, value in batch.dispositions.items() if value is not SlotDisposition.EMPTY)
         passed = tuple(batch.disposition_for(number) is SlotDisposition.PASS for number in slots)
         try:
             codes, state = self._batch_codes.allocate(batch.session_id, passed)
         except BatchCodeError as exc:
             raise ProductionError(f"Batch Code: {exc}") from exc
-        return dict(zip(slots, codes)), state
+        return dict(zip(slots, codes)), state, completed_codes(codes, passed, state)
 
     # ------------------------------------------------------------------
     # Helpers

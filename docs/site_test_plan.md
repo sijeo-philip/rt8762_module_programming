@@ -121,6 +121,10 @@ Use a threshold of **3** so the code changes within a few batches. On the Box co
 | 8.8 | Close the session, start a new one with threshold `5`. | **ENTER BATCH CODE** again; the old code is gone. |
 | 8.9 | Power cut right after **COMPLETE BATCH** (cable pulled first, as 6.2). Restart, reconnect, log in. | The count shown includes that batch exactly once; the batch is reported with the codes shown before the power cut. |
 | 8.10 | Re-worked module (as 5.4) in a later Batch Code. | Console: the module keeps the batch ID of its **first** report (Box rule). |
+| 8.11 | Threshold `3`: complete batches until a code is full (8.3). | Pop-up **Batch/Lot S5A01 is complete** right after that batch; it appears once per code, not again for later failures on the full code. |
+| 8.12 | Press **PRINT BATCH**. | Excel opens one A4 landscape page: Batch/Lot No `S5A01`, this week's Week No, Quantity `3`, the 3 final MACs (Pricol MAC in Stock + Pricol mode) matching the Box console. Print preview shows **1 page**. |
+| 8.13 | Clear the Week No cell, type `48`, print. Close the pop-up; as Supervisor, **Production records** → Batch Code `S5A01` → **Print Batch MAC list**. | Edited header prints. The list opens again (new file in `dataatch_lists`). |
+| 8.14 | Threshold `1000`, a full Batch/Lot (or bench simulation). Print. | All 1000 MACs on a single A4 landscape sheet and readable. |
 
 ## 9. Known items to watch
 

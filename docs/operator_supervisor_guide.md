@@ -466,6 +466,14 @@ The line above the error messages shows **Batch Code: S5A01 · 37 of 100 passed*
 - When the threshold is reached, the next passed module gets the next code: `S5A01` → `S5A02`, `S5A09` → `S5A10`, `S5A99` → `S5A100`. This can happen in the middle of a batch: for example the modules in slots 1–2 get `S5A01` and slots 3–8 get `S5A02`. The slot cards do not change; the Box records each module's code.
 - An Operator who takes over later in the same session does **not** enter a code: the station carries on.
 
+**Batch/Lot complete: print the MAC ID list.** When a Batch Code reaches the threshold (for example the 1000th passed module of `S5A01`), a pop-up **Batch/Lot S5A01 is complete** appears after that batch is completed. Production can carry on behind it.
+1. Press **PRINT BATCH**. Excel opens the MAC ID list of that Batch/Lot: one A4 landscape page, the passed modules' MAC IDs in a table (50 per column, numbered `1-50`, `51-100`, …).
+2. Check the header: **Batch/Lot No**, **Week No** (the week the Batch/Lot was completed), **Quantity** and **Date**. If a box is empty or wrong, click it and type the value.
+3. Print with **Ctrl+P** (check *Landscape*, *A4* and *Fit Sheet on One Page* are shown), then close Excel. Saving is not needed.
+4. Press **Close** on the pop-up.
+
+Closed the pop-up by mistake? A Supervisor can print the list again from **Production records**: type the Batch Code and press **Print Batch MAC list**. The files are also kept in `dataatch_lists`.
+
 **Wrong code entered?** Only a Supervisor can change it, between batches: **Change Batch Code (Supervisor)**, then the Supervisor's phone and PIN, a reason, and the new code. Counting starts again from 0 on the new code. Modules already reported keep their code.
 
 ### Stock programming and RF test (every batch)

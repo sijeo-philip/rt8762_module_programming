@@ -197,7 +197,7 @@ class MainWindow(QMainWindow):
         # local records by date, MAC, Operator, QR and Batch Code.
         self._records_page: ProductionRecordsPage | None = None
         if context.production_records is not None:
-            self._records_page = ProductionRecordsPage(context.production_records, context.device_history, parent=self)
+            self._records_page = ProductionRecordsPage(context.production_records, context.device_history, batch_lists=context.batch_lists, parent=self)
             tabs.addTab(self._records_page, "Production records")
 
         central = QWidget()
@@ -301,6 +301,7 @@ class MainWindow(QMainWindow):
             settings_service=context.production_settings,
             scan_debounce_ms=context.settings.qr_debounce_ms,
             batch_codes=context.batch_codes,
+            batch_lists=context.batch_lists,
             parent=self,
         )
         if context.recovered_macs:

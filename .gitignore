@@ -20,3 +20,6 @@ unisemble-sdk-handover-*/
 # Installer build (packaging/build_installer.ps1)
 !packaging/stationapp.spec
 packaging/redist/
+
+# Printable Batch/Lot MAC ID lists generated on the station
+data/batch_lists/

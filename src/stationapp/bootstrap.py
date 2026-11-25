@@ -73,6 +73,7 @@ class AppContext:
     authentication: object | None = None            # BoxAuthenticationService
     production_records: object | None = None        # ProductionRecordService (Supervisor browser)
     device_history: object | None = None            # DeviceHistoryService
+    batch_lists: object | None = None               # BatchMacListService (printable MAC lists)
 
 
     @property
@@ -119,6 +120,7 @@ def bootstrap() -> AppContext:
     serial_topology_service = (StationSerialTopologyService(binding_service=binding_service))
 
     from stationapp.services.history import DeviceHistoryService
+    from stationapp.services.batch_mac_list import BatchMacListService
     from stationapp.services.production_records import ProductionRecordService
 
     session_factory, recovered = _prepare_database(settings)
@@ -137,6 +139,7 @@ def bootstrap() -> AppContext:
     access.set_busy_probe(lambda: production.is_running)
     _wire_box_reports(box, access, production)
 
+    production_records = ProductionRecordService(session_factory)
     context = AppContext(
             settings=settings,
             started_at=datetime.now(timezone.utc),
@@ -154,8 +157,9 @@ def bootstrap() -> AppContext:
             production_settings=production_settings,
             batch_codes=batch_codes,
             authentication=access.authentication,
-            production_records=ProductionRecordService(session_factory),
+            production_records=production_records,
             device_history=DeviceHistoryService(session_factory),
+            batch_lists=BatchMacListService(production_records, output_dir=settings.batch_list_dir, station_id=settings.station_id),
         )
     logger.debug("Bootstrap Complete")
     return context

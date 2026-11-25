@@ -805,6 +805,37 @@ def test_every_module_is_reported_with_its_batch_code_split_exactly(station):
 
 
 @pytest.mark.integration
+def test_completed_batch_code_is_announced_once_and_its_mac_list_printed(station, tmp_path):
+    from openpyxl import load_workbook
+
+    from stationapp.services.batch_mac_list import BatchMacListService
+    from stationapp.services.production_records import ProductionRecordService
+
+    station["blocks"].ensure(MacPurpose.STOCK_RF_TEST)
+    login_operator(station, threshold=3, series="S5A01")
+    announced = []
+    station["batch_codes"].add_completion_listener(lambda session, code: announced.append(code))
+    controller = controller_for(station)
+
+    first = run_tray(controller, ProgrammingMode.STOCK_ONLY, (1, 2, 3, 4), "BA")
+    assert announced == ["S5A01"]
+    controller._rf_tester = SimulatedGoldenRig(delay_seconds=0, failures=frozenset({("rf", 2)}))
+    run_tray(controller, ProgrammingMode.STOCK_ONLY, (1, 2, 3, 5), "BB")
+    assert announced == ["S5A01", "S5A02"]
+
+    lists = BatchMacListService(ProductionRecordService(station["factory"]), output_dir=tmp_path, station_id=STATION)
+    path, mac_list = lists.export("S5A01")
+    expected = tuple(first.slots[n].stock_mac.compact for n in (1, 2, 3))
+    assert mac_list.macs == expected
+    sheet = load_workbook(path).active
+    assert sheet["C2"].value == "S5A01" and sheet["N2"].value == 3
+    assert (sheet["A5"].value, sheet["A6"].value, sheet["A7"].value) == expected
+
+    # S5A03 is still running: one pass so far.
+    assert len(lists.load("S5A03").macs) == 1
+
+
+@pytest.mark.integration
 def test_aborted_tray_never_counts_and_a_restarted_tray_counts_once(station):
     station["blocks"].ensure(MacPurpose.STOCK_RF_TEST)
     login_operator(station, threshold=2, series="R01")

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stationapp"
-version = "0.2.3"
+version = "0.2.4"
 description = "BLE module programming and traceability station application"
 requires-python = ">=3.11,<3.12"
 readme = "README.md"

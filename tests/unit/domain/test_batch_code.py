@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from stationapp.domain.batch_code import (
+    completed_codes,
     BatchCodeError,
     BatchCodeState,
     next_batch_code,
@@ -88,3 +89,30 @@ def test_new_series_restarts_count_and_round_trips():
     started = state(passed=40).started(" S6B01 ")
     assert (started.code, started.passed, started.series_start) == ("S6B01", 0, "S6B01")
     assert BatchCodeState.from_dict(started.to_dict()) == started
+
+
+def completed(before, passed):
+    codes, after = before.allocate(passed)
+    return completed_codes(codes, passed, after)
+
+
+def test_code_completes_when_its_last_pass_is_committed():
+    assert completed(state(passed=98), [True, False]) == ()
+    assert completed(state(passed=99), [True, False]) == ("S5A01",)
+
+
+def test_full_code_is_not_completed_again_by_trailing_failures():
+    # S5A01 was already full: its failures and the next code's first
+    # pass do not report it a second time.
+    assert completed(state(passed=100), [False, True]) == ()
+    assert completed(state(passed=100), [False, False]) == ()
+
+
+def test_tray_straddling_codes_completes_the_first():
+    assert completed(state(passed=98), [True, True, True, False, True]) == ("S5A01",)
+
+
+def test_small_threshold_completes_several_codes_in_order():
+    before = state(threshold=3, code="B09")
+    assert completed(before, [True] * 8) == ("B09", "B10")
+    assert completed(before, [True] * 9) == ("B09", "B10", "B11")

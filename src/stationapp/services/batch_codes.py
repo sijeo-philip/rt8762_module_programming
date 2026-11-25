@@ -33,6 +33,7 @@ class BatchCodeService:
         self._station_id = station_id
         self._access = access
         self._listeners: list[Callable[[], None]] = []
+        self._completion_listeners: list[Callable[[str | None, str], None]] = []
         self._lock = threading.Lock()
 
     def add_listener(self, callback: Callable[[], None]) -> None:
@@ -45,6 +46,20 @@ class BatchCodeService:
                 callback()
             except Exception:  # noqa: BLE001 - an indicator must not stop production
                 logger.exception("Batch Code listener failed")
+
+    def add_completion_listener(self, callback: Callable[[str | None, str], None]) -> None:
+        """callback(session_id, code) once a Batch Code holds `threshold`
+        passed modules. Called on the thread that committed the tray."""
+        self._completion_listeners.append(callback)
+
+    def codes_completed(self, session_id: str | None, codes: Sequence[str]) -> None:
+        """A committed tray filled these codes (the tray is already saved)."""
+        for code in codes:
+            for callback in tuple(self._completion_listeners):
+                try:
+                    callback(session_id, code)
+                except Exception:  # noqa: BLE001 - a pop-up must not stop production
+                    logger.exception("Batch Code completion listener failed")
 
     # -- reading -----------------------------------------------------------
 

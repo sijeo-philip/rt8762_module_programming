@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     serial_binding_file: Path = Path("./data/serial_bindings.json")
     golden_rig_binding_file: Path = Path("./data/golden_rig_binding.json")
     golden_rig_ca_certificate: Path = Path("./config/certificates/golden_rig_ca.pem")
+    # Printable MAC ID lists of completed Batch Codes (Excel workbooks).
+    batch_list_dir: Path = Path("./data/batch_lists")
     
 
     # ----External Tools ---

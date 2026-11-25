@@ -69,6 +69,25 @@ def next_batch_code(code: str) -> str:
     return following
 
 
+def completed_codes(codes: Sequence[str], passed: Sequence[bool], after: "BatchCodeState") -> tuple[str, ...]:
+    """Batch Codes that became full in one committed tray, in order.
+
+    codes/passed: the tray's modules in slot order, as allocate() gave
+    them; after: the state allocate() returned. A code is full once the
+    series has moved past it, or when it is the running code with
+    `threshold` passes. It became full in this tray only if one of the
+    tray's passes went to it: a full code that only collected failures
+    here was already full (and reported) after an earlier tray.
+    """
+    with_pass = {code for code, ok in zip(codes, passed) if ok}
+    completed = []
+    for code in dict.fromkeys(codes):
+        full = code != after.code or after.passed >= after.threshold
+        if full and code in with_pass:
+            completed.append(code)
+    return tuple(completed)
+
+
 @dataclass(frozen=True, slots=True)
 class BatchCodeState:
     """The running Batch Code of one production session."""

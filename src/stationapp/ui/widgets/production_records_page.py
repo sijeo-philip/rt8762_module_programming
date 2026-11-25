@@ -63,8 +63,9 @@ _FAIL_WORDS = {"FAIL", "FAILED", "HOLD"}
 
 
 class ProductionRecordsPage(QWidget):
-    def __init__(self, records: ProductionRecordService, history: DeviceHistoryService | None = None, parent: QWidget | None = None) -> None:
+    def __init__(self, records: ProductionRecordService, history: DeviceHistoryService | None = None, batch_lists=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._batch_lists = batch_lists      # BatchMacListService
         self._records = records
         self._history = history
         self._rows: tuple[ProductionRecord, ...] = ()
@@ -124,10 +125,17 @@ class ProductionRecordsPage(QWidget):
         buttons.addWidget(self.search_button)
         buttons.addWidget(self.clear_button)
         buttons.addStretch()
+        self.print_list_button = QPushButton("Print Batch MAC list")
+        self.print_list_button.setToolTip("Open the MAC ID list of the Batch Code entered above in Excel, to print")
+        self.print_list_button.clicked.connect(self._print_batch_list)
+        self.print_list_button.setEnabled(False)
+        self.print_list_button.setVisible(batch_lists is not None)
+        buttons.addWidget(self.print_list_button)
         buttons.addWidget(self.export_button)
         grid.addLayout(buttons, 3, 0, 1, 6)
         layout.addWidget(filters)
 
+        self.code_input.textChanged.connect(lambda text: self.print_list_button.setEnabled(bool(text.strip())))
         for edit in (self.mac_input, self.qr_input, self.code_input, self.operator_input.lineEdit()):
             edit.returnPressed.connect(self.search)
 
@@ -339,6 +347,22 @@ class ProductionRecordsPage(QWidget):
             self.summary.setStyleSheet(f"color: {RED.name()}; font-weight: 600;")
             return
         self.summary.setText(f"Exported {count} record(s) to {path}")
+        self.summary.setStyleSheet(f"color: {GREEN.name()}; font-weight: 600;")
+
+
+    def _print_batch_list(self) -> None:
+        if self._batch_lists is None:
+            return
+        from stationapp.services.batch_mac_list import open_document
+
+        try:
+            path, mac_list = self._batch_lists.export(self.code_input.text())
+            open_document(path)
+        except (OSError, ValueError) as exc:
+            self.summary.setText(f"Batch MAC list failed: {exc}")
+            self.summary.setStyleSheet(f"color: {RED.name()}; font-weight: 600;")
+            return
+        self.summary.setText(f"Opened the MAC ID list of {mac_list.batch_code} ({len(mac_list.macs)} MACs) in Excel: {path}")
         self.summary.setStyleSheet(f"color: {GREEN.name()}; font-weight: 600;")
 
 

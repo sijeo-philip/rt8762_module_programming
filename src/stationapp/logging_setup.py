@@ -17,7 +17,10 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from stationapp.services.process_timing import TIMING_LOG_FILE, TIMING_LOGGER_NAME
+
 _CONSOLE_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+_TIMING_FORMAT = "%(asctime)s | %(message)s"
 _FILE_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(filename)s:%(lineno)d | %(message)s"
 
 def setup_logging(log_dir: Path, level: str = "INFO") -> logging.Logger:
@@ -47,4 +50,26 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> logging.Logger:
     file_handler.setFormatter(logging.Formatter(_FILE_FORMAT))
     root.addHandler(file_handler)
 
+    _setup_timing_log(log_dir)
+
     return logging.getLogger("stationapp")
+
+
+def _setup_timing_log(log_dir: Path) -> None:
+    """Process timings go to their own file only (stationapp_timing.log),
+    not to the console or stationapp.log."""
+    timing = logging.getLogger(TIMING_LOGGER_NAME)
+    timing.setLevel(logging.INFO)
+    timing.propagate = False
+    for handler in list(timing.handlers):
+        timing.removeHandler(handler)
+        handler.close()
+
+    handler = RotatingFileHandler(
+        log_dir / TIMING_LOG_FILE,
+        maxBytes = 5 * 1024 * 1024,
+        backupCount = 10,
+        encoding = "utf-8",
+        )
+    handler.setFormatter(logging.Formatter(_TIMING_FORMAT))
+    timing.addHandler(handler)

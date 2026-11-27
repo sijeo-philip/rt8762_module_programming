@@ -433,7 +433,7 @@ def _build_production(settings: Settings, session_factory, topology_service, eli
         rf_tester = SimulatedGoldenRig(delay_seconds=delay, failures=failures)
         functional = SimulatedFunctionalTester(delay_seconds=delay, failures=failures)
 
-        def programmer_factory(stock: Path | None, pricol: Path | None):
+        def programmer_factory(stock: Path | None, pricol: Path | None, *, chip_erase: bool = True):
             return SimulatedProgrammer(delay_seconds=delay, failures=failures)
 
         def golden_rig_check() -> HealthCheck:
@@ -536,22 +536,28 @@ def _mpcli_programmer_factory(settings: Settings):
 
     # One pool of permits for every programmer the station creates.
     limiter = threading.BoundedSemaphore(settings.mpcli_max_parallel)
-    logger.info("MPCLI runs at most %d process(es) at once", settings.mpcli_max_parallel)
+    logger.info("MPCLI runs at most %d process(es) at once | single_session=%s", settings.mpcli_max_parallel, settings.mpcli_single_session)
 
-    def profile(image: Path) -> MpCliProgrammingProfile:
-        if not Path(image).is_file():
-            raise ValueError(f"Firmware image not found: {image}")
-        return MpCliProgrammingProfile(image_packet=Path(image), chip_erase=settings.mpcli_chip_erase)
+    from stationapp.drivers.mpcli.configuration import ERASE_FULL, ERASE_NONE
 
-    def factory(stock: Path | None, pricol: Path | None) -> ProgrammingService:
+    def factory(stock: Path | None, pricol: Path | None, *, chip_erase: bool = True) -> ProgrammingService:
+        """chip_erase: the Supervisor's per-tray choice (Batch setup)."""
         if stock is None:
             raise ValueError("Stock firmware image is required")
+        erase = ERASE_NONE if not chip_erase else (settings.mpcli_chip_erase if settings.mpcli_chip_erase != ERASE_NONE else ERASE_FULL)
+
+        def profile(image: Path) -> MpCliProgrammingProfile:
+            if not Path(image).is_file():
+                raise ValueError(f"Firmware image not found: {image}")
+            return MpCliProgrammingProfile(image_packet=Path(image), chip_erase=erase)
+
         return ProgrammingService(
             driver=MpCliDriver(MpCliProcessRunner(Path(settings.mpcli_path), limiter=limiter)),
             stock_profile=profile(stock),
             pricol_profile=profile(pricol) if pricol is not None else None,
             programming_timeout_seconds=settings.mpcli_programming_timeout_seconds,
             two_step=settings.mpcli_two_step,
+            single_session=settings.mpcli_single_session,
         )
 
     return factory

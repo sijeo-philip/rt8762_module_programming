@@ -67,7 +67,7 @@ class ProcessTiming:
     # Tray lifecycle
     # ------------------------------------------------------------------
 
-    def programming_started(self, batch_id: str, slots: Iterable[int]) -> None:
+    def programming_started(self, batch_id: str, slots: Iterable[int], *, chip_erase: bool | None = None) -> None:
         """The operator started Stock programming. A restarted tray keeps
         its first start, so the total covers every attempt."""
         slots = tuple(sorted(slots))
@@ -80,6 +80,8 @@ class ProcessTiming:
                 tray.started = self._clock()
             tray.slots = slots
         note = "clock started" if first else "again after a tray restart; the total still counts from the first start"
+        if chip_erase is not None:
+            note += " | chip erase " + ("ON" if chip_erase else "OFF")
         self._write(batch_id, "START PROGRAMMING", _tray_scope(slots), None, note)
 
     def restarted(self, batch_id: str, attempt: int) -> None:

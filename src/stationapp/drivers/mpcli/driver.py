@@ -7,12 +7,12 @@ from pathlib import Path
 from stationapp.concurrency.cancellation import (CancellationToken)
 from stationapp.domain.mac import MacAddress
 from dataclasses import replace
-from stationapp.drivers.mpcli.commands import (build_chip_erase_command, build_flash_command, build_read_mac_command, build_reboot_command, build_version_command, build_set_mac_command, build_flash_with_mac_command)
+from stationapp.drivers.mpcli.commands import (build_chip_erase_command, build_flash_command, build_program_session_command, build_read_mac_command, build_reboot_command, build_version_command, build_set_mac_command, build_flash_with_mac_command)
 from stationapp.drivers.mpcli.configuration import (ERASE_KEEP_FIRST_4K, ERASE_NONE, MpCliProgrammingProfile)
 from stationapp.drivers.mpcli.errors import (MpCliInvalidCommand)
 from stationapp.drivers.mpcli.process import (MpCliProcessRunner)
 from stationapp.drivers.mpcli.types import (ProcessResult)
-from stationapp.drivers.mpcli.parsers import (parse_mac_readback, parse_programming_result)
+from stationapp.drivers.mpcli.parsers import (parse_mac_readback, parse_programming_result, parse_session_readback)
 from stationapp.drivers.mpcli.types import (MacReadbackResult, ProcessResult,ProgrammingResult)
 
 class MpCliDriver:
@@ -126,6 +126,20 @@ class MpCliDriver:
         raw = self.set_mac(com_port=com_port, mac=mac, profile=profile, cancellation_token=cancellation_token)
         return parse_programming_result(raw)
 
+    def program_single_session(self, *, com_port: str, mac: MacAddress, profile: MpCliProgrammingProfile, timeout_seconds: float, cancellation_token: CancellationToken | None = None, on_phase: Callable[[str], None] | None = None) -> tuple[ProgrammingResult, MacReadbackResult]:
+        """[Chip erase], flash, write MAC and read it back in ONE MPCLI run.
+
+        Returns the programming outcome and the MAC MPCLI read back from
+        flash after programming (dumpmac). The read-back is meaningful
+        only when programming succeeded.
+        """
+        self._require_image(profile.image_packet)
+        if on_phase is not None:
+            on_phase(PHASE_SESSION_ERASE if profile.chip_erase != ERASE_NONE else PHASE_FLASHING)
+        arguments = build_program_session_command(com_port=com_port, mac=mac, profile=profile)
+        raw = self._runner.run(arguments, timeout_seconds=timeout_seconds, cancellation_token=cancellation_token)
+        return parse_programming_result(raw), parse_session_readback(raw)
+
     def program_firmware_only(self, *, com_port: str, profile: MpCliProgrammingProfile, timeout_seconds: float, cancellation_token: CancellationToken | None = None) -> ProgrammingResult:
         raw = self.flash(com_port=com_port, profile=profile, timeout_seconds=timeout_seconds, cancellation_token=cancellation_token)
         return parse_programming_result(raw)
@@ -142,3 +156,5 @@ def _settle(seconds: float, cancellation_token: CancellationToken | None) -> Non
 PHASE_ERASING = "ERASING"
 PHASE_FLASHING = "FLASHING"
 PHASE_WRITING_MAC = "WRITING_MAC"
+# Single session with chip erase: erase, flash and MAC write in one run.
+PHASE_SESSION_ERASE = "ERASE_FLASH_MAC"

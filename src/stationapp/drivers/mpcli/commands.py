@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from stationapp.domain.mac import MacAddress
-from stationapp.drivers.mpcli.configuration import (MpCliProgrammingProfile)
+from stationapp.drivers.mpcli.configuration import (ERASE_FULL, ERASE_KEEP_FIRST_4K, MpCliProgrammingProfile)
 from stationapp.drivers.mpcli.errors import (MpCliInvalidCommand)
 
 
@@ -50,6 +50,26 @@ def build_flash_with_mac_command( *, com_port: str, mac: MacAddress, profile: Mp
     if profile.reboot_after_programming:
         command.append("-r")
     return tuple(command)
+
+def build_program_session_command(*, com_port: str, mac: MacAddress, profile: MpCliProgrammingProfile) -> tuple[str, ...]:
+    """One MPCLI session: [chip erase], flash, write MAC, read it back, reboot.
+
+    MPCLI connects and loads its RAM loader once (about 4.7 s at 115200)
+    instead of once per step. Bench-verified (mpcli -c COMx -E -b 1000000
+    -P img -x MAC -I -r): the erase runs before any image part is
+    programmed, the MAC is merged into the config image, and dumpmac
+    reads it back from flash after programming.
+    """
+    port = normalize_com_port(com_port)
+    image = _path_text(profile.image_packet)
+    command: list[str] = ["-c", port, "-b", str(profile.baud)]
+    if profile.chip_erase == ERASE_FULL:
+        command.append("-E")
+    elif profile.chip_erase == ERASE_KEEP_FIRST_4K:
+        command.append("-C")
+    command += ["-P", image, "-x", mac.colon, "-I", "-r"]
+    return tuple(command)
+
 
 def build_flash_command( *, com_port: str, profile: MpCliProgrammingProfile) -> tuple[str, ...]:
     """Build one packed-image programming command.

@@ -325,3 +325,22 @@ def test_retry_failed_repeats_only_the_failed_slots_together(panel, qtbot, monke
     assert "SLOT 2, 4" in asked[0]
     assert controller.batch.state is BatchState.STOCK_READBACK_VERIFIED
     assert widget.primary_button.text() == "RUN RF TEST" and widget.primary_button.isEnabled()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("ticked", [True, False])
+def test_chip_erase_box_is_passed_to_the_tray(panel, qtbot, monkeypatch, ticked):
+    widget, controller, _ = panel
+    assert widget.chip_erase_check.isChecked()          # default on
+    seen = {}
+    original = controller.start_batch
+
+    def spy(**kwargs):
+        seen.update(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(controller, "start_batch", spy)
+    widget.chip_erase_check.setChecked(ticked)
+    start_one_slot_stock_only(widget, controller, qtbot)
+
+    assert seen["chip_erase"] is ticked

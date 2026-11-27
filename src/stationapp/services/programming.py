@@ -10,6 +10,7 @@ batch orchestrator / Unit of Work layer.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -97,9 +98,15 @@ class ProgrammingService:
         pricol_profile: MpCliProgrammingProfile | None,
         programming_timeout_seconds: float = 60.0,
         readback_timeout_seconds: float = 10.0,
-        two_step: bool = False) -> None:
+        two_step: bool = False,
+        single_session: bool = False) -> None:
         """two_step=True uses the validated flash -> settle -> write-MAC
-        sequence instead of MPCLI's combined flash-with-MAC command."""
+        sequence instead of MPCLI's combined flash-with-MAC command.
+
+        single_session=True (takes precedence) runs [chip erase], flash,
+        MAC write and MAC read-back as ONE MPCLI command per module. The
+        MAC read back in that run is kept and handed to the following
+        verify_*_mac call, which then starts no MPCLI process of its own."""
 
         if programming_timeout_seconds <= 0:
             raise ValueError(
@@ -117,6 +124,10 @@ class ProgrammingService:
         self._programming_timeout_seconds = (programming_timeout_seconds)
         self._readback_timeout_seconds = (readback_timeout_seconds)
         self._two_step = two_step
+        self._single_session = single_session
+        # (com_port, MAC) -> MAC read back by the single-session run.
+        self._session_readbacks: dict[tuple[str, str], MacReadbackResult] = {}
+        self._session_lock = threading.Lock()
 
     def program_stock(self, target: ProgrammingTarget, *, cancellation_token: CancellationToken | None = None, on_phase: Callable[[str], None] | None = None) -> SlotProgrammingResult:
         """Flash stock firmware and temporary RF-test MAC."""
@@ -153,6 +164,9 @@ class ProgrammingService:
         """Read the device MAC after Stock programming."""
 
         self._require_purpose(target, MacPurpose.STOCK_RF_TEST)
+        session = self._take_session_readback(target)
+        if session is not None:
+            return session
 
         return self._driver.read_mac_structured(
             com_port=target.com_port,
@@ -176,6 +190,9 @@ class ProgrammingService:
             target,
             MacPurpose.PRICOL_PRODUCTION,
         )
+        session = self._take_session_readback(target)
+        if session is not None:
+            return session
 
         return self._driver.read_mac_structured(
             com_port=target.com_port,
@@ -206,6 +223,24 @@ class ProgrammingService:
         )
 
     def _program(self, target: ProgrammingTarget, profile: MpCliProgrammingProfile, cancellation_token: CancellationToken | None, on_phase: Callable[[str], None] | None) -> ProgrammingResult:
+        key = (target.com_port.upper(), target.mac.colon)
+        with self._session_lock:
+            # A new run never verifies with an older run's read-back.
+            self._session_readbacks.pop(key, None)
+        if self._single_session:
+            programming, readback = self._driver.program_single_session(
+                com_port=target.com_port,
+                mac=target.mac,
+                profile=profile,
+                timeout_seconds=self._programming_timeout_seconds,
+                cancellation_token=cancellation_token,
+                on_phase=on_phase,
+            )
+            if programming.succeeded:
+                with self._session_lock:
+                    self._session_readbacks[key] = readback
+            return programming
+
         if self._two_step:
             return self._driver.program_sequenced(
                 com_port=target.com_port,
@@ -224,6 +259,11 @@ class ProgrammingService:
             cancellation_token=cancellation_token,
             on_phase=on_phase,
         )
+
+    def _take_session_readback(self, target: ProgrammingTarget) -> MacReadbackResult | None:
+        """The read-back of this target's last single-session run, once."""
+        with self._session_lock:
+            return self._session_readbacks.pop((target.com_port.upper(), target.mac.colon), None)
 
     def _require_pricol_profile(self) -> MpCliProgrammingProfile:
         if self._pricol_profile is None:

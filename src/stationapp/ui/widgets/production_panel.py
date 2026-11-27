@@ -385,6 +385,18 @@ class ProductionPanel(QWidget):
         self.pricol_fw_input, pricol_row = self._file_row(pricol_fw)
         form.addRow("Pricol firmware", pricol_row)
 
+        # Per tray: the choice in force when START is pressed applies to
+        # that tray's Stock and Pricol programming (and its retries). It
+        # stays as set for the next trays until the Supervisor changes it.
+        self.chip_erase_check = QCheckBox("Erase the whole chip before programming")
+        self.chip_erase_check.setChecked(True)
+        self.chip_erase_check.setToolTip(
+            "Ticked: MPCLI erases the whole flash (-E) before writing the firmware.\n"
+            "Clear it to program without the full erase (faster; data outside the\n"
+            "firmware areas is kept). Applies to the next tray started."
+        )
+        form.addRow("Chip erase", self.chip_erase_check)
+
         slot_row = QHBoxLayout()
         self.slot_checks: dict[int, QCheckBox] = {}
         for number in range(1, self._controller.slot_count + 1):
@@ -605,6 +617,7 @@ class ProductionPanel(QWidget):
                 operator_id=self.operator_input.text(),
                 stock_firmware=Path(stock) if stock else None,
                 pricol_firmware=Path(pricol) if pricol else None,
+                chip_erase=self.chip_erase_check.isChecked(),
             )
         except ProductionError as exc:
             self._action_error(str(exc))

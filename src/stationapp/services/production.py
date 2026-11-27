@@ -45,7 +45,7 @@ from stationapp.domain.golden_rig import GoldenRigTarget
 from stationapp.domain.mac import TEMPORARY_ALLOCATION_ID, AllocatedMac, MacAddress, MacPurpose, temporary_stock_mac
 from stationapp.domain.slot import DeviceState
 from stationapp.domain.users import AccessError, AuthenticatedUser
-from stationapp.drivers.mpcli.driver import PHASE_ERASING, PHASE_FLASHING, PHASE_WRITING_MAC
+from stationapp.drivers.mpcli.driver import PHASE_ERASING, PHASE_FLASHING, PHASE_SESSION_ERASE, PHASE_WRITING_MAC
 from stationapp.drivers.mpcli.types import IdentityOutcome
 from stationapp.drivers.pricol.functional import FunctionalTestOutcome
 from stationapp.drivers.qr_scanner import InvalidScan, ScanFormat
@@ -68,7 +68,8 @@ logger = logging.getLogger(__name__)
 # Printable ASCII without spaces. Tighten once the module QR format is fixed.
 DEFAULT_QR_PATTERN = r"^[!-~]{4,128}$"
 
-ProgrammerFactory = Callable[[Path | None, Path | None], "SlotProgrammer"]
+# (stock image, pricol image, chip_erase=<Supervisor's per-tray choice>)
+ProgrammerFactory = Callable[..., "SlotProgrammer"]
 
 # Step names recorded with STAGE_RETRY events (operator RETRY on a slot).
 STAGE_STOCK_PROGRAMMING = "STOCK_PROGRAMMING"
@@ -282,6 +283,8 @@ class ProductionController:
         self._timing = process_timing or ProcessTiming()
         # Operator retries in this tray per (slot, step), for the records.
         self._retry_counts: Counter[tuple[int, RetryStep]] = Counter()
+        # The current tray's chip-erase choice, for the timing log.
+        self._chip_erase = True
         self._enabled_slots = enabled_slots
         self._qr_format = qr_format
         self._commit_listeners: list[Callable[[Batch], None]] = []
@@ -382,8 +385,11 @@ class ProductionController:
     # Commands
     # ------------------------------------------------------------------
 
-    def start_batch(self, *, occupied: tuple[int, ...], ports: Mapping[int, SlotPort], mode: ProgrammingMode, batch_label: str | None = None, operator_id: str | None = None, stock_firmware: Path | None = None, pricol_firmware: Path | None = None) -> Batch:
-        """READY -> START: create the batch, bind ports, reserve Stock MACs."""
+    def start_batch(self, *, occupied: tuple[int, ...], ports: Mapping[int, SlotPort], mode: ProgrammingMode, batch_label: str | None = None, operator_id: str | None = None, stock_firmware: Path | None = None, pricol_firmware: Path | None = None, chip_erase: bool = True) -> Batch:
+        """READY -> START: create the batch, bind ports, reserve Stock MACs.
+
+        chip_erase: the Supervisor's per-tray choice; erase the whole flash
+        before Stock and Pricol programming of this tray."""
         with self._lock:
             if self._running:
                 raise ProductionError("Another production step is still running")
@@ -433,7 +439,7 @@ class ProductionController:
                 if self._require_firmware and mode is ProgrammingMode.STOCK_AND_PRICOL and pricol_firmware is None:
                     raise ProductionError("Select the Pricol firmware image")
                 try:
-                    self._programmer = self._programmer_factory(stock_firmware, pricol_firmware)
+                    self._programmer = self._programmer_factory(stock_firmware, pricol_firmware, chip_erase=chip_erase)
                     firmware = {
                         "stock_firmware": _firmware_identity(stock_firmware),
                         "pricol_firmware": _firmware_identity(pricol_firmware),
@@ -452,7 +458,7 @@ class ProductionController:
             )
             batch.configure_occupied_slots(occupied)
 
-            self._store.create(batch, [self._event(batch, EventType.BATCH_CREATED, mode=mode.value, occupied=list(occupied), batch_label=batch.batch_label, operator_id=batch.operator_id, session_id=session_id, **firmware)])
+            self._store.create(batch, [self._event(batch, EventType.BATCH_CREATED, mode=mode.value, occupied=list(occupied), batch_label=batch.batch_label, operator_id=batch.operator_id, session_id=session_id, chip_erase=chip_erase, **firmware)])
 
             self._batch = batch
             self._ports = {number: ports[number] for number in occupied}
@@ -487,7 +493,8 @@ class ProductionController:
                 for record in records
             ])
 
-            logger.info("Batch started | batch_id=%s mode=%s occupied=%s", batch.batch_id, mode.value, occupied)
+            self._chip_erase = chip_erase
+            logger.info("Batch started | batch_id=%s mode=%s occupied=%s chip_erase=%s", batch.batch_id, mode.value, occupied, chip_erase)
 
         self._notify()
         return batch
@@ -1025,7 +1032,7 @@ class ProductionController:
             if state is BatchState.AWAITING_STOCK_PROGRAM_MODE:
                 # Persist PROGRAMMING before any MPCLI process starts.
                 batch.confirm_stock_program_mode()
-                self._timing.programming_started(batch.batch_id, batch.occupied_slot_numbers)
+                self._timing.programming_started(batch.batch_id, batch.occupied_slot_numbers, chip_erase=self._chip_erase)
                 self._store.save(batch, [
                     self._event(batch, EventType.STOCK_PROGRAMMING_STARTED, slot=number, mac=str(batch.slots[number].stock_mac))
                     for number in batch.occupied_slot_numbers
@@ -1169,6 +1176,8 @@ class ProductionController:
         def on_phase(phase: str) -> None:
             if phase == PHASE_ERASING:
                 self._set_activity(number, prefix + "Erasing chip", None)
+            elif phase == PHASE_SESSION_ERASE:
+                self._set_activity(number, prefix + "Erasing chip + programming firmware", None)
             elif phase == PHASE_FLASHING:
                 self._set_activity(number, prefix + "Programming firmware", None)
             elif phase == PHASE_WRITING_MAC:

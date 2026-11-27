@@ -12,4 +12,4 @@ domain/         -> nothing from this package
 LAN server (Stage 2) to arrive as a change to 'services/' only, with the UI untouched.
 """
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"

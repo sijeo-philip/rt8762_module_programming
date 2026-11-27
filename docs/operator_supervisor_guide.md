@@ -406,6 +406,8 @@ Open the **Production settings** tab. These settings are kept until a Supervisor
 5. **Enabled jig slots:** tick the slots that may be used. Each one shows its COM port. Untick a slot whose fixture is damaged; Operators will then not be able to use it.
 6. Press **Save settings** (or **Discard changes**). You are asked for a reason; the change is recorded.
 
+**Chip erase (per tray):** in the **Batch setup** box of the Production screen (Supervisor view), **Erase the whole chip before programming** is ticked by default. Clear it to program the next tray without the full erase. That is faster, and data outside the firmware areas stays on the module. The choice in force when **START** is pressed applies to that tray's Stock and Pricol programming and its retries. It stays as set for the following trays until you change it, and it goes back to ticked when the application restarts. Each tray's choice is recorded with the tray and in the timing log (`chip erase ON/OFF`).
+
 > **Changing the programming mode** (Stock only ↔ Stock + Pricol) changes where the final MACs come from. The Box lets a station hold blocks for one mode at a time, so the station gives up the remaining addresses of the old mode's blocks and fetches a new block at the next **Check station**. That needs the Box to be reachable. Plan mode changes, and do not switch back and forth during a shift.
 
 > **Changing a range name** works the same way: the station stops using the addresses left from the old range at once, and fetches a block from the new range at the next **Check station**. A misspelt name shows *the box has no master range of that name* on **Check station**; correct it here.
@@ -496,7 +498,7 @@ Each of these steps needs you to switch or reset the modules by hand. Nothing st
 | Headline | What you do |
 |---|---|
 | **SWITCH MODULES TO BOOT MODE** | After the RF test the modules are running the application. Switch **every** module back to **boot (download) mode** and **reset** it, then press **PROGRAM PRICOL FIRMWARE**. |
-| **FINAL PROGRAMMING**, **VERIFYING MAC ADDRESSES** | Wait. Each chip is fully erased again, then the Pricol firmware and Pricol MAC are written and read back. **Do not remove modules.** |
+| **FINAL PROGRAMMING**, **VERIFYING MAC ADDRESSES** | Wait. Each chip is fully erased again (unless the Supervisor cleared **Chip erase** for this tray), then the Pricol firmware and Pricol MAC are written and read back, in one MPCLI run per module. **Do not remove modules.** |
 | **SWITCH MODULES TO APPLICATION MODE** | Switch **every** module from boot mode to **application mode**, then press **RUN APP TEST**. **Do not reset yet.** |
 | **RESET ALL MODULES NOW** | Now **reset / power-cycle** every module (within 30 seconds). Each module prints a start-up message; the station waits for it and then sends *PRICOLAPP*. |
 | **READY FOR DFU TEST** | Press **RUN DFU TEST**. **Do not reset yet.** |

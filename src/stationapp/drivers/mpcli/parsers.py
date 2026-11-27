@@ -306,6 +306,42 @@ def parse_mac_readback(process: ProcessResult) -> MacReadbackResult:
     )
 
 
+_DUMPMAC_MARKER = re.compile(r"CMD\[\d+\]\s*dumpmac\b", re.IGNORECASE)
+
+
+def parse_session_readback(process: ProcessResult) -> MacReadbackResult:
+    """Read the MAC from a single-session run (-P ... -x MAC -I -r).
+
+    That output names the MAC twice: "new MAC:" (the value MPCLI was asked
+    to write) before programming, and "Original MAC:" from the dumpmac
+    flash read after it. Only the text after the dumpmac command counts as
+    read-back evidence; the requested value never verifies itself.
+    """
+    result = parse_mac_readback(process)
+    if result.outcome not in (MacReadbackOutcome.READ, MacReadbackOutcome.AMBIGUOUS):
+        return result
+
+    output = _combined_output(process)
+    marker = None
+    for marker in _DUMPMAC_MARKER.finditer(output):
+        pass
+    if marker is None:
+        return MacReadbackResult(
+            outcome=MacReadbackOutcome.NOT_FOUND,
+            process=process,
+            mac=None,
+            message="MPCLI did not read the MAC back from flash (no dumpmac step in its output).",
+        )
+
+    candidates = _extract_labelled_macs(output[marker.end():])
+    if not candidates:
+        return MacReadbackResult(outcome=MacReadbackOutcome.NOT_FOUND, process=process, mac=None, message="MPCLI read the flash but printed no MAC after dumpmac.")
+    if len(candidates) > 1:
+        return MacReadbackResult(outcome=MacReadbackOutcome.AMBIGUOUS, process=process, mac=None, message="MPCLI printed more than one MAC after dumpmac.")
+    mac = next(iter(candidates))
+    return MacReadbackResult(outcome=MacReadbackOutcome.READ, process=process, mac=mac, message=f"MPCLI read back MAC {mac.compact} from flash.")
+
+
 def _combined_output(process: ProcessResult) -> str:
 
     return "\n".join(

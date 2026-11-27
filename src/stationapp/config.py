@@ -47,11 +47,18 @@ class Settings(BaseSettings):
     # Validated flash -> settle -> write-MAC sequence (see
     # scripts/program_one_real_dut.py) instead of the combined command.
     mpcli_two_step: bool = True
+    # One MPCLI command per programming stage: [-E] -P image -x MAC -I -r
+    # (loader loaded once instead of once per step; the MAC read back in
+    # that run is the readback verification). Takes precedence over
+    # MPCLI_TWO_STEP. false = the separate erase/flash/MAC/readback calls.
+    mpcli_single_session: bool = True
     # Binding slots by reference modules: a module with MAC <prefix>:NN
     # placed in slot NN identifies that slot's COM port.
     slot_reference_mac_prefix: str = "22:22:22:22:22"
     # Chip erase before every firmware flash (Stock and Pricol):
-    # full (-E, whole flash) | keep_first_4k (-C) | none
+    # full (-E, whole flash) | keep_first_4k (-C) | none. The Supervisor's
+    # per-tray "Chip erase" box turns it off for a tray; with "none" a
+    # ticked box means full (-E).
     mpcli_chip_erase: str = "full"
     mpcli_programming_timeout_seconds: float = Field(90.0, gt=0)
     # At most this many MPCLI processes (erase, flash, write MAC, read MAC)
